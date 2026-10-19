@@ -1,0 +1,81 @@
+# =============================================================================
+# Saman ERP — local development overlay
+# -----------------------------------------------------------------------------
+# Full stack with hot reload (src bind-mounts, dev Dockerfile targets):
+#   cp .env.example .env && ./scripts/gen-secrets.sh --dev
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#   open http://127.0.0.1:8080  (API on 127.0.0.1:4000, Vite on 127.0.0.1:5173)
+#
+# Infra only (run the API/SPA with `pnpm dev` on the host):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis minio minio-init
+#   pnpm install && pnpm dev:api & pnpm dev:web
+#
+# This overlay is NOT for production: it publishes data-store ports on loopback,
+# runs development servers and mounts source code. No engine/worker scale, no TLS.
+# =============================================================================
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+  # Dev targets keep the image's pnpm workspace/node_modules intact; only source
+  # trees are bind-mounted so package resolution is identical to CI/production.
+  api:
+    build:
+      target: dev
+    command: ["pnpm", "dev:api"]
+    environment:
+      APP_ENV: development
+      NODE_ENV: development
+      DOCS_ENABLED: "true"
+      COOKIE_SECURE: "false"
+      SMS_MODE: mock
+      CHANNEL_SYNC_ENABLED: "false"
+      LOG_LEVEL: debug
+    read_only: false
+    user: "1000:1000"
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - ./apps/api/test:/app/apps/api/test
+      - ./apps/api/drizzle:/app/apps/api/drizzle
+      - ./packages/shared/src:/app/packages/shared/src
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-4000}:4000"
+
+  worker:
+    build:
+      target: dev
+    environment:
+      APP_ENV: development
+      NODE_ENV: development
+      SMS_MODE: mock
+      CHANNEL_SYNC_ENABLED: "false"
+      LOG_LEVEL: debug
+    read_only: false
+    user: "1000:1000"
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - ./packages/shared/src:/app/packages/shared/src
+
+  web:
+    build:
+      target: dev
+    command: ["pnpm", "dev:web", "--", "--host", "0.0.0.0"]
+    read_only: false
+    user: "1000:1000"
+    volumes:
+      - ./apps/web/src:/app/apps/web/src
+      - ./apps/web/index.html:/app/apps/web/index.html
+      - ./packages/shared/src:/app/packages/shared/src
+    ports:
+      - "127.0.0.1:5173:5173"

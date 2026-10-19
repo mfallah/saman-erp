@@ -1,0 +1,78 @@
+/**
+ * Permission keys referenced by the SPA (API.md §5). Keeping them in one object
+ * prevents typos and makes permission gating auditable in review.
+ */
+export const PERM = {
+  // dashboard
+  dashboardRead: 'dashboard.read',
+  // catalog
+  productRead: 'product.read',
+  productCreate: 'product.create',
+  productUpdate: 'product.update',
+  productDelete: 'product.delete',
+  productCostRead: 'product.cost.read',
+  categoryRead: 'category.read',
+  brandRead: 'brand.read',
+  unitRead: 'unit.read',
+  mediaCreate: 'media.create',
+  barcodeCreate: 'barcode.create',
+  variantCreate: 'variant.create',
+  // inventory / warehouse
+  inventoryBalanceRead: 'inventory.balance.read',
+  inventoryLedgerRead: 'inventory.ledger.read',
+  inventoryAdjust: 'inventory.adjust',
+  inventoryAdjustRead: 'inventory.adjust.read',
+  inventoryAdjustApprove: 'inventory.adjust.approve',
+  inventoryAdjustPost: 'inventory.adjust.post',
+  warehouseRead: 'warehouse.read',
+  locationRead: 'warehouse.location.read',
+  pickRead: 'warehouse.pick.read',
+  pickExecute: 'warehouse.pick',
+  packRead: 'warehouse.pack.read',
+  packExecute: 'warehouse.pack',
+  // sales
+  orderRead: 'sales.order.read',
+  orderCreate: 'sales.order.create',
+  orderUpdate: 'sales.order.update',
+  orderDelete: 'sales.order.delete',
+  // accounting
+  journalRead: 'accounting.journal.read',
+  journalCreate: 'accounting.journal.create',
+  journalUpdate: 'accounting.journal.update',
+  journalApprove: 'accounting.journal.approve',
+  journalPost: 'accounting.journal.post',
+  coaRead: 'accounting.coa.read',
+  balanceRead: 'accounting.balance.read',
+  ledgerRead: 'accounting.ledger.read',
+  fiscalYearRead: 'accounting.fiscal_year.read',
+  // channels
+  channelRead: 'channel.read',
+  channelUpdate: 'channel.update',
+  syncRead: 'channel.sync.read',
+  syncTrigger: 'channel.sync.trigger',
+  mappingRead: 'channel.mapping.read',
+  accountRead: 'channel.account.read',
+  accountTest: 'channel.account.test',
+  // identity
+  userRead: 'user.read',
+  userCreate: 'user.create',
+  userUpdate: 'user.update',
+  roleRead: 'role.read',
+  roleCreate: 'role.create',
+  roleAssign: 'role.assign',
+  permissionRead: 'permission.read',
+  sessionRead: 'session.read',
+  sessionRevoke: 'session.revoke',
+  // settings / reports
+  settingRead: 'setting.read',
+  settingUpdate: 'setting.update',
+  organizationRead: 'organization.read',
+  organizationUpdate: 'organization.update',
+  reportRead: 'report.read',
+  reportRun: 'report.run',
+  notificationRead: 'notification.read',
+  smsTemplateManage: 'sms.template.manage',
+  smsRead: 'sms.read',
+} as const;
+
+export type PermissionKey = (typeof PERM)[keyof typeof PERM];

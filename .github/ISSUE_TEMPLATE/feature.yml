@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a feature or change
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / business need
+      description: Who is the user, what is painful today, what is the impact?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope & modules affected
+      description: Which modules/tables/endpoints (see docs/01-architecture §4)?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Numeric, testable statements.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked docs/09-roadmap — this is not already planned/delivered
+        - label: This needs an ADR (architectural decision)
+        - label: This touches security-sensitive code (auth, files, integrations)

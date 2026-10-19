@@ -1,0 +1,85 @@
+# =============================================================================
+# Saman ERP — production hardening overlay (applied on top of the baseline)
+# -----------------------------------------------------------------------------
+# Production command (equivalent to `make up-prod`):
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.prod.yml \
+#     --profile tls --profile backup up -d --build
+#
+# What this overlay changes vs the baseline:
+#   * restart policy `always` (survives daemon restarts)
+#   * `pull_policy: missing` so a deploy never silently runs a stale cached tag
+#   * stricter stop grace periods for write paths
+#   * production log rotation anchor applied to caddy/backup as well
+#   * larger reservations for the data plane where useful (limits are top-level
+#     `cpus`/`mem_limit` in docker-compose.yml — `deploy.resources` is ignored
+#     by Compose v2 outside swarm, so it is intentionally absent)
+# TLS: caddy (profile `tls`) is defined in docker-compose.yml and hardened here;
+# it is the ONLY service allowed to publish 80/443. Do not publish API/DB ports.
+# =============================================================================
+
+x-prod-logging: &prod-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  postgres:
+    restart: always
+    pull_policy: missing
+    stop_grace_period: 5m
+    logging: *prod-logging
+    mem_reservation: 1g
+
+  redis:
+    restart: always
+    pull_policy: missing
+    logging: *prod-logging
+
+  minio:
+    restart: always
+    pull_policy: missing
+    logging: *prod-logging
+    mem_reservation: 512m
+
+  api:
+    restart: always
+    pull_policy: missing
+    stop_grace_period: 45s
+    logging: *prod-logging
+    mem_reservation: 512m
+
+  worker:
+    restart: always
+    pull_policy: missing
+    stop_grace_period: 90s
+    logging: *prod-logging
+    mem_reservation: 512m
+
+  web:
+    restart: always
+    pull_policy: missing
+    logging: *prod-logging
+
+  caddy:
+    restart: always
+    pull_policy: missing
+    stop_grace_period: 30s
+    logging: *prod-logging
+
+  backup:
+    restart: always
+    pull_policy: missing
+    logging: *prod-logging
+
+  prometheus:
+    restart: always
+    pull_policy: missing
+    logging: *prod-logging
+
+  grafana:
+    restart: always
+    pull_policy: missing
+    logging: *prod-logging

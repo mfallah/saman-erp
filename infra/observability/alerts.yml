@@ -1,0 +1,138 @@
+# =============================================================================
+# Saman ERP — Prometheus alert rules
+# Thresholds mirror docs/07-operations/RUNBOOK.md §3.2.
+# Metric names are the EXPECTED application contract; verify actual names once
+# `/metrics` is implemented and adjust before enabling paging.
+# =============================================================================
+groups:
+  - name: saman-availability
+    interval: 30s
+    rules:
+      - alert: SamanApiDown
+        expr: up{job="saman-api"} == 0
+        for: 2m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "Saman ERP API is down"
+          description: "api:4000 has been unreachable for 2m. Check `docker compose ps` and `docker compose logs api` (RUNBOOK §11.1/§11.12)."
+
+      - alert: SamanWebDown
+        expr: probe_success{job="saman-blackbox"} == 0
+        for: 2m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "Public HTTPS endpoint failing"
+          description: "Blackbox probe of https://<domain>/health/ready failed (TLS, Caddy, web, or API)."
+
+      - alert: SamanHigh5xxRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(http_requests_total[5m])), 1) > 0.01
+        for: 5m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "API 5xx ratio above 1%"
+          description: "5xx > 1% for 5m. Check DB/Redis health, recent deploy (rollback?), RUNBOOK §11.12."
+
+  - name: saman-performance
+    interval: 30s
+    rules:
+      - alert: SamanApiLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 0.8
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 API latency above 800ms"
+          description: "Read budget is p95 < 200ms, write < 500ms (docs/00-overview §3). Check slow queries/locks (RUNBOOK §5.4, §9.2)."
+
+      - alert: SamanDbConnectionsHigh
+        expr: sum(db_pool_connections_open) / clamp_min(sum(db_pool_connections_max), 1) > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "DB pool above 80%"
+          description: "Connection leak or load spike; check pool math (DEPLOYMENT §9.3) and RUNBOOK §9.1."
+
+  - name: saman-jobs
+    interval: 30s
+    rules:
+      - alert: SamanOutboxLagHigh
+        expr: outbox_lag_seconds > 60 or outbox_pending_total > 5000
+        for: 5m
+        labels: { severity: warning, page: "true" }
+        annotations:
+          summary: "Outbox is behind"
+          description: "Events are not being dispatched: worker down or stuck. RUNBOOK §4.1."
+
+      - alert: SamanOutboxCritical
+        expr: outbox_lag_seconds > 300
+        for: 2m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "Outbox lag above 5 minutes (critical)"
+          description: "Channel stock/price and journal posting are delayed. RUNBOOK §4.1/§11.9."
+
+      - alert: SamanQueueFailures
+        expr: increase(bullmq_jobs_failed_total[15m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 10 failed jobs in 15m"
+          description: "Poison jobs or provider outage; RUNBOOK §4.2/§11.3."
+
+      - alert: SamanDeadLetters
+        expr: integration_dead_letters_open > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Unresolved dead letters"
+          description: "Permanent integration failures exist; inspect and replay after fix (RUNBOOK §4.3)."
+
+      - alert: SamanWorkerHeartbeatStale
+        expr: time() - worker_heartbeat_timestamp_seconds > 120
+        for: 2m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "Worker heartbeat older than 2 minutes"
+          description: "Worker is likely dead or crash-looping (RUNBOOK §11.9)."
+
+  - name: saman-platform
+    interval: 30s
+    rules:
+      - alert: SamanDiskSpaceLow
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 10m
+        labels: { severity: warning, page: "true" }
+        annotations:
+          summary: "Host disk below 15% free"
+          description: "Follow the disk-full playbook (RUNBOOK §6) BEFORE it reaches 100%."
+
+      - alert: SamanDiskSpaceCritical
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.07
+        for: 5m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "Host disk below 7% free"
+          description: "Immediate risk of write failures (PostgreSQL cannot extend files). RUNBOOK §6."
+
+      - alert: SamanBackupStale
+        expr: time() - saman_backup_last_success_timestamp_seconds > 93600
+        for: 15m
+        labels: { severity: critical, page: "true" }
+        annotations:
+          summary: "No successful backup in 26 hours"
+          description: "Backup pipeline is broken — RPO at risk. RUNBOOK §11.11."
+
+      - alert: SamanCertificateExpiring
+        expr: probe_ssl_earliest_cert_expiry - time() < 21 * 24 * 3600
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "TLS certificate expires in less than 21 days"
+          description: "Check Caddy/certbot renewal (RUNBOOK §8)."
+
+      - alert: SamanRedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis above 80% of maxmemory (noeviction)"
+          description: "Queue backlog or leak; scale workers/cleanup. RUNBOOK §11.2."

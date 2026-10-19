@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a defect in Saman ERP
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues go to **SECURITY.md** (private advisory), never here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Actual behaviour, with error code / requestId if available.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Login as warehouse_operator
+        2. Open /inventory/adjustments
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+    validations:
+      required: true
+  - type: dropdown
+    id: env
+    attributes:
+      label: Environment
+      options: [production, staging, local docker, CI]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      render: shell

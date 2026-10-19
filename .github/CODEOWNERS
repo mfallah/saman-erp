@@ -1,0 +1,14 @@
+# Default owners for the whole repository
+*                                   @mfallah
+
+# Security-critical paths require Security Lead review
+/apps/api/src/modules/identity/     @mfallah
+/apps/api/src/common/crypto/        @mfallah
+/apps/api/src/modules/channels/adapters/ @mfallah
+/apps/api/src/db/migrations/        @mfallah
+/docker-compose*.yml                @mfallah
+/infra/                             @mfallah
+/scripts/                           @mfallah
+/.github/workflows/                 @mfallah
+/.env.example                       @mfallah
+/SECURITY.md                        @mfallah

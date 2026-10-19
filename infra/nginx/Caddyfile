@@ -1,0 +1,41 @@
+# =============================================================================
+# Saman ERP — Caddy reverse proxy (compose profile `tls`)
+# Automatic HTTPS via Let's Encrypt; the only service that publishes 80/443.
+# Env: DOMAIN (e.g. erp.carexy.shop), ACME_EMAIL
+# =============================================================================
+{
+    email {$ACME_EMAIL}
+    # Uncomment for a dry run against the Let's Encrypt staging CA:
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+    servers {
+        protocols h1 h2
+    }
+    # Keep logs JSON structured; collected by the docker json-file driver.
+}
+
+{$DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(self), microphone=(), geolocation=()"
+        -Server
+    }
+
+    # Everything (SPA + /api + /health) is served by the web container.
+    reverse_proxy web:8080 {
+        health_uri /healthz
+        health_interval 30s
+        health_timeout 5s
+        # Preserve real client IPs for rate limiting / audit (TRUST_PROXY=true).
+        header_up X-Real-IP {remote_host}
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

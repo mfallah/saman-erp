@@ -1,0 +1,50 @@
+# Build context exclusions (build context is the repository root).
+# Keep this small: Dockerfiles COPY only what they need, and a lean context
+# keeps CI build times and layer cache stable.
+.git
+.gitignore
+.github
+.vscode
+.idea
+docs
+README.md
+CONTRIBUTING.md
+SECURITY.md
+LICENSE
+Makefile
+
+# dependencies / build output (installed inside the image)
+node_modules
+**/node_modules
+.pnpm-store
+**/dist
+**/build
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
+**/.vite
+
+# secrets and local env (NEVER in images)
+.env
+.env.*
+!.env.example
+secrets
+certs
+*.pem
+*.key
+
+# runtime data / artifacts
+data
+uploads
+logs
+tmp
+test-results
+playwright-report
+blob-report
+pgbackups
+*.log
+
+# editor / OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
