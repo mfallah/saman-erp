@@ -178,9 +178,9 @@ export class AdminRepository {
   }
 
   async revokeUserSessions(userId: bigint, reason: string): Promise<number> {
-    const rows = await this.sql`r
-      update erp.auth_sessions set revoked_at = now(), revoke_reason = 
-      where user_id =  and revoked_at is null returning id
+    const rows = await this.sql`
+      update erp.auth_sessions set revoked_at = now(), revoke_reason = ${reason}
+      where user_id = ${userId} and revoked_at is null returning id
     `;
     return rows.length;
   }

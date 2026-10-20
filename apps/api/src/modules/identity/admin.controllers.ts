@@ -206,8 +206,7 @@ export class PermissionsAdminController {
 
   @Get()
   @Permissions('permission.read')
-  async list(@Req() request: FastifyRequest) {
-    const { PERMISSION_KEYS, PERMISSION_COUNT } = await import('@saman/shared');
+  list(@Req() request: FastifyRequest) {
     return { version: PERMISSION_COUNT, keys: PERMISSION_KEYS, actor: actorOf(request).permissions };
   }
 }
