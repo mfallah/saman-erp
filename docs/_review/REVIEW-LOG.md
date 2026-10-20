@@ -142,6 +142,17 @@ static review could catch (all fixed except the last):
 | TD-29 | transfer payload parity | **closed** (valuation part -> TD-31) |
 | TD-32 | ScopeGuard missing | open |
 
+### Round 6 — fulfillment module (2026-10-20)
+
+| ID | Finding | Status |
+|---|---|---|
+| RT-E2E-23 | order status update touched non-existent columns | fixed |
+| RT-E2E-24 | outbox aggregate id must be internal bigint | fixed |
+| RT-E2E-25 | `erp.carriers` → `erp.shipping_carriers` | fixed |
+| TD-30 | packing/shipping modules | **CLOSED**: 8 endpoints + full lifecycle E2E |
+| TD-34 | carrier rate selection + label PDF | open |
+| TD-32 | ScopeGuard | open |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning

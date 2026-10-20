@@ -111,7 +111,9 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-29 | ~~Transfer accounting payload parity~~ | — | **CLOSED (v1.2.1)**: dispatch/receive post JV-1405-000003/4 with cost from the line |
 | TD-31 | Valuation posting needs a prior-GL snapshot; a zero variance is rejected by the rule | valuation completeness | v1.3 snapshot-based variance |
 | TD-32 | No ScopeGuard: branch/warehouse scope is stored but not enforced on every route | row-level security | v1.2.x guard + query filters |
-| TD-30 | Packing / shipping / label modules not implemented (pick is the last warehouse step) | fulfillment completeness | v1.3 modules |
+| TD-30 | ~~Packing / shipping modules~~ | — | **CLOSED (v1.3.0)**: packing tasks, scans, shipment, packages, dispatch (sale_issue + COGS), delivery; E2E verified |
+| TD-33 | Procurement & pricing modules not implemented | catalog/commerce completeness | v1.4 modules |
+| TD-34 | Carrier rate selection and label PDF generation | shipping completeness | v1.3.x |
 
 ## Release process
 

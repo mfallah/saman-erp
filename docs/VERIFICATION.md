@@ -408,3 +408,45 @@ prior-GL snapshot to be meaningful).
 - ScopeGuard (branch/warehouse row-level enforcement) — TD-32.
 - Packing/shipping modules — TD-30.
 - Docker/Redis/PG16 host verification — TD-01/TD-25.
+
+
+---
+
+## 11. Fulfillment: packing → shipment → dispatch → delivery (2026-10-20, round 4)
+
+New module `sales/fulfillment` (8 endpoints) over the already-modelled
+`packing_tasks`, `packing_scans`, `shipments`, `shipment_packages`,
+`shipment_package_lines`, `shipment_events` tables.
+
+```text
+POST /fulfillment/packing-tasks {orderId}        201  task pending, order → picking
+POST /fulfillment/packing-tasks/:id/scans        200  barcode accepted (product_barcodes)
+POST /fulfillment/packing-tasks/:id/complete     201  shipment SHP-2026-000001, package PKG-E2E-1, order → packed
+POST /fulfillment/shipments/:id/dispatch         200  sale_issue ledger row, reservation released, order → shipped
+POST /fulfillment/shipments/:id/deliver          200  shipment delivered (tracking TRK-12345), order → delivered
+
+DB after: sales_orders.status = delivered
+          shipments.status = delivered, tracking_code = TRK-12345
+          inventory_transactions(sale_issue) = 1
+          posted journal JV-1405-000005  «خروج موجودی و شناسایی بهای تمامشده»  Dr 227,272
+```
+
+That closes the loop **order → reserve → pick → pack → ship → COGS journal →
+deliver**, with the accounting entry produced by the worker from the inventory
+event (not by the controller).
+
+### 11.1 Defects found and fixed in this round
+
+| ID | Defect | Root cause | Fix |
+|---|---|---|---|
+| RT-E2E-23 | `create packing task` 500 | `setOrderStatus` wrote non-existent `shipped_at`/`delivered_at` on `sales_orders` | status/fulfillment_status/version only; shipment timestamps live on `shipments` |
+| RT-E2E-24 | `create packing task` 500 | outbox requires the internal bigint aggregate id; public uuid rejected | emit internal ids, public ids stay in payload |
+| RT-E2E-25 | `dispatch` 500 | repository joined `erp.carriers` (real table: `shipping_carriers`) | table name corrected |
+| RT-E2E-26 | shipment status flow | new module had no schema-drift checks | `scripts/check-sql-schema.cjs` re-run: **0 drift** |
+
+### 11.2 Still open
+
+- ScopeGuard (branch/warehouse row-level enforcement) — TD-32.
+- Procurement & pricing modules — TD-33.
+- Docker/Redis/PG16 host verification — TD-01/TD-25.
+- Carrier rate selection / label PDF — TD-34.
