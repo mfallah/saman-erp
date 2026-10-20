@@ -65,7 +65,7 @@ export class JournalController {
   @RequirePermissions('accounting.journal.read')
   @ApiOperation({ summary: 'جزئیات سند' })
   async get(@Tenant() ctx: TenantContext, @Param('id') id: string): Promise<{ data: unknown }> {
-    return { data: journalOut(await this.journals.get(ctx, toBigInt(id))) };
+    return { data: journalOut(await this.journals.get(ctx, await this.journals.resolveId(ctx, id))) };
   }
 
   @Patch(':id')
@@ -80,7 +80,7 @@ export class JournalController {
     const dto = parseDto(UpdateJournalSchema, body);
     const journal = await this.journals.updateDraft(
       ctx,
-      toBigInt(id),
+      await this.journals.resolveId(ctx, id),
       {
         ...(dto.description === undefined ? {} : { description: dto.description }),
         ...(dto.date === undefined ? {} : { date: dto.date }),
@@ -95,14 +95,14 @@ export class JournalController {
   @RequirePermissions('accounting.journal.delete')
   @ApiOperation({ summary: 'حذف پیش‌نویس' })
   async remove(@Tenant() ctx: TenantContext, @Param('id') id: string): Promise<void> {
-    await this.journals.deleteDraft(ctx, toBigInt(id));
+    await this.journals.deleteDraft(ctx, await this.journals.resolveId(ctx, id));
   }
 
   @Post(':id/submit')
   @RequirePermissions('accounting.journal.update')
   @ApiOperation({ summary: 'ارسال برای تأیید' })
   async submit(@Tenant() ctx: TenantContext, @Param('id') id: string): Promise<{ data: unknown }> {
-    return { data: journalOut(await this.journals.submit(ctx, toBigInt(id))) };
+    return { data: journalOut(await this.journals.submit(ctx, await this.journals.resolveId(ctx, id))) };
   }
 
   @Post(':id/approve')
@@ -113,7 +113,7 @@ export class JournalController {
     @Param('id') id: string,
     @Body() body: { note?: string },
   ): Promise<{ data: unknown }> {
-    return { data: journalOut(await this.journals.approve(ctx, toBigInt(id), body.note)) };
+    return { data: journalOut(await this.journals.approve(ctx, await this.journals.resolveId(ctx, id), body.note)) };
   }
 
   @Post(':id/post')
@@ -124,7 +124,7 @@ export class JournalController {
     @Param('id') id: string,
     @Body() body: { postDate?: string },
   ): Promise<{ data: unknown }> {
-    return { data: journalOut(await this.journals.post(ctx, toBigInt(id), body.postDate)) };
+    return { data: journalOut(await this.journals.post(ctx, await this.journals.resolveId(ctx, id), body.postDate)) };
   }
 
   @Post(':id/reverse')
@@ -136,7 +136,7 @@ export class JournalController {
     @Body() body: unknown,
   ): Promise<{ data: unknown }> {
     const dto = parseDto(ReverseJournalSchema, body);
-    const journal = await this.journals.reverse(ctx, toBigInt(id), {
+    const journal = await this.journals.reverse(ctx, await this.journals.resolveId(ctx, id), {
       reason: dto.reason,
       ...(dto.reversalDate === undefined ? {} : { reversalDate: dto.reversalDate }),
     });
@@ -147,7 +147,7 @@ export class JournalController {
   @RequirePermissions('accounting.journal.read')
   @ApiOperation({ summary: 'سطرهای سند' })
   async lines(@Tenant() ctx: TenantContext, @Param('id') id: string): Promise<{ data: unknown[] }> {
-    const journal = await this.journals.get(ctx, toBigInt(id));
+    const journal = await this.journals.get(ctx, await this.journals.resolveId(ctx, id));
     return { data: journalOut(journal)['lines'] as unknown[] };
   }
 
@@ -161,7 +161,7 @@ export class JournalController {
     @Query('version') version?: string,
   ): Promise<{ data: unknown }> {
     const dto = parseDto(AppendJournalLineSchema, body);
-    const current = await this.journals.get(ctx, toBigInt(id));
+    const current = await this.journals.get(ctx, await this.journals.resolveId(ctx, id));
     const lines = [
       ...current.lines.map((line) => ({
         accountId: line.accountId,
@@ -172,7 +172,7 @@ export class JournalController {
     ];
     const journal = await this.journals.updateDraft(
       ctx,
-      toBigInt(id),
+      await this.journals.resolveId(ctx, id),
       { lines },
       version === undefined ? current.version : Number(version),
     );
@@ -187,11 +187,11 @@ export class JournalController {
     @Param('id') id: string,
     @Param('lineId') lineId: string,
   ): Promise<{ data: unknown }> {
-    const current = await this.journals.get(ctx, toBigInt(id));
+    const current = await this.journals.get(ctx, await this.journals.resolveId(ctx, id));
     const remaining = current.lines
       .filter((line) => line.id.toString() !== lineId)
       .map((line) => ({ accountId: line.accountId, debit: line.debitAmount, credit: line.creditAmount }));
-    const journal = await this.journals.updateDraft(ctx, toBigInt(id), { lines: remaining }, current.version);
+    const journal = await this.journals.updateDraft(ctx, await this.journals.resolveId(ctx, id), { lines: remaining }, current.version);
     return { data: journalOut(journal) };
   }
 }

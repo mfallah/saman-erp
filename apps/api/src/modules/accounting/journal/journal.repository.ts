@@ -163,6 +163,16 @@ export class JournalRepository {
     return Promise.all(rows.map(async (row) => this.toRecord(row)));
   }
 
+  async idByPublicId(orgId: bigint, publicId: string, tx?: SqlSession): Promise<bigint | null> {
+    const db = tx ?? this.db;
+    const rows = await db<{ id: string }[]>`
+      select id::text as id from erp.journal_entries
+       where organization_id = ${orgId.toString()} and public_id = ${publicId}::uuid
+       limit 1`;
+    const row = rows[0];
+    return row === undefined ? null : BigInt(row.id);
+  }
+
   async findById(orgId: bigint, id: bigint, tx?: SqlSession): Promise<JournalRecord | undefined> {
     const client = tx ?? this.db;
     const rows = await client<JournalRow[]>`

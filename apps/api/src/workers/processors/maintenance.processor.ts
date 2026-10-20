@@ -109,7 +109,7 @@ export class MaintenanceProcessor implements OnModuleInit, OnModuleDestroy {
     if (await this.tableExists('erp.channel_webhook_events')) {
       const pruned = await this.db`
         update erp.channel_webhook_events
-        set payload = '{"pruned":true}'::jsonb, raw_body = null
+        set payload = '{"pruned":true}'::jsonb
         where received_at < now() - interval '90 days'
           and payload <> '{"pruned":true}'::jsonb`;
       affected += pruned.count;
@@ -122,11 +122,11 @@ export class MaintenanceProcessor implements OnModuleInit, OnModuleDestroy {
   }
 
   private async expireReservations(): Promise<MaintenanceReport> {
-    if (!(await this.tableExists('erp.inventory_reservations'))) {
+    if (!(await this.tableExists('erp.stock_reservations'))) {
       return { task: 'expired_reservations', skipped: 'table missing' };
     }
     const result = await this.db`
-      update erp.inventory_reservations
+      update erp.stock_reservations
       set status = 'expired', updated_at = now()
       where status = 'active' and expires_at is not null and expires_at < now()`;
     await this.logMaintenance('expired_reservations', true, `expired ${result.count}`, 0);

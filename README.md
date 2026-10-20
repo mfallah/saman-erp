@@ -31,7 +31,9 @@ docker compose --profile tools run --rm migrate node /app/packages/db/dist/seed.
 
 > **Verified locally:** TypeScript build/typecheck of all packages, 63 unit tests, and the full 5,729-line
 > migration + idempotent seed executed against a real PostgreSQL with 17/17 integrity checks
-> (`scripts/verify-db.cjs`). **Docker was not runnable in the build environment** — this quick start is the first thing to verify
+> (`scripts/verify-db.cjs`) and now the **write path end-to-end** (login → category → product → customer →
+> warehouse → user → journal → order; maker-checker enforced), with `scripts/check-sql-schema.cjs`
+> reporting **0 schema drift**. **Docker was not runnable in the build environment** — this quick start is the first thing to verify
 > on a real host. Full Persian guide: [`docs/06-deployment/INSTALL-FA.md`](docs/06-deployment/INSTALL-FA.md);
 > exact evidence of what was machine-verified: [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 

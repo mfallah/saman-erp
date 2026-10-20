@@ -294,6 +294,12 @@ export class WarehouseService {
 
   private async insertNode(tx: Db, warehouseInternalId: bigint, body: LocationNodeInput): Promise<LocationRow> {
     const nodeType = body.type as LocationNodeType;
+    if (nodeType !== 'zone' && body.parentId === undefined) {
+      throw new AppError('VALIDATION_ERROR', {
+        message: 'انتخاب مکان والد برای این سطح الزامی است.',
+        details: [{ field: 'parentId', rule: 'required' }],
+      });
+    }
     if (nodeType === 'zone') {
       assertValidLocationParent('zone', null);
       await this.repo.insertZone(tx, {

@@ -116,9 +116,7 @@ export class SqlAutomationRepository implements AutomationRepositoryPort {
         ${input.ruleCode}, ${input.severity}, ${input.score}, 'open',
         ${JSON.stringify(input.details)}::jsonb
       )
-      on conflict (entity_type, entity_id, rule_code)
-        where status = 'open'
-        do update set
+      on conflict (entity_type, entity_id, rule_code) do update set
           severity = excluded.severity,
           score = greatest(erp.fraud_flags.score, excluded.score),
           details = excluded.details`;

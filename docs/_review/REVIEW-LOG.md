@@ -100,6 +100,20 @@ static review could catch (all fixed except the last):
 | RT-E2E-07 | `/auth/me` and self-service routes rejected by default-deny | `@AuthenticatedOnly()` + guard support |
 | **TD-24** | write repositories reference columns absent from the implemented schema | **open — v1.1 blocker** |
 
+### Round 3 — write-path/E2E integration pass (2026-10-20, later run)
+
+| ID | Defect | Status |
+|---|---|---|
+| RT-E2E-08 | accounting journal endpoints used `BigInt(publicUuid)` → 500 | fixed: public-id resolution |
+| RT-E2E-09 | BigInt arrays not serialised for `::bigint[]` (sales confirm 500) | fixed: string arrays |
+| RT-E2E-10 | approval threshold read `system_settings.value` (real column `value_json`) | fixed |
+| RT-E2E-11 | double `{data:{data}}` envelope on accounting controllers | fixed in ResponseInterceptor |
+| RT-E2E-12 | warehouse location create without parent → 500 | fixed: 400 validation |
+| RT-E2E-13 | verify script path after move | fixed |
+| **TD-24** | 15 unknown tables + 12 missing column references | **closed** — schema + code aligned, drift checker = 0 |
+| TD-26 | accounting DTOs still accept internal numeric ids for account references | open (v1.2) |
+| TD-27 | full order→pick→pack→ship E2E needs location hierarchy + stock seeding | open (v1.2) |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning

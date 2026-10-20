@@ -48,6 +48,13 @@ export class JournalService {
     return this.repo.list(ctx.orgId, { ...filter, page: normalisePagination(filter.page ?? {}) });
   }
 
+  /** Resolve the API-facing public id to the internal key used by the journal aggregate. */
+  async resolveId(ctx: TenantContext, publicId: string): Promise<bigint> {
+    const internal = await this.repo.idByPublicId(ctx.orgId, publicId);
+    if (internal === null) throw new AppError('NOT_FOUND', { message: 'سند حسابداری یافت نشد.' });
+    return internal;
+  }
+
   async get(ctx: TenantContext, id: bigint): Promise<JournalRecord> {
     const entry = await this.repo.findById(ctx.orgId, id);
     if (entry === undefined) throw new AppError('NOT_FOUND', { message: 'سند حسابداری یافت نشد.' });
@@ -471,7 +478,7 @@ export class JournalService {
 
   private async approvalThreshold(tx: SqlSession, orgId: bigint): Promise<bigint> {
     const rows = await tx<{ value: string }[]>`
-      select value #>> '{}' as value
+      select value_json #>> '{}' as value
         from erp.system_settings
        where organization_id = ${orgId.toString()}
          and key = ${JOURNAL_APPROVAL_THRESHOLD_SETTING}

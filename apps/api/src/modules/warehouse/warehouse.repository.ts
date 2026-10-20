@@ -546,7 +546,7 @@ export class WarehouseRepository {
       select l.id::text as "locationInternalId", bn.capacity_qty::text as "capacityQuantity"
       from erp.warehouse_locations l
       left join erp.warehouse_bins bn on bn.id = l.bin_id
-      where l.id = any(${locationInternalIds}::bigint[])
+      where l.id = any(${locationInternalIds.map((v) => v.toString())}::bigint[])
     `;
   }
 

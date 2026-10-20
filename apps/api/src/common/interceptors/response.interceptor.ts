@@ -56,6 +56,27 @@ export class ResponseInterceptor implements NestInterceptor {
         const traceId = getTraceId(request);
         const traceMeta = traceId === undefined ? {} : { traceId };
 
+        // Some controllers return a ready envelope `{ data, pagination? }` (accounting
+        // module style). Merge instead of nesting a second `data` layer.
+        const envelopeLike =
+          payload !== null &&
+          typeof payload === 'object' &&
+          'data' in (payload as Record<string, unknown>) &&
+          Object.keys(payload as Record<string, unknown>).every((key) =>
+            ['data', 'meta', 'pagination'].includes(key),
+          );
+        if (envelopeLike) {
+          const record = payload as { data: unknown; meta?: Record<string, unknown>; pagination?: unknown };
+          return {
+            data: record.data,
+            meta: {
+              requestId,
+              ...traceMeta,
+              ...(record.meta ?? {}),
+              ...(record.pagination === undefined ? {} : { pagination: record.pagination }),
+            },
+          };
+        }
         if (payload instanceof ApiPayload) {
           return {
             data: payload.data,

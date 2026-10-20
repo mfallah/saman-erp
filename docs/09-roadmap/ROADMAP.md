@@ -103,8 +103,10 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-21 | All DB roles share one password in the default compose init | least privilege | per-role password secrets |
 | TD-22 | Channel admin surface incomplete (no `/channels`, `/channel-accounts`, `/channel-sync-jobs` controllers); SPA channel page reports «در حال توسعه» | omnichannel operability | channels admin controllers (v1.1) |
 | TD-23 | BullMQ not installed; worker uses DB `job_runs` fallback queue | throughput | add BullMQ + Redis adapter (documented topology) |
-| TD-24 | **Write-path column drift**: some write SQL references columns/tables not in the implemented schema (first confirmed: `product_categories.image_file_id`). Read paths, auth, RBAC and validation are E2E-verified; writes need schema generation/alignment | cannot create some records | v1.1 **release blocker** — generate columns from live schema, run write integration suite |
+| TD-24 | ~~Write-path column drift~~ | — | **CLOSED (v1.1.2)**: 10 tables + 6 columns added (226 tables), 12 column refs aligned, `scripts/check-sql-schema.cjs` reports 0 drift; write-path E2E verified |
 | TD-25 | Redis not executed in the local E2E (rate limits/queues degraded); `/health/ready` correctly reported it | observability/limits untested | first CI/host run with Redis |
+| TD-26 | Accounting DTOs accept internal numeric ids for account references (contract says public uuid); journal/accounting paths work but the contract is violated | API contract/security | v1.2 public-id resolution in accounting DTOs |
+| TD-27 | Full order→pick→pack→ship→journal E2E needs a seeded location hierarchy + stock | happy-path proof | v1.2 seed script + E2E |
 
 ## Release process
 

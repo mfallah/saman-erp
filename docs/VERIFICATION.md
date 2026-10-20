@@ -218,3 +218,78 @@ confirmed case: `product_categories.image_file_id`; the entity expects `image_fi
 defines `name/name_en/path/level/sort_order/is_active/external_hint`). This must be closed by generating
 repository column lists from the live schema (or moving the remaining modules to the typed `@saman/db`
 client) and by running a write-path integration suite. It is tracked as **TD-24 / v1.1 release blocker**.
+
+
+---
+
+## 8. Schema-drift closure + write-path E2E (2026-10-20, later run)
+
+### 8.1 New tool: `scripts/check-sql-schema.cjs`
+
+Static typecheck cannot see SQL column drift. The new checker extracts every literal
+`insert into erp.<table> (...)` and `update erp.<table> set ...` statement from the API sources and
+compares the referenced columns with a live database's `information_schema`:
+
+```text
+before:  unknown tables: 15, statements with missing columns: 9  (12 column refs)
+after :  unknown tables:  0, statements with missing columns: 0  (0 column refs)
+         scanned 284 files, 303 insert/update statements, schema tables 226
+```
+
+### 8.2 Schema completion (10 tables + 6 columns)
+
+Added to `packages/db/src/schema/spec.ts` and regenerated `drizzle/0001_init.sql`
+(**226 tables**, previously 216):
+
+- partners: `shareholders`, `shareholder_transactions`, `profit_distribution_runs`, `profit_distribution_lines`
+- treasury: `bank_reconciliations`, `bank_reconciliation_lines`
+- automation: `alert_rules`, `alert_events`, `fraud_flags`
+- accounting: `accounting_document_links`
+- columns: `product_categories.image_file_id`, `partner_accounts.account_type`, `refunds.customer_id`,
+  `bank_accounts.branch_id`, `payments.executed_by/executed_at`, `export_jobs.finished_at`
+- code aligned to existing columns where they already existed (`export_jobs.entity_type/filter_json/output_file_id`,
+  `report_runs.output_file_id`), reservations/retention use `stock_reservations`, raw webhook bodies are not stored.
+
+### 8.3 Fresh-database verification after the schema change
+
+```text
+create database saman_v5 → migrate 0001_init.sql (226 tables) → seed (idempotent)
+scripts/verify-db.cjs .................. 17/17 checks PASS
+scripts/check-sql-schema.cjs ........... 0 drift
+```
+
+### 8.4 Write-path end-to-end (real HTTP against the live DB)
+
+```text
+POST /api/v1/auth/login                202  MFA challenge
+POST /api/v1/auth/otp/verify           200  access token
+POST /api/v1/categories                201  real category (code/name/path/level)
+POST /api/v1/products                  201  product + variant (`PRD-…`, slug, variant SKU)
+GET  /api/v1/products/:id              200
+POST /api/v1/customers                 201  customer with generated customer_no
+POST /api/v1/warehouses                201  warehouse with generated code
+POST /api/v1/users                     201  admin user created (must_change_password)
+POST /api/v1/accounting/journal-entries 201 draft journal (balanced)
+POST …/journal-entries/:id/submit      201 → status `pending_approval`
+POST …/journal-entries/:id/approve     403 "تأییدکننده نمیتواند ایجادکننده باشد"  ← maker-checker works
+POST /api/v1/sales-orders              201  draft order
+POST …/sales-orders/:id/submit         200  submitted
+POST …/sales-orders/:id/confirm        422  INSUFFICIENT_STOCK (correct: reservation path ran, no stock yet)
+DB after writes: products/variants/customer/warehouse/user rows present,
+                 audit_logs incremented, outbox_events incremented (7 events)
+```
+
+### 8.5 Defects found and fixed in this run
+
+| ID | Defect | Fix |
+|---|---|---|
+| RT-E2E-08 | `accounting` journal endpoints converted the URL uuid with `BigInt()` → 500 on every submit/post/reverse/update | `JournalService.resolveId()` resolves `public_id → id`; 12 controller call sites updated |
+| RT-E2E-09 | `sales confirm` 500: `any(${bigintArray}::bigint[])` — postgres.js does not serialise BigInt arrays into a Postgres array | arrays mapped to strings before interpolation (inventory, warehouse, valuation) |
+| RT-E2E-10 | journal post 500: approval-threshold query selected `system_settings.value` (column is `value_json`) | query fixed to `value_json #>> '{}'` |
+| RT-E2E-11 | double response envelope `{data:{data:…}}` on accounting endpoints | ResponseInterceptor merges controller-level envelopes |
+| RT-E2E-12 | warehouse location create with missing parent → 500 invalid uuid | explicit `VALIDATION_ERROR` "انتخاب مکان والد الزامی است" |
+| RT-E2E-13 | `verify-db.cjs` broke after being moved into `scripts/` | require resolved relative to `__dirname` |
+
+**Still open (next round):** accounting endpoints accept *internal* numeric ids for account references in
+some DTOs (contract says public uuid) — tracked as TD-26; full order→pick→pack→ship flow needs stock seeded
+via the location hierarchy (TD-27); Docker/Redis still unverified (TD-01/TD-25).

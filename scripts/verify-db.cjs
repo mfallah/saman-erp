@@ -39,7 +39,7 @@ function check(name, ok, detail) {
 
     if (ADMIN_PASSWORD && admin[0]) {
       try {
-        const pwdSvc = require('./apps/api/dist/modules/identity/password.service.js');
+        const pwdSvc = require(require('node:path').join(__dirname, '..', 'apps', 'api', 'dist', 'modules', 'identity', 'password.service.js'));
         const service = new pwdSvc.PasswordService();
         const ok = await service.verifyPassword(admin[0].password_hash, ADMIN_PASSWORD);
         check('seeded admin password verifies via API password service', ok === true, ok ? 'scrypt path OK' : 'verify returned false');

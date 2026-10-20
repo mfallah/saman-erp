@@ -276,7 +276,7 @@ export class ReportingRepository {
   ): Promise<bigint> {
     const rows = await tx<{ id: string }[]>`
       insert into erp.export_jobs
-        (organization_id, entity, format, filters, status, created_by)
+        (organization_id, entity_type, format, filter_json, status, created_by)
       values
         (${input.orgId.toString()}, ${input.entity}, ${input.format},
          ${input.filters}::jsonb, 'queued',
@@ -290,7 +290,7 @@ export class ReportingRepository {
   async completeExport(tx: SqlSession, id: bigint, fileId: bigint | null, rowCount: number): Promise<void> {
     await tx`
       update erp.export_jobs
-         set status = 'completed', file_id = ${fileId === null ? null : fileId.toString()}::bigint,
+         set status = 'completed', output_file_id = ${fileId === null ? null : fileId.toString()}::bigint,
              row_count = ${rowCount}, finished_at = now()
        where id = ${id.toString()}`;
   }

@@ -544,9 +544,9 @@ export class InventoryRepository {
              (b.on_hand - b.reserved - b.safety_buffer - b.damaged)::text as available
       from erp.inventory_balances b
       where b.organization_id = ${orgId}
-        and b.product_variant_id = any(${params.variantInternalIds}::bigint[])
+        and b.product_variant_id = any(${params.variantInternalIds.map((v) => v.toString())}::bigint[])
         and (${params.warehouseInternalIds === null}::boolean
-             or b.warehouse_id = any(${params.warehouseInternalIds ?? []}::bigint[]))
+             or b.warehouse_id = any(${(params.warehouseInternalIds ?? []).map((v) => v.toString())}::bigint[]))
         and (b.on_hand - b.reserved - b.safety_buffer - b.damaged) > 0
       order by b.product_variant_id asc, b.warehouse_id asc, b.location_id asc
     `;
@@ -603,9 +603,9 @@ export class InventoryRepository {
       from erp.inventory_balances
       where organization_id = ${orgId} and warehouse_id = ${params.warehouseInternalId} and on_hand > 0
         and (${params.locationInternalIds === null}::boolean
-             or location_id = any(${params.locationInternalIds ?? []}::bigint[]))
+             or location_id = any(${(params.locationInternalIds ?? []).map((v) => v.toString())}::bigint[]))
         and (${params.variantInternalIds === null}::boolean
-             or product_variant_id = any(${params.variantInternalIds ?? []}::bigint[]))
+             or product_variant_id = any(${(params.variantInternalIds ?? []).map((v) => v.toString())}::bigint[]))
       order by location_id asc, product_variant_id asc
     `;
   }

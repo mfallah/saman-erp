@@ -1120,6 +1120,7 @@ CREATE TABLE IF NOT EXISTS erp."export_jobs" (
   "output_file_id" bigint,
   "row_count" integer,
   "error_message" text,
+  "finished_at" timestamptz,
   "expires_at" timestamptz,
   "requested_by" bigint,
   CONSTRAINT "pk_export_jobs" PRIMARY KEY ("id"),
@@ -1410,6 +1411,7 @@ CREATE TABLE IF NOT EXISTS erp."product_categories" (
   "level" smallint NOT NULL DEFAULT 1,
   "sort_order" integer NOT NULL DEFAULT 0,
   "is_active" boolean NOT NULL DEFAULT true,
+  "image_file_id" bigint,
   "external_hint" jsonb NOT NULL DEFAULT '{}',
   CONSTRAINT "pk_product_categories" PRIMARY KEY ("id"),
   CONSTRAINT "uq_product_categories_public_id" UNIQUE ("public_id")
@@ -2947,6 +2949,7 @@ CREATE TABLE IF NOT EXISTS erp."partner_accounts" (
   "organization_id" bigint NOT NULL,
   "partner_type" varchar(30) NOT NULL,
   "partner_id" bigint NOT NULL,
+  "account_type" varchar(30) NOT NULL DEFAULT 'capital',
   "account_id" bigint NOT NULL,
   "credit_limit_amount" bigint NOT NULL DEFAULT 0,
   "opening_balance_amount" bigint NOT NULL DEFAULT 0,
@@ -3568,6 +3571,7 @@ CREATE TABLE IF NOT EXISTS erp."refunds" (
   "version" integer NOT NULL DEFAULT 1,
   "organization_id" bigint NOT NULL,
   "return_id" bigint,
+  "customer_id" bigint,
   "refund_no" varchar(60),
   "amount" bigint NOT NULL,
   "method" varchar(30) NOT NULL,
@@ -4392,6 +4396,8 @@ CREATE TABLE IF NOT EXISTS erp."payments" (
   "terminal_id" varchar(60),
   "status" varchar(20) NOT NULL DEFAULT 'confirmed',
   "journal_entry_id" bigint,
+  "executed_by" bigint,
+  "executed_at" timestamptz,
   "description" text,
   CONSTRAINT "pk_payments" PRIMARY KEY ("id"),
   CONSTRAINT "uq_payments_public_id" UNIQUE ("public_id"),
@@ -4440,6 +4446,7 @@ CREATE TABLE IF NOT EXISTS erp."bank_accounts" (
   "version" integer NOT NULL DEFAULT 1,
   "deleted_at" timestamptz,
   "organization_id" bigint NOT NULL,
+  "branch_id" bigint,
   "code" varchar(40) NOT NULL,
   "bank_name" varchar(150) NOT NULL,
   "branch_name" varchar(150),
@@ -5554,6 +5561,263 @@ CREATE TABLE IF NOT EXISTS erp."user_dashboard_widgets" (
 );
 CREATE TRIGGER trg_user_dashboard_widgets_updated_at BEFORE UPDATE ON erp."user_dashboard_widgets" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
 CREATE TRIGGER trg_user_dashboard_widgets_version BEFORE UPDATE ON erp."user_dashboard_widgets" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- partial unique (soft delete): organization_id,code
+-- company shareholders (legal owners)
+CREATE TABLE IF NOT EXISTS erp."shareholders" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "deleted_at" timestamptz,
+  "organization_id" bigint NOT NULL,
+  "code" varchar(40) NOT NULL,
+  "name" varchar(250) NOT NULL,
+  "shareholder_type" varchar(20) NOT NULL DEFAULT 'person',
+  "ownership_percent" numeric(9,6) NOT NULL DEFAULT 0,
+  "national_id" varchar(20),
+  "mobile" varchar(20),
+  "email" varchar(255),
+  "is_active" boolean NOT NULL DEFAULT true,
+  "notes" text,
+  CONSTRAINT "pk_shareholders" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_shareholders_public_id" UNIQUE ("public_id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_shareholders_organization_id_code_active ON erp."shareholders" ("organization_id","code") WHERE deleted_at IS NULL;
+CREATE TRIGGER trg_shareholders_updated_at BEFORE UPDATE ON erp."shareholders" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_shareholders_version BEFORE UPDATE ON erp."shareholders" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- shareholder capital/current account movements
+CREATE TABLE IF NOT EXISTS erp."shareholder_transactions" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "shareholder_id" bigint NOT NULL,
+  "transaction_type" varchar(40) NOT NULL,
+  "direction" varchar(10) NOT NULL,
+  "amount" bigint NOT NULL,
+  "transaction_date" date NOT NULL,
+  "description" text,
+  "journal_entry_id" bigint,
+  "created_by" bigint,
+  CONSTRAINT "pk_shareholder_transactions" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_shareholder_transactions_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "fk_shareholder_transactions_shareholder_id" FOREIGN KEY ("shareholder_id") REFERENCES erp."shareholders" (id) ON DELETE CASCADE,
+  CONSTRAINT "ck_shareholder_transactions_amount" CHECK (amount > 0)
+);
+CREATE INDEX IF NOT EXISTS ix_shareholder_transactions_shareholder_id_transaction_date ON erp."shareholder_transactions" ("shareholder_id","transaction_date");
+
+-- annual profit distribution run
+CREATE TABLE IF NOT EXISTS erp."profit_distribution_runs" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "organization_id" bigint NOT NULL,
+  "fiscal_year_id" bigint NOT NULL,
+  "run_no" varchar(60) NOT NULL,
+  "run_date" date NOT NULL,
+  "total_profit_amount" bigint NOT NULL,
+  "distributed_amount" bigint NOT NULL DEFAULT 0,
+  "status" varchar(20) NOT NULL DEFAULT 'draft',
+  "journal_entry_id" bigint,
+  "notes" text,
+  CONSTRAINT "pk_profit_distribution_runs" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_profit_distribution_runs_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "uq_profit_distribution_runs_organization_id_run_no" UNIQUE ("organization_id","run_no")
+);
+CREATE INDEX IF NOT EXISTS ix_profit_distribution_runs_fiscal_year_id ON erp."profit_distribution_runs" ("fiscal_year_id");
+CREATE TRIGGER trg_profit_distribution_runs_updated_at BEFORE UPDATE ON erp."profit_distribution_runs" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_profit_distribution_runs_version BEFORE UPDATE ON erp."profit_distribution_runs" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- per-shareholder distribution share
+CREATE TABLE IF NOT EXISTS erp."profit_distribution_lines" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "run_id" bigint NOT NULL,
+  "shareholder_id" bigint NOT NULL,
+  "ownership_percent_snapshot" numeric(9,6) NOT NULL,
+  "share_amount" bigint NOT NULL,
+  "paid_amount" bigint NOT NULL DEFAULT 0,
+  "status" varchar(20) NOT NULL DEFAULT 'pending',
+  "payment_id" bigint,
+  CONSTRAINT "pk_profit_distribution_lines" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_profit_distribution_lines_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "fk_profit_distribution_lines_run_id" FOREIGN KEY ("run_id") REFERENCES erp."profit_distribution_runs" (id) ON DELETE CASCADE,
+  CONSTRAINT "uq_profit_distribution_lines_run_id_shareholder_id" UNIQUE ("run_id","shareholder_id")
+);
+CREATE TRIGGER trg_profit_distribution_lines_updated_at BEFORE UPDATE ON erp."profit_distribution_lines" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_profit_distribution_lines_version BEFORE UPDATE ON erp."profit_distribution_lines" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- statement vs book reconciliation
+CREATE TABLE IF NOT EXISTS erp."bank_reconciliations" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "organization_id" bigint NOT NULL,
+  "bank_account_id" bigint NOT NULL,
+  "reconciliation_no" varchar(60) NOT NULL,
+  "period_start_date" date NOT NULL,
+  "period_end_date" date NOT NULL,
+  "statement_opening_balance_amount" bigint NOT NULL DEFAULT 0,
+  "statement_closing_balance_amount" bigint NOT NULL DEFAULT 0,
+  "book_opening_balance_amount" bigint NOT NULL DEFAULT 0,
+  "book_closing_balance_amount" bigint NOT NULL DEFAULT 0,
+  "difference_amount" bigint NOT NULL DEFAULT 0,
+  "status" varchar(20) NOT NULL DEFAULT 'in_progress',
+  "completed_at" timestamptz,
+  "completed_by" bigint,
+  "notes" text,
+  CONSTRAINT "pk_bank_reconciliations" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_bank_reconciliations_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "fk_bank_reconciliations_bank_account_id" FOREIGN KEY ("bank_account_id") REFERENCES erp."bank_accounts" (id) ON DELETE RESTRICT,
+  CONSTRAINT "uq_bank_reconciliations_organization_id_reconciliation_no" UNIQUE ("organization_id","reconciliation_no")
+);
+CREATE INDEX IF NOT EXISTS ix_bank_reconciliations_bank_account_id_period_end_date ON erp."bank_reconciliations" ("bank_account_id","period_end_date");
+CREATE INDEX IF NOT EXISTS ix_bank_reconciliations_status ON erp."bank_reconciliations" ("status");
+CREATE TRIGGER trg_bank_reconciliations_updated_at BEFORE UPDATE ON erp."bank_reconciliations" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_bank_reconciliations_version BEFORE UPDATE ON erp."bank_reconciliations" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- manual matches inside a reconciliation
+CREATE TABLE IF NOT EXISTS erp."bank_reconciliation_lines" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "reconciliation_id" bigint NOT NULL,
+  "bank_transaction_id" bigint,
+  "match_type" varchar(20) NOT NULL DEFAULT 'manual',
+  "matched_payment_id" bigint,
+  "matched_journal_line_id" bigint,
+  "difference_amount" bigint NOT NULL DEFAULT 0,
+  "notes" text,
+  "created_by" bigint,
+  CONSTRAINT "pk_bank_reconciliation_lines" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_bank_reconciliation_lines_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "fk_bank_reconciliation_lines_reconciliation_id" FOREIGN KEY ("reconciliation_id") REFERENCES erp."bank_reconciliations" (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_bank_reconciliation_lines_reconciliation_id ON erp."bank_reconciliation_lines" ("reconciliation_id");
+CREATE INDEX IF NOT EXISTS ix_bank_reconciliation_lines_bank_transaction_id ON erp."bank_reconciliation_lines" ("bank_transaction_id");
+
+-- partial unique (soft delete): organization_id,code
+-- threshold alert rules
+CREATE TABLE IF NOT EXISTS erp."alert_rules" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "deleted_at" timestamptz,
+  "organization_id" bigint NOT NULL,
+  "code" varchar(60) NOT NULL,
+  "name_fa" varchar(200) NOT NULL,
+  "metric" varchar(80) NOT NULL,
+  "operator" varchar(10) NOT NULL DEFAULT 'gte',
+  "threshold_value" numeric(18,4) NOT NULL DEFAULT 0,
+  "severity" varchar(20) NOT NULL DEFAULT 'warning',
+  "cooldown_minutes" integer NOT NULL DEFAULT 60,
+  "is_active" boolean NOT NULL DEFAULT true,
+  CONSTRAINT "pk_alert_rules" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_alert_rules_public_id" UNIQUE ("public_id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_organization_id_code_active ON erp."alert_rules" ("organization_id","code") WHERE deleted_at IS NULL;
+CREATE TRIGGER trg_alert_rules_updated_at BEFORE UPDATE ON erp."alert_rules" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_alert_rules_version BEFORE UPDATE ON erp."alert_rules" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- fired alert instances
+CREATE TABLE IF NOT EXISTS erp."alert_events" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "organization_id" bigint NOT NULL,
+  "alert_rule_id" bigint,
+  "entity_type" varchar(60) NOT NULL,
+  "entity_id" bigint,
+  "metric_value" numeric(18,4),
+  "severity" varchar(20) NOT NULL DEFAULT 'warning',
+  "status" varchar(20) NOT NULL DEFAULT 'firing',
+  "details" jsonb NOT NULL DEFAULT '{}',
+  "resolved_at" timestamptz,
+  "resolved_by" bigint,
+  CONSTRAINT "pk_alert_events" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_alert_events_public_id" UNIQUE ("public_id")
+);
+CREATE INDEX IF NOT EXISTS ix_alert_events_status_severity ON erp."alert_events" ("status","severity");
+CREATE INDEX IF NOT EXISTS ix_alert_events_alert_rule_id ON erp."alert_events" ("alert_rule_id");
+CREATE TRIGGER trg_alert_events_updated_at BEFORE UPDATE ON erp."alert_events" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_alert_events_version BEFORE UPDATE ON erp."alert_events" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- risk/fraud heuristics hits
+CREATE TABLE IF NOT EXISTS erp."fraud_flags" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "organization_id" bigint NOT NULL,
+  "entity_type" varchar(60) NOT NULL,
+  "entity_id" bigint NOT NULL,
+  "rule_code" varchar(60) NOT NULL,
+  "severity" varchar(20) NOT NULL DEFAULT 'medium',
+  "score" numeric(9,4) NOT NULL DEFAULT 0,
+  "status" varchar(20) NOT NULL DEFAULT 'open',
+  "details" jsonb NOT NULL DEFAULT '{}',
+  "reviewed_by" bigint,
+  "reviewed_at" timestamptz,
+  CONSTRAINT "pk_fraud_flags" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_fraud_flags_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "uq_fraud_flags_entity_type_entity_id_rule_code" UNIQUE ("entity_type","entity_id","rule_code")
+);
+CREATE INDEX IF NOT EXISTS ix_fraud_flags_status_severity ON erp."fraud_flags" ("status","severity");
+CREATE INDEX IF NOT EXISTS ix_fraud_flags_organization_id_status ON erp."fraud_flags" ("organization_id","status");
+CREATE TRIGGER trg_fraud_flags_updated_at BEFORE UPDATE ON erp."fraud_flags" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_fraud_flags_version BEFORE UPDATE ON erp."fraud_flags" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
+
+-- journal ↔ source document linkage
+CREATE TABLE IF NOT EXISTS erp."accounting_document_links" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
+  "public_id" uuid NOT NULL DEFAULT gen_random_uuid(),
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  "created_by" bigint,
+  "updated_by" bigint,
+  "version" integer NOT NULL DEFAULT 1,
+  "organization_id" bigint NOT NULL,
+  "document_type_code" varchar(30) NOT NULL,
+  "source_type" varchar(40) NOT NULL,
+  "source_id" bigint,
+  "journal_entry_id" bigint,
+  "link_role" varchar(30) NOT NULL DEFAULT 'primary',
+  CONSTRAINT "pk_accounting_document_links" PRIMARY KEY ("id"),
+  CONSTRAINT "uq_accounting_document_links_public_id" UNIQUE ("public_id"),
+  CONSTRAINT "fk_accounting_document_links_journal_entry_id" FOREIGN KEY ("journal_entry_id") REFERENCES erp."journal_entries" (id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS ix_accounting_document_links_source_type_source_id ON erp."accounting_document_links" ("source_type","source_id");
+CREATE INDEX IF NOT EXISTS ix_accounting_document_links_journal_entry_id ON erp."accounting_document_links" ("journal_entry_id");
+CREATE TRIGGER trg_accounting_document_links_updated_at BEFORE UPDATE ON erp."accounting_document_links" FOR EACH ROW EXECUTE FUNCTION erp.set_updated_at();
+CREATE TRIGGER trg_accounting_document_links_version BEFORE UPDATE ON erp."accounting_document_links" FOR EACH ROW EXECUTE FUNCTION erp.bump_version();
 
 -- ============================================================================
 -- Hand-shaped integrity objects (journal balance, period derivation, partitioning, numbering)

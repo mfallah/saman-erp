@@ -107,7 +107,7 @@ export class ValuationRepository {
              coalesce(sum(cost_remaining_amount), 0)::text as value_amount
         from erp.inventory_cost_layers
        where organization_id = ${orgId.toString()}
-         and (${warehouseIds === null ? null : warehouseIds}::bigint[] is null or warehouse_id = any(${warehouseIds ?? []}::bigint[]))
+         and (${warehouseIds === null ? null : warehouseIds}::bigint[] is null or warehouse_id = any(${(warehouseIds ?? []).map((v) => v.toString())}::bigint[]))
          and (${filter.asOf ?? null}::date is null or received_at < ${filter.asOf ?? null}::date + interval '1 day')
        group by warehouse_id, product_variant_id
       having coalesce(sum(qty_remaining), 0) > 0
