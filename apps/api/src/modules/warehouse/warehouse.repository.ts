@@ -103,8 +103,8 @@ function warehouseColumns(tx: Db) {
 
 function warehouseFrom(tx: Db) {
   return tx`
-    from erp.warehouse.warehouses w
-    left join erp.org.branches b on b.id = w.branch_id
+    from erp.warehouses w
+    left join erp.branches b on b.id = w.branch_id
   `;
 }
 
@@ -130,13 +130,13 @@ function locationColumns(tx: Db) {
 
 function locationFrom(tx: Db) {
   return tx`
-    from erp.warehouse.warehouse_locations l
-    join erp.warehouse.warehouses w on w.id = l.warehouse_id
-    left join erp.warehouse.warehouse_bins bn on bn.id = l.bin_id
-    left join erp.warehouse.warehouse_shelves sh on sh.id = bn.shelf_id
-    left join erp.warehouse.warehouse_racks rk on rk.id = sh.rack_id
-    left join erp.warehouse.warehouse_aisles ai on ai.id = rk.aisle_id
-    left join erp.warehouse.warehouse_zones z on z.id = ai.zone_id
+    from erp.warehouse_locations l
+    join erp.warehouses w on w.id = l.warehouse_id
+    left join erp.warehouse_bins bn on bn.id = l.bin_id
+    left join erp.warehouse_shelves sh on sh.id = bn.shelf_id
+    left join erp.warehouse_racks rk on rk.id = sh.rack_id
+    left join erp.warehouse_aisles ai on ai.id = rk.aisle_id
+    left join erp.warehouse_zones z on z.id = ai.zone_id
   `;
 }
 
@@ -169,7 +169,7 @@ export class WarehouseRepository {
   async codeExists(tx: Db, orgId: bigint, code: string, exceptInternalId?: bigint): Promise<boolean> {
     const rows = await tx<{ exists: boolean }[]>`
       select exists(
-        select 1 from erp.warehouse.warehouses
+        select 1 from erp.warehouses
         where organization_id = ${orgId} and code = ${code} and deleted_at is null
           and (${exceptInternalId ?? null}::bigint is null or id <> ${exceptInternalId ?? null}::bigint)
       ) as exists
@@ -190,7 +190,7 @@ export class WarehouseRepository {
     },
   ): Promise<WarehouseRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouses
+      insert into erp.warehouses
         (organization_id, public_id, code, name, branch_id, warehouse_type, address, city)
       values (${input.orgId}, gen_random_uuid(), ${input.code}, ${input.name},
               ${input.branchInternalId}, ${input.warehouseType}, ${input.address}, ${input.city})
@@ -214,7 +214,7 @@ export class WarehouseRepository {
     patch: { name: string; address: string | null; city: string | null; isActive: boolean; warehouseType: string },
   ): Promise<WarehouseRow> {
     await tx`
-      update erp.warehouse.warehouses
+      update erp.warehouses
       set name = ${patch.name}, address = ${patch.address}, city = ${patch.city},
           is_active = ${patch.isActive}, warehouse_type = ${patch.warehouseType},
           updated_at = now(), version = version + 1
@@ -225,7 +225,7 @@ export class WarehouseRepository {
 
   async softDeleteWarehouse(tx: Db, orgId: bigint, internalId: bigint): Promise<void> {
     await tx`
-      update erp.warehouse.warehouses set deleted_at = now(), is_active = false,
+      update erp.warehouses set deleted_at = now(), is_active = false,
         updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
@@ -234,7 +234,7 @@ export class WarehouseRepository {
   async warehouseHasStock(tx: Db, warehouseInternalId: bigint): Promise<boolean> {
     const rows = await tx<{ exists: boolean }[]>`
       select exists(
-        select 1 from erp.inventory.inventory_balances
+        select 1 from erp.inventory_balances
         where warehouse_id = ${warehouseInternalId} and on_hand > 0
       ) as exists
     `;
@@ -245,7 +245,7 @@ export class WarehouseRepository {
 
   async insertZone(tx: Db, input: { warehouseInternalId: bigint; code: string; name: string; abcClass: string | null; pickSequence: number; zoneType: string }): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouse_zones
+      insert into erp.warehouse_zones
         (public_id, warehouse_id, code, name, zone_type, abc_class, pick_sequence)
       values (gen_random_uuid(), ${input.warehouseInternalId}, ${input.code}, ${input.name},
               ${input.zoneType}, ${input.abcClass}, ${input.pickSequence})
@@ -256,7 +256,7 @@ export class WarehouseRepository {
 
   async insertAisle(tx: Db, input: { zoneInternalId: bigint; code: string; name: string; sequenceNo: number }): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouse_aisles (public_id, zone_id, code, name, sequence_no)
+      insert into erp.warehouse_aisles (public_id, zone_id, code, name, sequence_no)
       values (gen_random_uuid(), ${input.zoneInternalId}, ${input.code}, ${input.name}, ${input.sequenceNo})
       returning id::text as id
     `;
@@ -265,7 +265,7 @@ export class WarehouseRepository {
 
   async insertRack(tx: Db, input: { aisleInternalId: bigint; code: string; name: string; sequenceNo: number }): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouse_racks (public_id, aisle_id, code, name, sequence_no)
+      insert into erp.warehouse_racks (public_id, aisle_id, code, name, sequence_no)
       values (gen_random_uuid(), ${input.aisleInternalId}, ${input.code}, ${input.name}, ${input.sequenceNo})
       returning id::text as id
     `;
@@ -274,7 +274,7 @@ export class WarehouseRepository {
 
   async insertShelf(tx: Db, input: { rackInternalId: bigint; code: string; levelNo: number; sequenceNo: number }): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouse_shelves (public_id, rack_id, code, level_no, sequence_no)
+      insert into erp.warehouse_shelves (public_id, rack_id, code, level_no, sequence_no)
       values (gen_random_uuid(), ${input.rackInternalId}, ${input.code}, ${input.levelNo}, ${input.sequenceNo})
       returning id::text as id
     `;
@@ -286,7 +286,7 @@ export class WarehouseRepository {
     input: { shelfInternalId: bigint; code: string; binType: string; capacityQuantity: string | null; isPickFace: boolean },
   ): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouse_bins
+      insert into erp.warehouse_bins
         (public_id, shelf_id, code, bin_type, capacity_qty, is_pick_face)
       values (gen_random_uuid(), ${input.shelfInternalId}, ${input.code}, ${input.binType},
               ${input.capacityQuantity}::numeric, ${input.isPickFace})
@@ -308,7 +308,7 @@ export class WarehouseRepository {
     },
   ): Promise<LocationRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.warehouse_locations
+      insert into erp.warehouse_locations
         (public_id, warehouse_id, bin_id, full_code, barcode, location_type, pick_priority, is_pickable)
       values (gen_random_uuid(), ${input.warehouseInternalId}, ${input.binInternalId}, ${input.fullCode},
               ${input.barcode}, ${input.locationType}, ${input.pickPriority}, ${input.isPickable})
@@ -374,7 +374,7 @@ export class WarehouseRepository {
     patch: { barcode: string | null; pickPriority: number; isActive: boolean; isPickable: boolean },
   ): Promise<LocationRow> {
     await tx`
-      update erp.warehouse.warehouse_locations
+      update erp.warehouse_locations
       set barcode = ${patch.barcode}, pick_priority = ${patch.pickPriority},
           is_active = ${patch.isActive}, is_pickable = ${patch.isPickable},
           updated_at = now(), version = version + 1
@@ -385,7 +385,7 @@ export class WarehouseRepository {
 
   async softDeleteLocation(tx: Db, internalId: bigint): Promise<void> {
     await tx`
-      update erp.warehouse.warehouse_locations
+      update erp.warehouse_locations
       set is_active = false, updated_at = now(), version = version + 1
       where id = ${internalId}
     `;
@@ -394,7 +394,7 @@ export class WarehouseRepository {
   async locationHasStock(tx: Db, locationInternalId: bigint): Promise<boolean> {
     const rows = await tx<{ exists: boolean }[]>`
       select exists(
-        select 1 from erp.inventory.inventory_balances
+        select 1 from erp.inventory_balances
         where location_id = ${locationInternalId} and on_hand > 0
       ) as exists
     `;
@@ -406,8 +406,8 @@ export class WarehouseRepository {
       select v.public_id as "variantId", v.sku, b.on_hand::text as "onHand",
              b.reserved::text as reserved, b.damaged::text as damaged,
              (b.on_hand - b.reserved - b.safety_buffer - b.damaged)::text as available
-      from erp.inventory.inventory_balances b
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
+      from erp.inventory_balances b
+      join erp.product_variants v on v.id = b.product_variant_id
       where b.location_id = ${locationInternalId} and b.on_hand > 0
       order by v.sku asc
     `;
@@ -430,37 +430,37 @@ export class WarehouseRepository {
       select 'zone' as level, z.public_id as id, z.code, null::text as "fullCode",
              null::text as "parentId", z.abc_class as "abcClass", null::text as "capacityQuantity",
              z.pick_sequence as "pickPriority"
-      from erp.warehouse.warehouse_zones z where z.warehouse_id = ${warehouseInternalId}
+      from erp.warehouse_zones z where z.warehouse_id = ${warehouseInternalId}
       union all
       select 'aisle', a.public_id, a.code, null, z.public_id, null, null, a.sequence_no
-      from erp.warehouse.warehouse_aisles a
-      join erp.warehouse.warehouse_zones z on z.id = a.zone_id
+      from erp.warehouse_aisles a
+      join erp.warehouse_zones z on z.id = a.zone_id
       where z.warehouse_id = ${warehouseInternalId}
       union all
       select 'rack', r.public_id, r.code, null, a.public_id, null, null, r.sequence_no
-      from erp.warehouse.warehouse_racks r
-      join erp.warehouse.warehouse_aisles a on a.id = r.aisle_id
-      join erp.warehouse.warehouse_zones z on z.id = a.zone_id
+      from erp.warehouse_racks r
+      join erp.warehouse_aisles a on a.id = r.aisle_id
+      join erp.warehouse_zones z on z.id = a.zone_id
       where z.warehouse_id = ${warehouseInternalId}
       union all
       select 'shelf', sh.public_id, sh.code, null, r.public_id, null, null, sh.sequence_no
-      from erp.warehouse.warehouse_shelves sh
-      join erp.warehouse.warehouse_racks r on r.id = sh.rack_id
-      join erp.warehouse.warehouse_aisles a on a.id = r.aisle_id
-      join erp.warehouse.warehouse_zones z on z.id = a.zone_id
+      from erp.warehouse_shelves sh
+      join erp.warehouse_racks r on r.id = sh.rack_id
+      join erp.warehouse_aisles a on a.id = r.aisle_id
+      join erp.warehouse_zones z on z.id = a.zone_id
       where z.warehouse_id = ${warehouseInternalId}
       union all
       select 'bin', bn.public_id, bn.code, null, sh.public_id, null, bn.capacity_qty::text, 0
-      from erp.warehouse.warehouse_bins bn
-      join erp.warehouse.warehouse_shelves sh on sh.id = bn.shelf_id
-      join erp.warehouse.warehouse_racks r on r.id = sh.rack_id
-      join erp.warehouse.warehouse_aisles a on a.id = r.aisle_id
-      join erp.warehouse.warehouse_zones z on z.id = a.zone_id
+      from erp.warehouse_bins bn
+      join erp.warehouse_shelves sh on sh.id = bn.shelf_id
+      join erp.warehouse_racks r on r.id = sh.rack_id
+      join erp.warehouse_aisles a on a.id = r.aisle_id
+      join erp.warehouse_zones z on z.id = a.zone_id
       where z.warehouse_id = ${warehouseInternalId}
       union all
       select 'location', l.public_id, l.full_code, l.full_code, bn.public_id, null, bn.capacity_qty::text, l.pick_priority
-      from erp.warehouse.warehouse_locations l
-      left join erp.warehouse.warehouse_bins bn on bn.id = l.bin_id
+      from erp.warehouse_locations l
+      left join erp.warehouse_bins bn on bn.id = l.bin_id
       where l.warehouse_id = ${warehouseInternalId}
     `;
   }
@@ -469,28 +469,28 @@ export class WarehouseRepository {
     const rows = await tx<{ internalId: string; warehouseInternalId: string; code: string; abcClass: string | null }[]>`
       select id::text as "internalId", warehouse_id::text as "warehouseInternalId", code,
              abc_class as "abcClass"
-      from erp.warehouse.warehouse_zones where public_id = ${publicId}
+      from erp.warehouse_zones where public_id = ${publicId}
     `;
     return rows[0] ?? null;
   }
 
   async resolveAisle(tx: Db, publicId: string): Promise<{ internalId: string } | null> {
     const rows = await tx<{ internalId: string }[]>`
-      select id::text as "internalId" from erp.warehouse.warehouse_aisles where public_id = ${publicId}
+      select id::text as "internalId" from erp.warehouse_aisles where public_id = ${publicId}
     `;
     return rows[0] ?? null;
   }
 
   async resolveRack(tx: Db, publicId: string): Promise<{ internalId: string } | null> {
     const rows = await tx<{ internalId: string }[]>`
-      select id::text as "internalId" from erp.warehouse.warehouse_racks where public_id = ${publicId}
+      select id::text as "internalId" from erp.warehouse_racks where public_id = ${publicId}
     `;
     return rows[0] ?? null;
   }
 
   async resolveShelf(tx: Db, publicId: string): Promise<{ internalId: string } | null> {
     const rows = await tx<{ internalId: string }[]>`
-      select id::text as "internalId" from erp.warehouse.warehouse_shelves where public_id = ${publicId}
+      select id::text as "internalId" from erp.warehouse_shelves where public_id = ${publicId}
     `;
     return rows[0] ?? null;
   }
@@ -498,7 +498,7 @@ export class WarehouseRepository {
   async resolveBin(tx: Db, publicId: string): Promise<{ internalId: string; shelfInternalId: string; code: string } | null> {
     const rows = await tx<{ internalId: string; shelfInternalId: string; code: string }[]>`
       select id::text as "internalId", shelf_id::text as "shelfInternalId", code
-      from erp.warehouse.warehouse_bins where public_id = ${publicId}
+      from erp.warehouse_bins where public_id = ${publicId}
     `;
     return rows[0] ?? null;
   }
@@ -513,11 +513,11 @@ export class WarehouseRepository {
     >`
       select z.code as "zoneCode", a.code as "aisleCode", r.code as "rackCode",
              s.code as "shelfCode", b.code as "binCode"
-      from erp.warehouse.warehouse_bins b
-      join erp.warehouse.warehouse_shelves s on s.id = b.shelf_id
-      join erp.warehouse.warehouse_racks r on r.id = s.rack_id
-      join erp.warehouse.warehouse_aisles a on a.id = r.aisle_id
-      join erp.warehouse.warehouse_zones z on z.id = a.zone_id
+      from erp.warehouse_bins b
+      join erp.warehouse_shelves s on s.id = b.shelf_id
+      join erp.warehouse_racks r on r.id = s.rack_id
+      join erp.warehouse_aisles a on a.id = r.aisle_id
+      join erp.warehouse_zones z on z.id = a.zone_id
       where b.id = ${binInternalId}
     `;
     return rows[0] ?? null;
@@ -531,10 +531,10 @@ export class WarehouseRepository {
     return tx`
       select pr.id::text as "internalId", v.public_id as "variantId", c.public_id as "categoryId",
              l.public_id as "locationId", pr.strategy, pr.priority
-      from erp.warehouse.putaway_rules pr
-      left join erp.catalog.product_variants v on v.id = pr.product_variant_id
-      left join erp.catalog.product_categories c on c.id = pr.category_id
-      left join erp.warehouse.warehouse_locations l on l.id = pr.location_id
+      from erp.putaway_rules pr
+      left join erp.product_variants v on v.id = pr.product_variant_id
+      left join erp.product_categories c on c.id = pr.category_id
+      left join erp.warehouse_locations l on l.id = pr.location_id
       where pr.warehouse_id = ${warehouseInternalId} and pr.is_active
       order by pr.priority asc
     `;
@@ -544,8 +544,8 @@ export class WarehouseRepository {
     if (locationInternalIds.length === 0) return [];
     return tx`
       select l.id::text as "locationInternalId", bn.capacity_qty::text as "capacityQuantity"
-      from erp.warehouse.warehouse_locations l
-      left join erp.warehouse.warehouse_bins bn on bn.id = l.bin_id
+      from erp.warehouse_locations l
+      left join erp.warehouse_bins bn on bn.id = l.bin_id
       where l.id = any(${locationInternalIds}::bigint[])
     `;
   }
@@ -563,7 +563,7 @@ export class WarehouseRepository {
     },
   ): Promise<PutawayTaskRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.putaway_tasks
+      insert into erp.putaway_tasks
         (public_id, warehouse_id, product_variant_id, target_location_id, quantity,
          source_reference_type, source_reference_id, lot_id)
       values (gen_random_uuid(), ${input.warehouseInternalId}, ${input.variantInternalId},
@@ -581,10 +581,10 @@ export class WarehouseRepository {
              t.quantity::text as quantity, t.status,
              t.source_reference_type as "sourceReferenceType",
              t.source_reference_id::text as "sourceReferenceId"
-      from erp.warehouse.putaway_tasks t
-      join erp.warehouse.warehouses w on w.id = t.warehouse_id
-      join erp.catalog.product_variants v on v.id = t.product_variant_id
-      join erp.warehouse.warehouse_locations l on l.id = t.target_location_id
+      from erp.putaway_tasks t
+      join erp.warehouses w on w.id = t.warehouse_id
+      join erp.product_variants v on v.id = t.product_variant_id
+      join erp.warehouse_locations l on l.id = t.target_location_id
       where t.id = ${internalId}
     `;
     return rows[0] ?? null;
@@ -597,7 +597,7 @@ export class WarehouseRepository {
     input: { warehouseInternalId: bigint; waveNo: string; strategy: string; priority: number; plannedBy: bigint | null },
   ): Promise<PickWaveRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.pick_waves
+      insert into erp.pick_waves
         (public_id, warehouse_id, wave_no, strategy, status, priority, planned_by)
       values (gen_random_uuid(), ${input.warehouseInternalId}, ${input.waveNo}, ${input.strategy},
               'planned', ${input.priority}, ${input.plannedBy})
@@ -612,8 +612,8 @@ export class WarehouseRepository {
              w.public_id as "warehouseId", pw.warehouse_id::text as "warehouseInternalId",
              pw.strategy, pw.status, pw.priority, pw.created_at::text as "createdAt",
              pw.started_at::text as "startedAt", pw.completed_at::text as "completedAt"
-      from erp.warehouse.pick_waves pw
-      join erp.warehouse.warehouses w on w.id = pw.warehouse_id
+      from erp.pick_waves pw
+      join erp.warehouses w on w.id = pw.warehouse_id
       where pw.id = ${internalId}
     `;
     return rows[0] ?? null;
@@ -625,8 +625,8 @@ export class WarehouseRepository {
              w.public_id as "warehouseId", pw.warehouse_id::text as "warehouseInternalId",
              pw.strategy, pw.status, pw.priority, pw.created_at::text as "createdAt",
              pw.started_at::text as "startedAt", pw.completed_at::text as "completedAt"
-      from erp.warehouse.pick_waves pw
-      join erp.warehouse.warehouses w on w.id = pw.warehouse_id
+      from erp.pick_waves pw
+      join erp.warehouses w on w.id = pw.warehouse_id
       where w.organization_id = ${orgId} and pw.public_id = ${publicId}
     `;
     return rows[0] ?? null;
@@ -634,7 +634,7 @@ export class WarehouseRepository {
 
   async insertWaveOrder(tx: Db, waveInternalId: bigint, orderInternalId: bigint, sequenceNo: number): Promise<void> {
     await tx`
-      insert into erp.warehouse.wave_orders (wave_id, sales_order_id, sequence_no)
+      insert into erp.wave_orders (wave_id, sales_order_id, sequence_no)
       values (${waveInternalId}, ${orderInternalId}, ${sequenceNo})
       on conflict (wave_id, sales_order_id) do nothing
     `;
@@ -652,7 +652,7 @@ export class WarehouseRepository {
     },
   ): Promise<PickTaskRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.warehouse.pick_tasks
+      insert into erp.pick_tasks
         (public_id, wave_id, order_id, product_variant_id, location_id, quantity_required, sequence_no, status)
       values (gen_random_uuid(), ${input.waveInternalId}, ${input.orderInternalId},
               ${input.variantInternalId}, ${input.locationInternalId}, ${input.quantityRequired}::numeric,
@@ -672,11 +672,11 @@ export class WarehouseRepository {
              t.quantity_required::text as "quantityRequired", t.quantity_picked::text as "quantityPicked",
              t.sequence_no as "sequenceNo", t.status, t.assigned_to::text as "assignedTo",
              v.barcode
-      from erp.warehouse.pick_tasks t
-      join erp.warehouse.warehouse_locations l on l.id = t.location_id
-      join erp.catalog.product_variants v on v.id = t.product_variant_id
-      join erp.sales.sales_orders o on o.id = t.order_id
-      left join erp.warehouse.pick_waves pw on pw.id = t.wave_id
+      from erp.pick_tasks t
+      join erp.warehouse_locations l on l.id = t.location_id
+      join erp.product_variants v on v.id = t.product_variant_id
+      join erp.sales_orders o on o.id = t.order_id
+      left join erp.pick_waves pw on pw.id = t.wave_id
       where t.id = ${internalId}
     `;
     return rows[0] ?? null;
@@ -684,8 +684,8 @@ export class WarehouseRepository {
 
   async findPickTask(tx: Db, orgId: bigint, publicId: string): Promise<PickTaskRow | null> {
     const rows = await tx<{ id: string }[]>`
-      select t.id::text as id from erp.warehouse.pick_tasks t
-      join erp.warehouse.warehouses w on w.id = (select warehouse_id from erp.warehouse.pick_waves where id = t.wave_id)
+      select t.id::text as id from erp.pick_tasks t
+      join erp.warehouses w on w.id = (select warehouse_id from erp.pick_waves where id = t.wave_id)
       where w.organization_id = ${orgId} and t.public_id = ${publicId}
     `;
     const row = rows[0];
@@ -694,9 +694,9 @@ export class WarehouseRepository {
 
   async lockPickTask(tx: Db, orgId: bigint, publicId: string): Promise<PickTaskRow | null> {
     const rows = await tx<{ id: string }[]>`
-      select t.id::text as id from erp.warehouse.pick_tasks t
-      join erp.warehouse.pick_waves pw on pw.id = t.wave_id
-      join erp.warehouse.warehouses w on w.id = pw.warehouse_id
+      select t.id::text as id from erp.pick_tasks t
+      join erp.pick_waves pw on pw.id = t.wave_id
+      join erp.warehouses w on w.id = pw.warehouse_id
       where w.organization_id = ${orgId} and t.public_id = ${publicId}
       for update of t
     `;
@@ -710,10 +710,10 @@ export class WarehouseRepository {
   ): Promise<PickTaskRow[]> {
     const rows = await tx<{ id: string }[]>`
       select t.id::text as id
-      from erp.warehouse.pick_tasks t
-      left join erp.warehouse.pick_waves pw on pw.id = t.wave_id
-      left join erp.warehouse.warehouses w on w.id = pw.warehouse_id
-      left join erp.warehouse.warehouse_locations l on l.id = t.location_id
+      from erp.pick_tasks t
+      left join erp.pick_waves pw on pw.id = t.wave_id
+      left join erp.warehouses w on w.id = pw.warehouse_id
+      left join erp.warehouse_locations l on l.id = t.location_id
       where (
           (${params.waveInternalId}::bigint is not null and t.wave_id = ${params.waveInternalId}::bigint)
           or (${params.waveInternalId}::bigint is null and w.organization_id = ${params.orgId})
@@ -743,7 +743,7 @@ export class WarehouseRepository {
     },
   ): Promise<PickTaskRow> {
     await tx`
-      update erp.warehouse.pick_tasks
+      update erp.pick_tasks
       set status = ${patch.status},
           quantity_picked = coalesce(${patch.quantityPicked ?? null}::numeric, quantity_picked),
           assigned_to = coalesce(${patch.assignedTo ?? null}, assigned_to),
@@ -760,7 +760,7 @@ export class WarehouseRepository {
     patch: { status: string; started?: boolean; completed?: boolean },
   ): Promise<void> {
     await tx`
-      update erp.warehouse.pick_waves
+      update erp.pick_waves
       set status = ${patch.status},
           started_at = case when ${patch.started === true}::boolean then coalesce(started_at, now()) else started_at end,
           completed_at = case when ${patch.completed === true}::boolean then now() else completed_at end
@@ -771,8 +771,8 @@ export class WarehouseRepository {
   async listWaveOrders(tx: Db, waveInternalId: bigint): Promise<{ orderId: string }[]> {
     return tx`
       select o.public_id as "orderId"
-      from erp.warehouse.wave_orders wo
-      join erp.sales.sales_orders o on o.id = wo.sales_order_id
+      from erp.wave_orders wo
+      join erp.sales_orders o on o.id = wo.sales_order_id
       where wo.wave_id = ${waveInternalId}
       order by wo.sequence_no asc
     `;
@@ -793,7 +793,7 @@ export class WarehouseRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.warehouse.pick_scans
+      insert into erp.pick_scans
         (pick_task_id, barcode, expected_barcode, product_variant_id, quantity, result,
          scanned_by, scan_source, client_scan_id)
       values (${input.taskInternalId}, ${input.barcode}, ${input.expectedBarcode},
@@ -808,8 +808,8 @@ export class WarehouseRepository {
              w.public_id as "warehouseId", pw.warehouse_id::text as "warehouseInternalId",
              pw.strategy, pw.status, pw.priority, pw.created_at::text as "createdAt",
              pw.started_at::text as "startedAt", pw.completed_at::text as "completedAt"
-      from erp.warehouse.pick_waves pw
-      join erp.warehouse.warehouses w on w.id = pw.warehouse_id
+      from erp.pick_waves pw
+      join erp.warehouses w on w.id = pw.warehouse_id
       where w.organization_id = ${params.orgId}
         and (${params.status}::text is null or pw.status = ${params.status})
         and (${params.warehouseInternalId}::bigint is null or pw.warehouse_id = ${params.warehouseInternalId}::bigint)
@@ -820,7 +820,7 @@ export class WarehouseRepository {
 
   async resolveWarehouseId(tx: Db, orgId: bigint, publicId: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.warehouse.warehouses
+      select id::text as id from erp.warehouses
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null limit 1
     `;
     return rows[0] === undefined ? null : BigInt(rows[0].id);
@@ -828,8 +828,8 @@ export class WarehouseRepository {
 
   async allocateWaveNo(tx: Db, orgId: bigint): Promise<string> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.warehouse.pick_waves pw
-      join erp.warehouse.warehouses w on w.id = pw.warehouse_id
+      select count(*)::text as total from erp.pick_waves pw
+      join erp.warehouses w on w.id = pw.warehouse_id
       where w.organization_id = ${orgId}
     `;
     return `WAV-${(Number(rows[0]?.total ?? '0') + 1).toString().padStart(6, '0')}`;

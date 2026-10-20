@@ -12,12 +12,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { AppError } from '@saman/shared';
 import { DB, type Db } from '../../../common/contracts';
-import {
-  IntegrationError,
-  type CanonicalOrder,
-  type InventoryUpdate,
-  type PriceUpdate,
-} from '../domain/channel.types';
+import { IntegrationError, type CanonicalOrder, type InventoryUpdate, type PriceUpdate } from '../domain/channel.types';
 import { hashNaturalKey } from '../infrastructure/backoff';
 import { backoffDelayMs, shouldDeadLetter } from '../infrastructure/backoff';
 import { debounceKey } from '../infrastructure/backoff';
@@ -26,20 +21,10 @@ import { withTransaction, asNumber, asString } from '../infrastructure/sql';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import { CHANNEL_PRICE_SOURCE, type ChannelPriceSourcePort } from '../ports/channel-price.port';
-import type { ChannelAccountService } from './channel-accounts.service';
-import {
-  SqlChannelSyncRepository,
-  type SyncJobRow,
-  type SyncJobType,
-} from '../repositories/channel-sync.repository';
-import {
-  SqlChannelMappingRepository,
-  type ChannelMappingRepositoryPort,
-} from '../repositories/channel-mapping.repository';
-import {
-  SqlOutboxWriter,
-  type OutboxWriterPort,
-} from '../repositories/channel-webhook.repository';
+import { ChannelAccountService } from './channel-accounts.service';
+import { SqlChannelSyncRepository, type SyncJobRow, type SyncJobType } from '../repositories/channel-sync.repository';
+import { SqlChannelMappingRepository, type ChannelMappingRepositoryPort } from '../repositories/channel-mapping.repository';
+import { SqlOutboxWriter, type OutboxWriterPort } from '../repositories/channel-webhook.repository';
 
 export const SYNC_TRIGGER_TYPES = [
   'inventory_push',

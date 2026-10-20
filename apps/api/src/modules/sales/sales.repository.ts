@@ -265,7 +265,7 @@ export class SalesRepository {
     const pattern = params.search === null ? null : `%${params.search}%`;
     return tx<CustomerRow[]>`
       select ${customerColumns(tx)}
-      from erp.sales.customers c
+      from erp.customers c
       where c.organization_id = ${params.orgId} and c.deleted_at is null
         and (${pattern}::text is null or c.full_name ilike ${pattern} or c.mobile ilike ${pattern})
         and (${params.mobile}::text is null or c.mobile = ${params.mobile})
@@ -277,7 +277,7 @@ export class SalesRepository {
 
   async countCustomers(tx: Db, params: { orgId: bigint; status: string | null }): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.sales.customers
+      select count(*)::text as total from erp.customers
       where organization_id = ${params.orgId} and deleted_at is null
         and (${params.status}::text is null or status = ${params.status})
     `;
@@ -286,7 +286,7 @@ export class SalesRepository {
 
   async findCustomer(tx: Db, orgId: bigint, publicId: string): Promise<CustomerRow | null> {
     const rows = await tx<CustomerRow[]>`
-      select ${customerColumns(tx)} from erp.sales.customers c
+      select ${customerColumns(tx)} from erp.customers c
       where c.organization_id = ${orgId} and c.public_id = ${publicId} and c.deleted_at is null
       limit 1
     `;
@@ -295,7 +295,7 @@ export class SalesRepository {
 
   async findCustomerByMobile(tx: Db, orgId: bigint, mobile: string): Promise<CustomerRow | null> {
     const rows = await tx<CustomerRow[]>`
-      select ${customerColumns(tx)} from erp.sales.customers c
+      select ${customerColumns(tx)} from erp.customers c
       where c.organization_id = ${orgId} and c.mobile = ${mobile} and c.deleted_at is null limit 1
     `;
     return rows[0] ?? null;
@@ -303,7 +303,7 @@ export class SalesRepository {
 
   async insertCustomer(tx: Db, input: CustomerInsert): Promise<CustomerRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.customers
+      insert into erp.customers
         (organization_id, public_id, customer_no, full_name, mobile, national_id, email,
          customer_type, credit_limit_amount, payment_terms_days, notes)
       values (${input.orgId}, gen_random_uuid(), ${input.customerNo}, ${input.fullName},
@@ -314,7 +314,7 @@ export class SalesRepository {
     const created = rows[0];
     if (created === undefined) throw new Error('customer_insert_failed');
     const full = await tx<CustomerRow[]>`
-      select ${customerColumns(tx)} from erp.sales.customers c where c.id = ${created.id}::bigint
+      select ${customerColumns(tx)} from erp.customers c where c.id = ${created.id}::bigint
     `;
     return full[0] as CustomerRow;
   }
@@ -326,14 +326,14 @@ export class SalesRepository {
     patch: { fullName: string; email: string | null; status: string; notes: string | null; creditLimitAmount: bigint; paymentTermsDays: number },
   ): Promise<CustomerRow> {
     await tx`
-      update erp.sales.customers
+      update erp.customers
       set full_name = ${patch.fullName}, email = ${patch.email}, status = ${patch.status},
           notes = ${patch.notes}, credit_limit_amount = ${patch.creditLimitAmount},
           payment_terms_days = ${patch.paymentTermsDays}, updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
     const rows = await tx<CustomerRow[]>`
-      select ${customerColumns(tx)} from erp.sales.customers c
+      select ${customerColumns(tx)} from erp.customers c
       where c.organization_id = ${orgId} and c.id = ${internalId}
     `;
     return rows[0] as CustomerRow;
@@ -341,7 +341,7 @@ export class SalesRepository {
 
   async softDeleteCustomer(tx: Db, orgId: bigint, internalId: bigint): Promise<void> {
     await tx`
-      update erp.sales.customers set deleted_at = now(), status = 'inactive',
+      update erp.customers set deleted_at = now(), status = 'inactive',
         updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
@@ -349,7 +349,7 @@ export class SalesRepository {
 
   async countOpenOrdersForCustomer(tx: Db, orgId: bigint, customerInternalId: bigint): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.sales.sales_orders
+      select count(*)::text as total from erp.sales_orders
       where organization_id = ${orgId} and customer_id = ${customerInternalId}
         and status not in ('closed', 'cancelled', 'delivered', 'returned')
     `;
@@ -364,8 +364,8 @@ export class SalesRepository {
              a.address_line as "addressLine", a.postal_code as "postalCode",
              a.latitude::text as latitude, a.longitude::text as longitude,
              a.is_default as "isDefault"
-      from erp.sales.customer_addresses a
-      join erp.sales.customers c on c.id = a.customer_id
+      from erp.customer_addresses a
+      join erp.customers c on c.id = a.customer_id
       where a.customer_id = ${customerInternalId}
       order by a.is_default desc, a.id asc
     `;
@@ -391,12 +391,12 @@ export class SalesRepository {
   ): Promise<AddressRow> {
     if (input.isDefault) {
       await tx`
-        update erp.sales.customer_addresses set is_default = false
+        update erp.customer_addresses set is_default = false
         where customer_id = ${input.customerInternalId} and address_type = ${input.addressType}
       `;
     }
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.customer_addresses
+      insert into erp.customer_addresses
         (customer_id, public_id, label, address_type, receiver_name, receiver_mobile,
          province, city, district, address_line, postal_code, latitude, longitude, is_default)
       values (${input.customerInternalId}, gen_random_uuid(), ${input.label}, ${input.addressType},
@@ -434,10 +434,10 @@ export class SalesRepository {
     },
   ): Promise<void> {
     if (patch.isDefault) {
-      await tx`update erp.sales.customer_addresses set is_default = false where customer_id = ${customerInternalId}`;
+      await tx`update erp.customer_addresses set is_default = false where customer_id = ${customerInternalId}`;
     }
     await tx`
-      update erp.sales.customer_addresses
+      update erp.customer_addresses
       set label = ${patch.label}, receiver_name = ${patch.receiverName},
           receiver_mobile = ${patch.receiverMobile}, province = ${patch.province},
           city = ${patch.city}, address_line = ${patch.addressLine},
@@ -448,7 +448,7 @@ export class SalesRepository {
 
   async deleteAddress(tx: Db, customerInternalId: bigint, publicId: string): Promise<boolean> {
     const rows = await tx<{ id: string }[]>`
-      delete from erp.sales.customer_addresses
+      delete from erp.customer_addresses
       where customer_id = ${customerInternalId} and public_id = ${publicId}
         and is_default = false
       returning id::text as id
@@ -464,7 +464,7 @@ export class SalesRepository {
     const rows = await tx<{ open_orders: string; outstanding: string }[]>`
       select count(*)::text as open_orders,
              coalesce(sum(grand_total_amount - paid_amount - refunded_amount), 0)::text as outstanding
-      from erp.sales.sales_orders
+      from erp.sales_orders
       where organization_id = ${orgId} and customer_id = ${customerInternalId}
         and status not in ('closed', 'cancelled')
     `;
@@ -539,11 +539,11 @@ export class SalesRepository {
 
   private orderFrom(tx: Db) {
     return tx`
-      from erp.sales.sales_orders o
-      join erp.sales.customers c on c.id = o.customer_id
-      left join erp.warehouse.warehouses w on w.id = o.warehouse_id
-      left join erp.channels.channel_accounts ca on ca.id = o.channel_account_id
-      left join erp.channels.sales_channels ch on ch.id = ca.channel_id
+      from erp.sales_orders o
+      join erp.customers c on c.id = o.customer_id
+      left join erp.warehouses w on w.id = o.warehouse_id
+      left join erp.channel_accounts ca on ca.id = o.channel_account_id
+      left join erp.sales_channels ch on ch.id = ca.channel_id
     `;
   }
 
@@ -576,7 +576,7 @@ export class SalesRepository {
 
   async insertOrder(tx: Db, input: OrderInsert): Promise<OrderRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.sales_orders
+      insert into erp.sales_orders
         (organization_id, public_id, order_no, customer_id, channel_account_id, external_order_id,
          warehouse_id, status, currency, subtotal_amount, discount_amount, tax_amount,
          shipping_amount, grand_total_amount, shipping_address_json, customer_note,
@@ -610,7 +610,7 @@ export class SalesRepository {
     },
   ): Promise<void> {
     await tx`
-      update erp.sales.sales_orders
+      update erp.sales_orders
       set subtotal_amount = ${totals.subtotalAmount}, discount_amount = ${totals.discountAmount},
           tax_amount = ${totals.taxAmount}, shipping_amount = ${totals.shippingAmount},
           grand_total_amount = ${totals.grandTotalAmount}, customer_note = ${totals.customerNote},
@@ -638,7 +638,7 @@ export class SalesRepository {
     },
   ): Promise<void> {
     await tx`
-      update erp.sales.sales_orders
+      update erp.sales_orders
       set status = ${patch.status},
           order_no = coalesce(${patch.orderNo ?? null}, order_no),
           confirmed_at = case when ${patch.confirmed === true}::boolean then now() else confirmed_at end,
@@ -655,14 +655,14 @@ export class SalesRepository {
 
   async deleteOrder(tx: Db, orgId: bigint, internalId: bigint): Promise<void> {
     await tx`
-      delete from erp.sales.sales_orders
+      delete from erp.sales_orders
       where organization_id = ${orgId} and id = ${internalId} and status in ('draft', 'submitted')
     `;
   }
 
   async insertOrderLine(tx: Db, input: OrderLineInsert): Promise<OrderLineRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.sales_order_lines
+      insert into erp.sales_order_lines
         (order_id, public_id, line_no, product_variant_id, sku_snapshot, title_snapshot,
          quantity, unit_price_amount, discount_amount, net_amount, tax_percent, tax_amount,
          gross_amount, allocated_header_discount_amount)
@@ -688,8 +688,8 @@ export class SalesRepository {
              l.net_amount::text as "netAmount", l.tax_percent::text as "taxPercent",
              l.tax_amount::text as "taxAmount", l.gross_amount::text as "grossAmount",
              l.allocated_header_discount_amount::text as "allocatedHeaderDiscountAmount", l.status
-      from erp.sales.sales_order_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
+      from erp.sales_order_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
       where l.id = ${id}::bigint
     `;
     return rows[0] ?? null;
@@ -697,7 +697,7 @@ export class SalesRepository {
 
   async listOrderLines(tx: Db, orderInternalId: bigint): Promise<OrderLineRow[]> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.sales.sales_order_lines
+      select id::text as id from erp.sales_order_lines
       where order_id = ${orderInternalId} order by line_no asc
     `;
     const lines: OrderLineRow[] = [];
@@ -709,7 +709,7 @@ export class SalesRepository {
   }
 
   async deleteOrderLines(tx: Db, orderInternalId: bigint): Promise<void> {
-    await tx`delete from erp.sales.sales_order_lines where order_id = ${orderInternalId}`;
+    await tx`delete from erp.sales_order_lines where order_id = ${orderInternalId}`;
   }
 
   async appendStatusHistory(
@@ -725,7 +725,7 @@ export class SalesRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.sales.order_status_history
+      insert into erp.order_status_history
         (order_id, from_status, to_status, field, changed_by, source, reason)
       values (${input.orderInternalId}, ${input.fromStatus}, ${input.toStatus}, ${input.field},
               ${input.changedBy}, ${input.source}, ${input.reason})
@@ -738,7 +738,7 @@ export class SalesRepository {
     return tx`
       select from_status as "fromStatus", to_status as "toStatus", field,
              changed_at::text as "changedAt", reason
-      from erp.sales.order_status_history
+      from erp.order_status_history
       where order_id = ${orderInternalId}
       order by changed_at asc, id asc
     `;
@@ -762,7 +762,7 @@ export class SalesRepository {
 
   async resolveWarehouseId(tx: Db, orgId: bigint, publicId: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.warehouse.warehouses
+      select id::text as id from erp.warehouses
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null limit 1
     `;
     return rows[0] === undefined ? null : BigInt(rows[0].id);
@@ -771,8 +771,8 @@ export class SalesRepository {
   async resolveChannelAccountId(tx: Db, orgId: bigint, channelCode: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
       select ca.id::text as id
-      from erp.channels.channel_accounts ca
-      join erp.channels.sales_channels ch on ch.id = ca.channel_id
+      from erp.channel_accounts ca
+      join erp.sales_channels ch on ch.id = ca.channel_id
       where ca.organization_id = ${orgId} and ch.code = ${channelCode} and ca.is_active
       order by ca.is_default desc limit 1
     `;
@@ -783,8 +783,8 @@ export class SalesRepository {
     const rows = await tx<{ prefix: string; next_value: string; padding: number; fiscal_year: string }[]>`
       select ns.prefix, ns.next_value::text as next_value, ns.padding,
              to_char(fy.start_date, 'YYYY') as fiscal_year
-      from erp.platform.numbering_sequences ns
-      join erp.accounting.fiscal_years fy on fy.id = ns.fiscal_year_id
+      from erp.numbering_sequences ns
+      join erp.fiscal_years fy on fy.id = ns.fiscal_year_id
       where ns.organization_id = ${orgId} and ns.document_type = ${documentType}
         and fy.start_date <= ${businessDate}::date and fy.end_date >= ${businessDate}::date
       for update of ns
@@ -798,10 +798,10 @@ export class SalesRepository {
       });
     }
     await tx`
-      update erp.platform.numbering_sequences
+      update erp.numbering_sequences
       set next_value = next_value + 1, last_allocated_at = now()
       where organization_id = ${orgId} and document_type = ${documentType}
-        and fiscal_year_id = (select fiscal_year_id from erp.platform.numbering_sequences
+        and fiscal_year_id = (select fiscal_year_id from erp.numbering_sequences
                               where organization_id = ${orgId} and document_type = ${documentType} limit 1)
     `;
     return `${row.prefix}-${row.fiscal_year}-${BigInt(row.next_value).toString().padStart(Number(row.padding), '0')}`;
@@ -829,7 +829,7 @@ export class SalesRepository {
     },
   ): Promise<InvoiceRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.customer_invoices
+      insert into erp.customer_invoices
         (organization_id, public_id, customer_id, order_id, invoice_no, document_kind,
          original_invoice_id, invoice_date, status, subtotal_amount, discount_amount, tax_amount,
          grand_total_amount, net_amount, rounding_amount, seller_name, currency)
@@ -860,7 +860,7 @@ export class SalesRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.sales.customer_invoice_lines
+      insert into erp.customer_invoice_lines
         (customer_invoice_id, public_id, product_variant_id, quantity, unit_price_amount,
          discount_amount, net_amount, tax_percent, tax_amount, gross_amount)
       values (${input.invoiceInternalId}, gen_random_uuid(), ${input.variantInternalId},
@@ -879,10 +879,10 @@ export class SalesRepository {
              i.tax_amount::text as "taxAmount", i.grand_total_amount::text as "grandTotalAmount",
              i.net_amount::text as "netAmount", i.rounding_amount::text as "roundingAmount",
              orig.public_id as "originalInvoiceId", i.version, i.created_at::text as "createdAt"
-      from erp.sales.customer_invoices i
-      join erp.sales.customers c on c.id = i.customer_id
-      left join erp.sales.sales_orders o on o.id = i.order_id
-      left join erp.sales.customer_invoices orig on orig.id = i.original_invoice_id
+      from erp.customer_invoices i
+      join erp.customers c on c.id = i.customer_id
+      left join erp.sales_orders o on o.id = i.order_id
+      left join erp.customer_invoices orig on orig.id = i.original_invoice_id
       where i.organization_id = ${orgId} and i.id = ${internalId}
     `;
     return rows[0] ?? null;
@@ -890,7 +890,7 @@ export class SalesRepository {
 
   async findInvoice(tx: Db, orgId: bigint, publicId: string): Promise<InvoiceRow | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.sales.customer_invoices
+      select id::text as id from erp.customer_invoices
       where organization_id = ${orgId} and public_id = ${publicId}
     `;
     const row = rows[0];
@@ -904,8 +904,8 @@ export class SalesRepository {
              l.discount_amount::text as "discountAmount", l.net_amount::text as "netAmount",
              l.tax_percent::text as "taxPercent", l.tax_amount::text as "taxAmount",
              l.gross_amount::text as "grossAmount"
-      from erp.sales.customer_invoice_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
+      from erp.customer_invoice_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
       where l.customer_invoice_id = ${invoiceInternalId}
     `;
   }
@@ -916,7 +916,7 @@ export class SalesRepository {
     patch: { status: string; invoiceNo?: string | null; voided?: boolean; voidReason?: string | null },
   ): Promise<void> {
     await tx`
-      update erp.sales.customer_invoices
+      update erp.customer_invoices
       set status = ${patch.status},
           invoice_no = coalesce(${patch.invoiceNo ?? null}, invoice_no),
           voided_at = case when ${patch.voided === true}::boolean then now() else voided_at end,
@@ -941,7 +941,7 @@ export class SalesRepository {
     },
   ): Promise<ReturnRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.returns
+      insert into erp.returns
         (organization_id, public_id, order_id, return_no, reason_code, status, description,
          warehouse_id, requested_by)
       values (${input.orgId}, gen_random_uuid(), ${input.orderInternalId}, ${input.returnNo},
@@ -961,8 +961,8 @@ export class SalesRepository {
              r.reason_code as "reasonCode", r.description,
              null::text as resolution, r.requested_at::text as "requestedAt",
              r.received_at::text as "receivedAt", r.approved_at::text as "approvedAt", r.version
-      from erp.sales.returns r
-      join erp.sales.sales_orders o on o.id = r.order_id
+      from erp.returns r
+      join erp.sales_orders o on o.id = r.order_id
       where r.organization_id = ${orgId} and r.id = ${internalId}
     `;
     return rows[0] ?? null;
@@ -970,7 +970,7 @@ export class SalesRepository {
 
   async findReturn(tx: Db, orgId: bigint, publicId: string): Promise<ReturnRow | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.sales.returns where organization_id = ${orgId} and public_id = ${publicId}
+      select id::text as id from erp.returns where organization_id = ${orgId} and public_id = ${publicId}
     `;
     const row = rows[0];
     return row === undefined ? null : this.findReturnById(tx, orgId, BigInt(row.id));
@@ -993,7 +993,7 @@ export class SalesRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.sales.return_lines
+      insert into erp.return_lines
         (return_id, public_id, sales_order_line_id, product_variant_id, quantity, condition,
          restock_action, tax_percent, net_amount, tax_amount, gross_amount, refund_amount)
       values (${input.returnInternalId}, gen_random_uuid(), ${input.orderLineInternalId},
@@ -1010,9 +1010,9 @@ export class SalesRepository {
              l.quantity::text as quantity, l.condition, l.restock_action as "restockAction",
              l.net_amount::text as "netAmount", l.tax_amount::text as "taxAmount",
              l.gross_amount::text as "grossAmount", l.refund_amount::text as "refundAmount"
-      from erp.sales.return_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      left join erp.sales.sales_order_lines ol on ol.id = l.sales_order_line_id
+      from erp.return_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
+      left join erp.sales_order_lines ol on ol.id = l.sales_order_line_id
       where l.return_id = ${returnInternalId}
       order by l.id asc
     `;
@@ -1024,7 +1024,7 @@ export class SalesRepository {
     patch: { status: string; approvedBy?: bigint | null; received?: boolean },
   ): Promise<void> {
     await tx`
-      update erp.sales.returns
+      update erp.returns
       set status = ${patch.status},
           approved_by = coalesce(${patch.approvedBy ?? null}, approved_by),
           approved_at = case when ${patch.approvedBy === null || patch.approvedBy === undefined}::boolean
@@ -1037,9 +1037,9 @@ export class SalesRepository {
   async returnedQuantityForOrderLine(tx: Db, orderLineInternalId: bigint): Promise<string> {
     const rows = await tx<{ total: string }[]>`
       select coalesce(sum(quantity), 0)::text as total
-      from erp.sales.return_lines
+      from erp.return_lines
       where sales_order_line_id = ${orderLineInternalId}
-        and return_id in (select id from erp.sales.returns where status not in ('rejected', 'cancelled'))
+        and return_id in (select id from erp.returns where status not in ('rejected', 'cancelled'))
     `;
     return rows[0]?.total ?? '0.0000';
   }
@@ -1061,7 +1061,7 @@ export class SalesRepository {
     },
   ): Promise<RefundRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.sales.refunds
+      insert into erp.refunds
         (organization_id, public_id, return_id, customer_id, refund_no, amount, method, status,
          reason, created_by)
       values (${input.orgId}, gen_random_uuid(), ${input.returnInternalId}, ${input.customerInternalId},
@@ -1081,9 +1081,9 @@ export class SalesRepository {
              c.public_id as "customerId", f.customer_id::text as "customerInternalId",
              f.amount::text as amount, f.method, f.status, f.reason,
              f.processed_at::text as "processedAt", f.version
-      from erp.sales.refunds f
-      join erp.sales.customers c on c.id = f.customer_id
-      left join erp.sales.returns r on r.id = f.return_id
+      from erp.refunds f
+      join erp.customers c on c.id = f.customer_id
+      left join erp.returns r on r.id = f.return_id
       where f.organization_id = ${orgId} and f.id = ${internalId}
     `;
     return rows[0] ?? null;
@@ -1091,7 +1091,7 @@ export class SalesRepository {
 
   async findRefund(tx: Db, orgId: bigint, publicId: string): Promise<RefundRow | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.sales.refunds where organization_id = ${orgId} and public_id = ${publicId}
+      select id::text as id from erp.refunds where organization_id = ${orgId} and public_id = ${publicId}
     `;
     const row = rows[0];
     return row === undefined ? null : this.findRefundById(tx, orgId, BigInt(row.id));
@@ -1103,7 +1103,7 @@ export class SalesRepository {
     patch: { status: string; approvedBy?: bigint | null; processed?: boolean },
   ): Promise<void> {
     await tx`
-      update erp.sales.refunds
+      update erp.refunds
       set status = ${patch.status},
           approved_by = coalesce(${patch.approvedBy ?? null}, approved_by),
           processed_at = case when ${patch.processed === true}::boolean then now() else processed_at end
@@ -1113,7 +1113,7 @@ export class SalesRepository {
 
   async refundedTotalForCustomer(tx: Db, orgId: bigint, customerInternalId: bigint): Promise<bigint> {
     const rows = await tx<{ total: string }[]>`
-      select coalesce(sum(amount), 0)::text as total from erp.sales.refunds
+      select coalesce(sum(amount), 0)::text as total from erp.refunds
       where organization_id = ${orgId} and customer_id = ${customerInternalId}
         and status in ('approved', 'paid')
     `;
@@ -1123,7 +1123,7 @@ export class SalesRepository {
   async invoiceLinesForOrder(tx: Db, orgInternalId: bigint): Promise<{ netAmount: bigint; taxAmount: bigint }> {
     const rows = await tx<{ net: string; tax: string }[]>`
       select coalesce(sum(net_amount), 0)::text as net, coalesce(sum(tax_amount), 0)::text as tax
-      from erp.sales.customer_invoices where order_id = ${orgInternalId}
+      from erp.customer_invoices where order_id = ${orgInternalId}
     `;
     return { netAmount: BigInt(rows[0]?.net ?? '0'), taxAmount: BigInt(rows[0]?.tax ?? '0') };
   }

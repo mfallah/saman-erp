@@ -13,6 +13,7 @@ import type { FastifyRequest } from 'fastify';
 
 import { APP_CONFIG, type AppConfig } from '../../config/env.schema';
 import type { AuthenticatedActor } from '../auth/authenticated-actor';
+import { AUTHENTICATED_ONLY_KEY } from '../decorators/authenticated-only.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
 
@@ -53,6 +54,16 @@ export class PermissionsGuard implements CanActivate {
         messageKey:
           this.config.appEnv === 'production' ? 'error.unauthenticated' : 'error.auth_not_wired',
       });
+    }
+
+    // Self-service authenticated routes (e.g. /auth/me) declare no business
+    // permission; IdentityGuard has already proven the session.
+    const authenticatedOnly = this.reflector.getAllAndOverride<boolean | undefined>(
+      AUTHENTICATED_ONLY_KEY,
+      targets,
+    );
+    if (authenticatedOnly === true) {
+      return true;
     }
 
     const required =

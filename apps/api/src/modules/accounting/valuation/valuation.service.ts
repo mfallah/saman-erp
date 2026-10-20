@@ -13,11 +13,11 @@ import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../../common/contracts';
 import { ACCOUNTS } from '../posting/accounts';
-import type { PostingService } from '../posting/posting.service';
-import type { FiscalCalendarRepository } from '../periods/fiscal-calendar.repository';
+import { PostingService } from '../posting/posting.service';
+import { FiscalCalendarRepository } from '../periods/fiscal-calendar.repository';
 import { reconcileWithGl, summariseValuation } from './fifo';
 import type { VariantValuationRow } from './fifo';
-import type { ValuationRepository } from './valuation.repository';
+import { ValuationRepository } from './valuation.repository';
 import type { ValuationRunRecord } from './valuation.repository';
 
 export interface RunValuationInput {

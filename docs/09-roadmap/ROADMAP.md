@@ -103,6 +103,8 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-21 | All DB roles share one password in the default compose init | least privilege | per-role password secrets |
 | TD-22 | Channel admin surface incomplete (no `/channels`, `/channel-accounts`, `/channel-sync-jobs` controllers); SPA channel page reports «در حال توسعه» | omnichannel operability | channels admin controllers (v1.1) |
 | TD-23 | BullMQ not installed; worker uses DB `job_runs` fallback queue | throughput | add BullMQ + Redis adapter (documented topology) |
+| TD-24 | **Write-path column drift**: some write SQL references columns/tables not in the implemented schema (first confirmed: `product_categories.image_file_id`). Read paths, auth, RBAC and validation are E2E-verified; writes need schema generation/alignment | cannot create some records | v1.1 **release blocker** — generate columns from live schema, run write integration suite |
+| TD-25 | Redis not executed in the local E2E (rate limits/queues degraded); `/health/ready` correctly reported it | observability/limits untested | first CI/host run with Redis |
 
 ## Release process
 

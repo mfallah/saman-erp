@@ -5,12 +5,12 @@ import { AUDIT, DB, type AuditPort, type Db } from '../../common/contracts';
 import type { AuthenticatedActor } from '../../common/auth/authenticated-actor';
 import { AppError, PERMISSION_COUNT } from '@saman/shared';
 
-import type { AuthRepository} from './auth.repository';
+import { AuthRepository } from './auth.repository';
 import { type ActorAccessRecord } from './auth.repository';
-import type { AuthRateLimitService } from './auth-rate-limit.service';
+import { AuthRateLimitService } from './auth-rate-limit.service';
 import { hashMatches, hashSecret, TokenService, ttlToSeconds } from './token.service';
 import { OtpService } from './otp.service';
-import type { PasswordService } from './password.service';
+import { PasswordService } from './password.service';
 import type {
   AuthUserView,
   IssuedAuthTokens,

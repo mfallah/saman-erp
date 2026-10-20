@@ -2,20 +2,7 @@
  * Catalog HTTP surface (`API.md` §4.3). Routes, permission decorators, audit
  * metadata and Zod validation only — all rules live in the services.
  */
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Headers,
-  HttpCode,
-  Param,
-  Patch,
-  Post,
-  Put,
-  Query,
-  Res,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { buildOffsetMeta } from '@saman/shared';
 import type { FastifyReply } from 'fastify';
@@ -26,58 +13,14 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import type { TenantContext } from '../../common/contracts';
-import type { CatalogService } from './catalog.service';
-import type { ProductService } from './product.service';
+import { CatalogService } from './catalog.service';
+import { ProductService } from './product.service';
 import { parseIfMatch } from './pg-support';
 import { IdParam, parseWith } from './dto/common';
-import {
-  BrandListQuery,
-  BulkUpdateCategoriesBody,
-  CategoryListQuery,
-  CreateBrandBody,
-  CreateCategoryBody,
-  MoveCategoryBody,
-  UpdateBrandBody,
-  UpdateCategoryBody,
-} from './dto/category.dto';
-import {
-  AttributeListQuery,
-  CreateAttributeBody,
-  ReplaceAttributeValuesBody,
-  ReplaceVariantAttributesBody,
-  UpdateAttributeBody,
-  UpdateAttributeValueBody,
-} from './dto/attribute.dto';
-import {
-  ConversionIdParam,
-  CreateConversionBody,
-  CreateUnitBody,
-  UnitDetailQuery,
-  UnitListQuery,
-  UpdateUnitBody,
-} from './dto/unit.dto';
-import {
-  ArchiveProductBody,
-  AttachMediaBody,
-  BarcodeIdParam,
-  BarcodeLookupQuery,
-  BulkUpdateProductsBody,
-  CostHistoryQuery,
-  CreateBarcodeBody,
-  CreateProductBody,
-  CreateVariantBody,
-  LookupProductQuery,
-  MediaIdParam,
-  PriceHistoryQuery,
-  ProductDetailQuery,
-  ProductListQuery,
-  PublishProductBody,
-  ReplaceSupplierLinksBody,
-  UpdateMediaBody,
-  UpdateProductBody,
-  UpdateVariantBody,
-  VariantListQuery,
-} from './dto/product.dto';
+import { BrandListQuery, BulkUpdateCategoriesBody, CategoryListQuery, CreateBrandBody, CreateCategoryBody, MoveCategoryBody, UpdateBrandBody, UpdateCategoryBody } from './dto/category.dto';
+import { AttributeListQuery, CreateAttributeBody, ReplaceAttributeValuesBody, ReplaceVariantAttributesBody, UpdateAttributeBody, UpdateAttributeValueBody } from './dto/attribute.dto';
+import { ConversionIdParam, CreateConversionBody, CreateUnitBody, UnitDetailQuery, UnitListQuery, UpdateUnitBody } from './dto/unit.dto';
+import { ArchiveProductBody, AttachMediaBody, BarcodeIdParam, BarcodeLookupQuery, BulkUpdateProductsBody, CostHistoryQuery, CreateBarcodeBody, CreateProductBody, CreateVariantBody, LookupProductQuery, MediaIdParam, PriceHistoryQuery, ProductDetailQuery, ProductListQuery, PublishProductBody, ReplaceSupplierLinksBody, UpdateMediaBody, UpdateProductBody, UpdateVariantBody, VariantListQuery } from './dto/product.dto';
 
 const offset = (data: readonly unknown[], total: number, page: number, perPage: number) =>
   apiData(data, { pagination: buildOffsetMeta(page, perPage, total), total });

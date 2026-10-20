@@ -5,7 +5,7 @@ import { AppError } from '@saman/shared';
 import { DB, type Db } from '../../common/contracts';
 import type { AppLogger } from '../../modules/channels/ports/logger.port';
 import { LOGGER } from '../../modules/channels/ports/logger.port';
-import type { NotificationsService } from '../../modules/notifications/services/notifications.service';
+import { NotificationsService } from '../../modules/notifications/services/notifications.service';
 import { NotificationJobPayload } from '../job-payloads';
 import { DatabaseJobQueue } from '../queue/job-queue';
 import { getWorkerMetrics } from '../metrics';

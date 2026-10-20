@@ -11,30 +11,8 @@ import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
-import type { WarehouseService } from './warehouse.service';
-import {
-  AssignTaskBody,
-  BulkCreateLocationsBody,
-  CreatePickWaveBody,
-  CreateWarehouseBody,
-  IdParam,
-  LocationListQuery,
-  LocationLookupQuery,
-  LocationNodeInput,
-  MoveLocationBody,
-  PickScanBody,
-  PickTaskListQuery,
-  PutawaySuggestionQuery,
-  ReleaseWaveBody,
-  ShortPickBody,
-  TaskCancelBody,
-  UpdateLocationBody,
-  UpdateWarehouseBody,
-  WarehouseListQuery,
-  WaveCancelBody,
-  WaveListQuery,
-  parseWith,
-} from './dto/warehouse.dto';
+import { WarehouseService } from './warehouse.service';
+import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PickScanBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
 
 function offset(data: readonly unknown[], total: number, page: number, perPage: number) {
   return apiData(data, {

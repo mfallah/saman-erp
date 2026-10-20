@@ -4,8 +4,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError, applyRate } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../../common/contracts';
-import type { JournalRepository } from '../journal/journal.repository';
-import type { TaxRepository } from './tax.repository';
+import { JournalRepository } from '../journal/journal.repository';
+import { TaxRepository } from './tax.repository';
 import type { TaxDocumentRecord, TaxRateRecord } from './tax.repository';
 
 export interface CreateTaxRateInput {

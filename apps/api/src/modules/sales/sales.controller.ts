@@ -14,35 +14,8 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './sales.pg-support';
-import type { SalesService } from './sales.service';
-import {
-  AllocateOrderBody,
-  CancelOrderBody,
-  ConfirmOrderBody,
-  CreateAddressBody,
-  CreateCustomerBody,
-  CreateInvoiceBody,
-  CreateOrderBody,
-  CreateRefundBody,
-  CreateReturnBody,
-  CustomerListQuery,
-  CustomerLookupQuery,
-  DeallocateOrderBody,
-  HoldOrderBody,
-  IdParam,
-  InspectReturnBody,
-  IssueInvoiceBody,
-  OrderDetailQuery,
-  OrderListQuery,
-  PayRefundBody,
-  ReceiveReturnBody,
-  UpdateAddressBody,
-  UpdateCreditBody,
-  UpdateCustomerBody,
-  UpdateOrderBody,
-  VoidDocumentBody,
-  parseWith,
-} from './dto/sales.dto';
+import { SalesService } from './sales.service';
+import { AllocateOrderBody, CancelOrderBody, ConfirmOrderBody, CreateAddressBody, CreateCustomerBody, CreateInvoiceBody, CreateOrderBody, CreateRefundBody, CreateReturnBody, CustomerListQuery, CustomerLookupQuery, DeallocateOrderBody, HoldOrderBody, IdParam, InspectReturnBody, IssueInvoiceBody, OrderDetailQuery, OrderListQuery, PayRefundBody, ReceiveReturnBody, UpdateAddressBody, UpdateCreditBody, UpdateCustomerBody, UpdateOrderBody, VoidDocumentBody, parseWith } from './dto/sales.dto';
 
 function offset(data: readonly unknown[], total: number, page: number, perPage: number) {
   return apiData(data, {

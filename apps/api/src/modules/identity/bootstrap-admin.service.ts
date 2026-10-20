@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import { APP_CONFIG, type AppConfig } from '../../config/env.schema';
-import type { AuthRepository } from './auth.repository';
-import type { PasswordService } from './password.service';
+import { AuthRepository } from './auth.repository';
+import { PasswordService } from './password.service';
 
 /**
  * Idempotent bootstrap admin (`BOOTSTRAP_ADMIN_*`, `INSTALL-FA.md`).

@@ -9,30 +9,16 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import { AppError } from '@saman/shared';
-import {
-  AUDIT,
-  CRYPTO,
-  type AuditPort,
-  type CryptoPort,
-  type Db,
-} from '../../../common/contracts';
+import { AUDIT, CRYPTO, type AuditPort, type CryptoPort, type Db } from '../../../common/contracts';
 import { DB } from '../../../common/contracts';
 import { IntegrationError } from '../domain/channel.types';
 import type { AdapterAccount } from '../domain/channel.types';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
-import type { AdapterRegistry} from './adapter.registry';
+import { AdapterRegistry } from './adapter.registry';
 import { type ResolvedAdapterAccount } from './adapter.registry';
-import {
-  SqlChannelAccountRepository,
-  type ChannelAccountRow,
-} from '../repositories/channel-account.repository';
-import {
-  CREDENTIAL_KEY_NAMES,
-  SqlChannelCredentialRepository,
-  type CredentialKeyName,
-  type CredentialMetadata,
-} from '../repositories/channel-credential.repository';
+import { SqlChannelAccountRepository, type ChannelAccountRow } from '../repositories/channel-account.repository';
+import { CREDENTIAL_KEY_NAMES, SqlChannelCredentialRepository, type CredentialKeyName, type CredentialMetadata } from '../repositories/channel-credential.repository';
 import { asRecord, asString } from '../infrastructure/sql';
 
 /** Any setting that could weaken webhook verification or redirect egress. */

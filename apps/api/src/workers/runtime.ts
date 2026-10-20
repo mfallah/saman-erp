@@ -3,7 +3,7 @@ import { Inject, Injectable, type OnModuleDestroy } from '@nestjs/common';
 
 import type { AppLogger } from '../modules/channels/ports/logger.port';
 import { LOGGER } from '../modules/channels/ports/logger.port';
-import type { OutboxDispatcher } from './queue/outbox.dispatcher';
+import { OutboxDispatcher } from './queue/outbox.dispatcher';
 
 @Injectable()
 export class WorkerRuntime implements OnModuleDestroy {

@@ -4,10 +4,10 @@ import { AppError, splitProportionally } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../common/contracts';
 import { buildDraft, credit, debit } from '../accounting/posting/types';
-import type { PostingService } from '../accounting/posting/posting.service';
+import { PostingService } from '../accounting/posting/posting.service';
 import { ACCOUNTS } from '../accounting/posting/accounts';
 import { asDb, notFound, validation } from '../treasury/persistence/sql-support';
-import type { PartnersRepository } from './partners.repository';
+import { PartnersRepository } from './partners.repository';
 import type { PartnerAccountRecord, PartnerRecord, PartnerTransactionRecord, ShareholderRecord } from './partners.repository';
 
 export interface CreatePartnerInput {

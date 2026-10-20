@@ -9,25 +9,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError, type PermissionKey } from '@saman/shared';
 
-import {
-  AUDIT,
-  DB,
-  EVENT_BUS,
-  type AuditPort,
-  type Db as ContractDb,
-  type EventPort,
-  type TenantContext,
-} from '../../common/contracts';
+import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
 import type { Db } from './pg-support';
 import { CATALOG_EVENTS, type CategoryEventPayload } from './catalog.events';
-import type { CatalogRepository} from './catalog.repository';
+import { CatalogRepository } from './catalog.repository';
 import { type AttributeRow, type BrandRow, type CategoryRow, type UnitRow } from './catalog.repository';
-import {
-  assertReciprocalPair,
-  assertValidPrecision,
-  reciprocalFactor,
-  type UomDimension,
-} from './engines/unit-conversion.engine';
+import { assertReciprocalPair, assertValidPrecision, reciprocalFactor, type UomDimension } from './engines/unit-conversion.engine';
 import { buildCategoryPath, assertValidReparent, buildCategoryTree, levelFromPath, reparentLevelDelta, reparentPath } from './engines/category-tree.engine';
 import { assertAttributeValues, type AttributeDataType } from './engines/attribute.engine';
 import { normalizeSearchQuery } from './engines/search.engine';

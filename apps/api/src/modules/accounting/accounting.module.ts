@@ -56,6 +56,15 @@ import { AccountingOperationsController } from './controllers/operations.control
     ValuationService,
     AccountingReportsService,
     TaxService,
+    // Repositories are exported so treasury/partners/reporting can compose
+    // multi-module postings inside one transaction without touching tables.
+    ChartOfAccountsRepository,
+    FiscalCalendarRepository,
+    JournalRepository,
+    ClosingRepository,
+    TaxRepository,
+    ValuationRepository,
+    AccountingReportsRepository,
   ],
 })
 export class AccountingModule {}

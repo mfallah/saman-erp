@@ -6,7 +6,7 @@ import type { FastifyReply } from 'fastify';
 import { APP_CONFIG, type AppConfig } from '../../config/env.schema';
 import { Public } from '../../common/decorators/public.decorator';
 import { timingSafeEqualStrings } from '../../common/providers/crypto.service';
-import type { MetricsService } from './metrics.service';
+import { MetricsService } from './metrics.service';
 
 /**
  * Prometheus scrape endpoint (`GET /metrics`, outside the `/api/v1` prefix).

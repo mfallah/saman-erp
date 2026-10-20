@@ -3,7 +3,7 @@ import { ApiExcludeController } from '@nestjs/swagger';
 import { AppError } from '@saman/shared';
 
 import { Public } from '../../common/decorators/public.decorator';
-import type { HealthService} from './health.service';
+import { HealthService } from './health.service';
 import { type BuildInfo, type LivenessReport, type ReadinessReport } from './health.service';
 
 /**

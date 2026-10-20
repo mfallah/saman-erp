@@ -9,50 +9,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError, formatMoney, parseMoney } from '@saman/shared';
 
-import {
-  AUDIT,
-  DB,
-  EVENT_BUS,
-  type AuditPort,
-  type Db as ContractDb,
-  type EventPort,
-  type TenantContext,
-} from '../../common/contracts';
-import type { CatalogLookupService} from '../catalog/product.service';
+import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
+import { CatalogLookupService } from '../catalog/product.service';
 import { type VariantLookup } from '../catalog/product.service';
-import type { InventoryService } from '../inventory/inventory.service';
+import { InventoryService } from '../inventory/inventory.service';
 import type { Db } from './sales.pg-support';
 import { notFound, parseIfMatch, toBigInt, versionConflict } from './sales.pg-support';
-import type {
-  SalesRepository} from './sales.repository';
-import {
-  type AddressRow,
-  type CustomerRow,
-  type InvoiceRow,
-  type OrderLineRow,
-  type OrderRow,
-  type RefundRow,
-  type ReturnLineRow,
-  type ReturnRow,
-} from './sales.repository';
-import {
-  SALES_ACCOUNTING_EVENTS,
-  SALES_EVENTS,
-  type InvoicePayload,
-  type OrderEventPayload,
-  type RefundPayload,
-  type ReturnPayload,
-} from './sales.events';
-import {
-  ORDER_ACTIONS,
-  assertRefundWithinPaid,
-  assertTransition,
-  computeOrderTotals,
-  computeReturnLineCredit,
-  holdsReservation,
-  isEditable,
-  type OrderLineInput,
-} from './engines/order.engine';
+import { SalesRepository } from './sales.repository';
+import { type AddressRow, type CustomerRow, type InvoiceRow, type OrderLineRow, type OrderRow, type RefundRow, type ReturnLineRow, type ReturnRow } from './sales.repository';
+import { SALES_ACCOUNTING_EVENTS, SALES_EVENTS, type InvoicePayload, type OrderEventPayload, type RefundPayload, type ReturnPayload } from './sales.events';
+import { ORDER_ACTIONS, assertRefundWithinPaid, assertTransition, computeOrderTotals, computeReturnLineCredit, holdsReservation, isEditable, type OrderLineInput } from './engines/order.engine';
 import { addQuantity, compareQuantity, normalizeQuantity, subQuantity } from '../inventory/engines/quantity.engine';
 import type {
   CancelOrderBody,

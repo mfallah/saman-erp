@@ -166,3 +166,55 @@ the target remains PostgreSQL **16**, so a PG16 run is still required in CI/rele
 
 Docker/Compose boot, Redis-backed paths (rate limits/queues), full API boot + HTTP login against the DB,
 Playwright E2E and k6 load tests. Those remain the first items of the v1.1 verification round.
+
+
+---
+
+## 7. Live API end-to-end against the real database (2026-10-20)
+
+The compiled API (`apps/api/dist/main.js`) was booted against the verified PostgreSQL cluster
+(`DATABASE_URL` → `saman_app` role, `MIGRATION_DATABASE_URL` → `saman_migrator`) with
+`APP_ENV=development`, `SMS_MODE=mock`, and no Redis (Redis-backed rate limits/queues were disabled or
+degraded; `/health/ready` correctly reports `redis` down).
+
+```text
+GET  /health/live                    200  {"status":"ok"}
+GET  /health/version                 200  {name,version,env,commit}
+POST /api/v1/auth/login              202  {mfaRequired:true, challengeId, methods:["otp_sms"]}
+POST /api/v1/auth/otp/verify         200  {accessToken, refresh cookie, user}
+GET  /api/v1/auth/me                 200  real user + 414-permission set
+GET  /api/v1/products                200  {data:[], pagination}
+GET  /api/v1/inventory/balances      200  {data:[], cursor pagination}
+GET  /api/v1/audit-logs              200  real audit rows (from the earlier verification insert)
+GET  /api/v1/roles                   200  seeded system roles
+GET  /api/v1/settings                200  seeded settings
+POST /api/v1/categories              500  ← schema-drift defect (see below)
+POST /api/v1/products                400  correct Zod validation error (nameFa/categoryId/variants/unitId)
+```
+
+**Proven by this run:** configuration boot-guards, Fastify pipeline, default-deny guard, JWT + OTP + device
+challenge flow, session/permission loading from PostgreSQL, tenant context, RBAC-protected reads, pagination
+envelopes, Persian error envelopes with `requestId`, real SQL against every read path exercised, and the
+audit read model.
+
+### Defects found by running the compiled API (fixed in this commit)
+
+| ID | Symptom | Root cause | Fix |
+|---|---|---|---|
+| RT-E2E-01 | `Cannot access 'notifications_service_2' before initialization` at boot | import placed after the decorator that uses the token | import moved to the top (`notifications.module.ts`) |
+| RT-E2E-02 | `Cannot find module 'ajv/dist/jtd'` | `ajv@6` hoisted for ESLint shadowing Fastify's required `ajv@8` | `ajv@^8` declared in `apps/api` dependencies |
+| RT-E2E-03 | `Nest cannot export a provider that is not part of the module` | `NOTIFICATION_SMS_PORT` exported without a provider | export removed until a real SMS port binding lands |
+| RT-E2E-04 | `Nest can't resolve dependencies … Function at index[3]` | 87 constructor-injected classes imported with `import type` (no runtime metadata) | converted to value imports across 46 files |
+| RT-E2E-05 | `this.sql is not a function` on login | `DB`/`REDIS` tokens aliased the provider wrapper via `useExisting` | factories expose `provider.client` |
+| RT-E2E-06 | `cross-database references … "erp.inventory.inventory_balances"` | 440 SQL statements used per-module schema prefixes that do not exist | normalised to the single `erp.` schema |
+| RT-E2E-07 | `403 missing_permission_metadata` on `/auth/me` | self-service routes declare no business permission | new `@AuthenticatedOnly()` + guard support, applied to the auth controller |
+| RT-E2E-08 | `column "image_file_id" of relation "product_categories" does not exist` on category create | write repositories were authored against an assumed column set; implemented schema differs | **OPEN — see TD-24** |
+
+### Known open defect class (v1.1)
+
+**TD-24 — write-path column drift.** Read paths, auth, RBAC and validation are verified end-to-end, but
+several *write* SQL statements reference columns/tables that differ from the implemented schema (first
+confirmed case: `product_categories.image_file_id`; the entity expects `image_file_id`, the migration
+defines `name/name_en/path/level/sort_order/is_active/external_hint`). This must be closed by generating
+repository column lists from the live schema (or moving the remaining modules to the typed `@saman/db`
+client) and by running a write-path integration suite. It is tracked as **TD-24 / v1.1 release blocker**.

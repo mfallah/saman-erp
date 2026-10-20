@@ -1,10 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  type CanActivate,
-  type ExecutionContext,
-  type Type,
-} from '@nestjs/common';
+import { Inject, Injectable, type CanActivate, type ExecutionContext, type Type } from '@nestjs/common';
 // Reflector is a DI value (constructor metadata), not just a type.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { Reflector } from '@nestjs/core';
@@ -16,7 +10,7 @@ import type { TenantContext } from '../../common/contracts';
 import type { AuthenticatedActor } from '../../common/auth/authenticated-actor';
 import { IS_PUBLIC_KEY } from '../../common/decorators/public.decorator';
 import { tenantStorage } from '../../common/tenant/tenant.service';
-import type { AuthRepository } from './auth.repository';
+import { AuthRepository } from './auth.repository';
 import { TokenService, ttlToSeconds } from './token.service';
 
 export interface GuardedIdentityRequest extends FastifyRequest {

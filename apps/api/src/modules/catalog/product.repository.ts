@@ -187,18 +187,18 @@ function variantColumns(tx: Db) {
 
 function productFrom(tx: Db) {
   return tx`
-  from erp.catalog.products p
-  join erp.catalog.product_categories c on c.id = p.category_id
-  left join erp.catalog.brands b on b.id = p.brand_id
-  left join erp.catalog.units_of_measure bu on bu.id = p.base_uom_id
+  from erp.products p
+  join erp.product_categories c on c.id = p.category_id
+  left join erp.brands b on b.id = p.brand_id
+  left join erp.units_of_measure bu on bu.id = p.base_uom_id
 `;
 }
 
 function variantFrom(tx: Db) {
   return tx`
-  from erp.catalog.product_variants v
-  join erp.catalog.products p on p.id = v.product_id
-  left join erp.catalog.units_of_measure u on u.id = v.base_uom_id
+  from erp.product_variants v
+  join erp.products p on p.id = v.product_id
+  left join erp.units_of_measure u on u.id = v.base_uom_id
 `;
 }
 
@@ -272,8 +272,8 @@ export class ProductRepository {
         -- list filter; replace with the reporting read model when reporting lands.
         and (${params.hasStock}::boolean is null
              or exists (
-               select 1 from erp.inventory.inventory_balances ib
-               join erp.catalog.product_variants v2 on v2.id = ib.product_variant_id
+               select 1 from erp.inventory_balances ib
+               join erp.product_variants v2 on v2.id = ib.product_variant_id
                where v2.product_id = p.id and ib.on_hand > 0
              ) = ${params.hasStock}::boolean)
       order by p.created_at desc, p.id desc
@@ -338,7 +338,7 @@ export class ProductRepository {
 
   async insertProduct(tx: Db, input: ProductInsert): Promise<ProductRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.catalog.products (
+      insert into erp.products (
         organization_id, public_id, product_no, name, name_en, slug, category_id, brand_id,
         product_type, base_uom_id, description, short_description, weight_grams, hs_code,
         status, track_lot, track_serial, track_unit, warranty_months, is_marketplace_allowed
@@ -379,7 +379,7 @@ export class ProductRepository {
     },
   ): Promise<ProductRow> {
     await tx`
-      update erp.catalog.products
+      update erp.products
       set name = ${input.nameFa}, name_en = ${input.nameEn}, slug = ${input.slug},
           category_id = ${input.categoryInternalId}, brand_id = ${input.brandInternalId},
           description = ${input.description}, short_description = ${input.shortDescription},
@@ -404,7 +404,7 @@ export class ProductRepository {
     publishedAt: string | null,
   ): Promise<void> {
     await tx`
-      update erp.catalog.products
+      update erp.products
       set status = ${status},
           published_at = ${publishedAt}::timestamptz,
           updated_at = now(), version = version + 1
@@ -414,7 +414,7 @@ export class ProductRepository {
 
   async softDeleteProduct(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<void> {
     await tx`
-      update erp.catalog.products set deleted_at = now(), status = 'discontinued',
+      update erp.products set deleted_at = now(), status = 'discontinued',
         updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
@@ -427,12 +427,12 @@ export class ProductRepository {
   ): Promise<{ stock: number; openOrders: number }> {
     const rows = await tx<{ stock: string; open_orders: string }[]>`
       select
-        (select count(*) from erp.inventory.inventory_balances ib
-          join erp.catalog.product_variants v on v.id = ib.product_variant_id
+        (select count(*) from erp.inventory_balances ib
+          join erp.product_variants v on v.id = ib.product_variant_id
          where v.product_id = ${internalId} and ib.on_hand > 0)::text as stock,
-        (select count(*) from erp.sales.sales_order_lines l
-          join erp.sales.sales_orders o on o.id = l.order_id
-          join erp.catalog.product_variants v on v.id = l.product_variant_id
+        (select count(*) from erp.sales_order_lines l
+          join erp.sales_orders o on o.id = l.order_id
+          join erp.product_variants v on v.id = l.product_variant_id
          where o.organization_id = ${orgId} and v.product_id = ${internalId}
            and o.status not in ('cancelled', 'closed', 'returned'))::text as open_orders
     `;
@@ -506,7 +506,7 @@ export class ProductRepository {
   async variantSkuExists(tx: Db, sku: string, exceptInternalId?: BigIntish): Promise<boolean> {
     const rows = await tx<{ exists: boolean }[]>`
       select exists(
-        select 1 from erp.catalog.product_variants
+        select 1 from erp.product_variants
         where sku = ${sku} and deleted_at is null
           and (${exceptInternalId ?? null}::bigint is null or id <> ${exceptInternalId ?? null}::bigint)
       ) as exists
@@ -515,7 +515,7 @@ export class ProductRepository {
   }
 
   async insertVariant(tx: Db, input: VariantInsert): Promise<VariantRow> {    const rows = await tx<{ id: string }[]>`
-      insert into erp.catalog.product_variants
+      insert into erp.product_variants
         (product_id, public_id, sku, title, barcode, base_uom_id, weight_grams, is_default, is_active, sort_order)
       values (${input.productInternalId}, gen_random_uuid(), ${input.sku}, ${input.title},
               ${input.barcode}, ${input.unitInternalId}, ${input.weightGrams}, ${input.isDefault},
@@ -543,12 +543,12 @@ export class ProductRepository {
     },
   ): Promise<VariantRow> {
     await tx`
-      update erp.catalog.product_variants v
+      update erp.product_variants v
       set sku = ${input.sku}, title = ${input.title}, barcode = ${input.barcode},
           base_uom_id = ${input.unitInternalId}, weight_grams = ${input.weightGrams},
           is_active = ${input.isActive}, updated_at = now(), version = version + 1
       where v.id = ${internalId}
-        and exists (select 1 from erp.catalog.products p
+        and exists (select 1 from erp.products p
                     where p.id = v.product_id and p.organization_id = ${orgId})
     `;
     const rows = await tx<VariantRow[]>`
@@ -558,15 +558,15 @@ export class ProductRepository {
   }
 
   async setVariantBarcode(tx: Db, variantInternalId: BigIntish, barcode: string | null): Promise<void> {
-    await tx`update erp.catalog.product_variants set barcode = ${barcode}, updated_at = now() where id = ${variantInternalId}`;
+    await tx`update erp.product_variants set barcode = ${barcode}, updated_at = now() where id = ${variantInternalId}`;
   }
 
   async softDeleteVariant(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<void> {
     await tx`
-      update erp.catalog.product_variants v
+      update erp.product_variants v
       set deleted_at = now(), is_active = false, updated_at = now(), version = version + 1
       where v.id = ${internalId}
-        and exists (select 1 from erp.catalog.products p
+        and exists (select 1 from erp.products p
                     where p.id = v.product_id and p.organization_id = ${orgId})
     `;
   }
@@ -578,10 +578,10 @@ export class ProductRepository {
   ): Promise<{ stock: number; openOrders: number }> {
     const rows = await tx<{ stock: string; open_orders: string }[]>`
       select
-        (select count(*) from erp.inventory.inventory_balances ib
+        (select count(*) from erp.inventory_balances ib
          where ib.product_variant_id = ${internalId} and ib.on_hand > 0)::text as stock,
-        (select count(*) from erp.sales.sales_order_lines l
-          join erp.sales.sales_orders o on o.id = l.order_id
+        (select count(*) from erp.sales_order_lines l
+          join erp.sales_orders o on o.id = l.order_id
          where o.organization_id = ${orgId} and l.product_variant_id = ${internalId}
            and o.status not in ('cancelled', 'closed', 'returned'))::text as open_orders
     `;
@@ -591,7 +591,7 @@ export class ProductRepository {
 
   async countProductVariants(tx: Db, productInternalId: BigIntish): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.product_variants
+      select count(*)::text as total from erp.product_variants
       where product_id = ${productInternalId} and deleted_at is null
     `;
     return Number(rows[0]?.total ?? '0');
@@ -604,10 +604,10 @@ export class ProductRepository {
     variantInternalId: BigIntish,
     values: readonly { attributeInternalId: BigIntish; valueInternalId: BigIntish | null; valueText: string | null }[],
   ): Promise<void> {
-    await tx`delete from erp.catalog.product_variant_attributes where variant_id = ${variantInternalId}`;
+    await tx`delete from erp.product_variant_attributes where variant_id = ${variantInternalId}`;
     for (const value of values) {
       await tx`
-        insert into erp.catalog.product_variant_attributes (variant_id, attribute_id, value_id, value_text)
+        insert into erp.product_variant_attributes (variant_id, attribute_id, value_id, value_text)
         values (${variantInternalId}, ${value.attributeInternalId}, ${value.valueInternalId}, ${value.valueText})
         on conflict (variant_id, attribute_id) do update
           set value_id = excluded.value_id, value_text = excluded.value_text
@@ -620,9 +620,9 @@ export class ProductRepository {
       select a.public_id as "attributeId", a.code as "attributeCode", a.name as "attributeName",
              a.data_type as "dataType", a.is_variant_axis as "isVariantAxis",
              vv.public_id as "valueId", va.value_text as "valueText"
-      from erp.catalog.product_variant_attributes va
-      join erp.catalog.product_attributes a on a.id = va.attribute_id
-      left join erp.catalog.product_attribute_values vv on vv.id = va.value_id
+      from erp.product_variant_attributes va
+      join erp.product_attributes a on a.id = va.attribute_id
+      left join erp.product_attribute_values vv on vv.id = va.value_id
       where va.variant_id = ${variantInternalId}
       order by a.sort_order asc
     `;
@@ -633,9 +633,9 @@ export class ProductRepository {
       select coalesce(string_agg(
         va.attribute_id::text || '=' || coalesce(va.value_id::text, va.value_text, ''), '|' order by va.attribute_id
       ), '') as signature
-      from erp.catalog.product_variant_attributes va
-      join erp.catalog.product_variants v on v.id = va.variant_id
-      join erp.catalog.product_attributes a on a.id = va.attribute_id and a.is_variant_axis
+      from erp.product_variant_attributes va
+      join erp.product_variants v on v.id = va.variant_id
+      join erp.product_attributes a on a.id = va.attribute_id and a.is_variant_axis
       where v.product_id = ${productInternalId} and v.deleted_at is null
       group by v.id
     `;
@@ -650,8 +650,8 @@ export class ProductRepository {
              b.product_variant_id::text as "variantInternalId", v.public_id as "variantId",
              b.barcode, b.barcode_type as "barcodeType", b.source,
              b.is_primary as "isPrimary", b.is_active as "isActive"
-      from erp.catalog.product_barcodes b
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
+      from erp.product_barcodes b
+      join erp.product_variants v on v.id = b.product_variant_id
       where b.product_variant_id = ${variantInternalId}
       order by b.is_primary desc, b.created_at asc
     `;
@@ -660,7 +660,7 @@ export class ProductRepository {
   async barcodeExists(tx: Db, barcode: string, exceptInternalId?: BigIntish): Promise<boolean> {
     const rows = await tx<{ exists: boolean }[]>`
       select exists(
-        select 1 from erp.catalog.product_barcodes
+        select 1 from erp.product_barcodes
         where barcode = ${barcode}
           and (${exceptInternalId ?? null}::bigint is null or id <> ${exceptInternalId ?? null}::bigint)
       ) as exists
@@ -680,12 +680,12 @@ export class ProductRepository {
   ): Promise<BarcodeRow> {
     if (input.isPrimary) {
       await tx`
-        update erp.catalog.product_barcodes set is_primary = false
+        update erp.product_barcodes set is_primary = false
         where product_variant_id = ${input.variantInternalId} and is_primary
       `;
     }
     const rows = await tx<BarcodeRow[]>`
-      insert into erp.catalog.product_barcodes
+      insert into erp.product_barcodes
         (product_variant_id, public_id, barcode, barcode_type, source, is_primary)
       values (${input.variantInternalId}, gen_random_uuid(), ${input.barcode},
               ${input.barcodeType}, ${input.source}, ${input.isPrimary})
@@ -696,7 +696,7 @@ export class ProductRepository {
     `;
     if (input.isPrimary) {
       await tx`
-        update erp.catalog.product_variants set barcode = ${input.barcode}
+        update erp.product_variants set barcode = ${input.barcode}
         where id = ${input.variantInternalId}
       `;
     }
@@ -709,9 +709,9 @@ export class ProductRepository {
              b.product_variant_id::text as "variantInternalId", v.public_id as "variantId",
              b.barcode, b.barcode_type as "barcodeType", b.source,
              b.is_primary as "isPrimary", b.is_active as "isActive"
-      from erp.catalog.product_barcodes b
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
-      join erp.catalog.products p on p.id = v.product_id
+      from erp.product_barcodes b
+      join erp.product_variants v on v.id = b.product_variant_id
+      join erp.products p on p.id = v.product_id
       where p.organization_id = ${orgId} and b.public_id = ${publicId}
       limit 1
     `;
@@ -738,9 +738,9 @@ export class ProductRepository {
       select b.id::text as "barcodeInternalId", b.public_id as "barcodeId", b.barcode,
              b.barcode_type as "barcodeType", b.source, b.is_primary as "isPrimary",
              v.id::text as "variantInternalId", v.public_id as "variantId"
-      from erp.catalog.product_barcodes b
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
-      join erp.catalog.products p on p.id = v.product_id
+      from erp.product_barcodes b
+      join erp.product_variants v on v.id = b.product_variant_id
+      join erp.products p on p.id = v.product_id
       where p.organization_id = ${orgId} and b.barcode = ${barcode} and b.is_active
         and v.deleted_at is null and p.deleted_at is null
       limit 1
@@ -753,7 +753,7 @@ export class ProductRepository {
     `;
     const product = await tx<ProductRow[]>`
       select ${productColumns(tx)} ${productFrom(tx)}
-      where p.id = (select product_id from erp.catalog.product_variants where id = ${row.variantInternalId}::bigint)
+      where p.id = (select product_id from erp.product_variants where id = ${row.variantInternalId}::bigint)
       limit 1
     `;
     if (variant[0] === undefined || product[0] === undefined) return null;
@@ -776,8 +776,8 @@ export class ProductRepository {
 
   async deleteBarcode(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<boolean> {
     const rows = await tx<{ id: string }[]>`
-      delete from erp.catalog.product_barcodes b
-      using erp.catalog.product_variants v, erp.catalog.products p
+      delete from erp.product_barcodes b
+      using erp.product_variants v, erp.products p
       where b.product_variant_id = v.id and v.product_id = p.id
         and p.organization_id = ${orgId} and b.id = ${internalId}
       returning b.id::text as id
@@ -791,8 +791,8 @@ export class ProductRepository {
              b.product_variant_id::text as "variantInternalId", v.public_id as "variantId",
              b.barcode, b.barcode_type as "barcodeType", b.source,
              b.is_primary as "isPrimary", b.is_active as "isActive"
-      from erp.catalog.product_barcodes b
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
+      from erp.product_barcodes b
+      join erp.product_variants v on v.id = b.product_variant_id
       where v.product_id = ${productInternalId}
     `;
   }
@@ -809,8 +809,8 @@ export class ProductRepository {
              h.price_amount::text as "priceAmount", h.compare_at_amount::text as "compareAtAmount",
              h.effective_from::text as "effectiveFrom", h.effective_to::text as "effectiveTo",
              h.reason, h.source_type as "sourceType"
-      from erp.catalog.product_price_history h
-      join erp.catalog.product_variants v on v.id = h.product_variant_id
+      from erp.product_price_history h
+      join erp.product_variants v on v.id = h.product_variant_id
       where h.product_variant_id = ${variantInternalId}
         and (${params.dateGte}::timestamptz is null or h.effective_from >= ${params.dateGte}::timestamptz)
       order by h.effective_from desc
@@ -832,12 +832,12 @@ export class ProductRepository {
   ): Promise<PriceHistoryRow> {
     // Effective-dated close+insert: exactly one open row per variant.
     await tx`
-      update erp.catalog.product_price_history
+      update erp.product_price_history
       set effective_to = ${input.effectiveFrom}::timestamptz
       where product_variant_id = ${input.variantInternalId} and effective_to is null
     `;
     const rows = await tx<PriceHistoryRow[]>`
-      insert into erp.catalog.product_price_history
+      insert into erp.product_price_history
         (product_variant_id, public_id, price_amount, compare_at_amount, effective_from, reason,
          changed_by, source_type)
       values (${input.variantInternalId}, gen_random_uuid(), ${input.priceAmount},
@@ -857,8 +857,8 @@ export class ProductRepository {
              h.price_amount::text as "priceAmount", h.compare_at_amount::text as "compareAtAmount",
              h.effective_from::text as "effectiveFrom", h.effective_to::text as "effectiveTo",
              h.reason, h.source_type as "sourceType"
-      from erp.catalog.product_price_history h
-      join erp.catalog.product_variants v on v.id = h.product_variant_id
+      from erp.product_price_history h
+      join erp.product_variants v on v.id = h.product_variant_id
       where h.product_variant_id = ${variantInternalId} and h.effective_to is null
       limit 1
     `;
@@ -875,8 +875,8 @@ export class ProductRepository {
              h.cost_amount::text as "costAmount", h.avg_cost_amount::text as "avgCostAmount",
              h.cost_method as "costMethod", h.effective_from::text as "effectiveFrom",
              h.effective_to::text as "effectiveTo", h.source_type as "sourceType"
-      from erp.catalog.product_cost_history h
-      join erp.catalog.product_variants v on v.id = h.product_variant_id
+      from erp.product_cost_history h
+      join erp.product_variants v on v.id = h.product_variant_id
       where h.product_variant_id = ${variantInternalId}
         and (${params.dateGte}::timestamptz is null or h.effective_from >= ${params.dateGte}::timestamptz)
       order by h.effective_from desc
@@ -897,12 +897,12 @@ export class ProductRepository {
     },
   ): Promise<CostHistoryRow> {
     await tx`
-      update erp.catalog.product_cost_history
+      update erp.product_cost_history
       set effective_to = ${input.effectiveFrom}::timestamptz
       where product_variant_id = ${input.variantInternalId} and effective_to is null
     `;
     const rows = await tx<CostHistoryRow[]>`
-      insert into erp.catalog.product_cost_history
+      insert into erp.product_cost_history
         (product_variant_id, public_id, cost_amount, avg_cost_amount, cost_method,
          effective_from, source_type, reference_id)
       values (${input.variantInternalId}, gen_random_uuid(), ${input.costAmount},
@@ -922,8 +922,8 @@ export class ProductRepository {
              h.cost_amount::text as "costAmount", h.avg_cost_amount::text as "avgCostAmount",
              h.cost_method as "costMethod", h.effective_from::text as "effectiveFrom",
              h.effective_to::text as "effectiveTo", h.source_type as "sourceType"
-      from erp.catalog.product_cost_history h
-      join erp.catalog.product_variants v on v.id = h.product_variant_id
+      from erp.product_cost_history h
+      join erp.product_variants v on v.id = h.product_variant_id
       where h.product_variant_id = ${variantInternalId}
       order by h.effective_from desc limit 1
     `;
@@ -938,7 +938,7 @@ export class ProductRepository {
              ps.purchase_price_amount::text as "purchasePriceAmount", ps.currency,
              ps.lead_time_days as "leadTimeDays", ps.min_order_qty::text as "minOrderQty",
              ps.is_primary as "isPrimary", ps.last_purchase_at::text as "lastPurchaseAt"
-      from erp.catalog.product_suppliers ps
+      from erp.product_suppliers ps
       join erp.procurement.suppliers s on s.id = ps.supplier_id
       where ps.product_variant_id = ${variantInternalId}
       order by ps.is_primary desc, s.name asc
@@ -957,10 +957,10 @@ export class ProductRepository {
       isPrimary: boolean;
     }[],
   ): Promise<void> {
-    await tx`delete from erp.catalog.product_suppliers where product_variant_id = ${variantInternalId}`;
+    await tx`delete from erp.product_suppliers where product_variant_id = ${variantInternalId}`;
     for (const link of links) {
       await tx`
-        insert into erp.catalog.product_suppliers
+        insert into erp.product_suppliers
           (product_variant_id, supplier_id, supplier_sku, purchase_price_amount, lead_time_days,
            min_order_qty, is_primary)
         values (${variantInternalId}, ${link.supplierInternalId}, ${link.supplierSku},
@@ -994,9 +994,9 @@ export class ProductRepository {
              w.public_id as "warehouseId", r.min_qty::text as "minQty", r.max_qty::text as "maxQty",
              r.reorder_qty::text as "reorderQty", r.safety_stock::text as "safetyStock",
              r.is_active as "isActive", r.version
-      from erp.catalog.product_reorder_rules r
-      join erp.catalog.product_variants v on v.id = r.product_variant_id
-      join erp.warehouse.warehouses w on w.id = r.warehouse_id
+      from erp.product_reorder_rules r
+      join erp.product_variants v on v.id = r.product_variant_id
+      join erp.warehouses w on w.id = r.warehouse_id
       where w.organization_id = ${params.orgId}
         and (${params.variantInternalId}::bigint is null or r.product_variant_id = ${params.variantInternalId}::bigint)
         and (${params.warehouseInternalId}::bigint is null or r.warehouse_id = ${params.warehouseInternalId}::bigint)
@@ -1018,7 +1018,7 @@ export class ProductRepository {
     },
   ): Promise<ReorderRuleRow> {
     await tx`
-      insert into erp.catalog.product_reorder_rules
+      insert into erp.product_reorder_rules
         (public_id, product_variant_id, warehouse_id, min_qty, max_qty, reorder_qty, safety_stock)
       values (gen_random_uuid(), ${input.variantInternalId}, ${input.warehouseInternalId},
               ${input.minQty}::numeric, ${input.maxQty}::numeric, ${input.reorderQty}::numeric,
@@ -1033,9 +1033,9 @@ export class ProductRepository {
              w.public_id as "warehouseId", r.min_qty::text as "minQty", r.max_qty::text as "maxQty",
              r.reorder_qty::text as "reorderQty", r.safety_stock::text as "safetyStock",
              r.is_active as "isActive", r.version
-      from erp.catalog.product_reorder_rules r
-      join erp.catalog.product_variants v on v.id = r.product_variant_id
-      join erp.warehouse.warehouses w on w.id = r.warehouse_id
+      from erp.product_reorder_rules r
+      join erp.product_variants v on v.id = r.product_variant_id
+      join erp.warehouses w on w.id = r.warehouse_id
       where r.product_variant_id = ${input.variantInternalId}
         and r.warehouse_id = ${input.warehouseInternalId}
       limit 1
@@ -1061,7 +1061,7 @@ export class ProductRepository {
   /** Resolves a warehouse public id (FK target owned by `warehouse`). */
   async resolveWarehouseId(tx: Db, orgId: BigIntish, warehousePublicId: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.warehouse.warehouses
+      select id::text as id from erp.warehouses
       where organization_id = ${orgId} and public_id = ${warehousePublicId} and deleted_at is null
       limit 1
     `;

@@ -1,27 +1,16 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  HttpCode,
-  Inject,
-  Param,
-  Post,
-  Query,
-  Req,
-  Res,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Query, Req, Res } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppError } from '@saman/shared';
 
 import { APP_CONFIG, type AppConfig } from '../../config/env.schema';
+import { AuthenticatedOnly } from '../../common/decorators/authenticated-only.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { getRequestId } from '../../common/request-id/request-id';
 import type { AuthenticatedActor } from '../../common/auth/authenticated-actor';
 import type { RequestWithContext } from '../../common/decorators/current-context.decorator';
-import type { AuthService} from './auth.service';
+import { AuthService } from './auth.service';
 import { AUTH_COOKIE_PATH, DEVICE_COOKIE, REFRESH_COOKIE, type AuthOutcome, type AuthRequestContext } from './auth.service';
 
 const loginSchema = z.object({
@@ -96,6 +85,7 @@ function requestContext(request: FastifyRequest): AuthRequestContext {
  * `/api/v1/auth/*` endpoints (`API.md` §2.2). Tokens never touch localStorage:
  * the refresh token and device secret are httpOnly cookies scoped to the auth path.
  */
+@AuthenticatedOnly()
 @Controller('auth')
 export class AuthController {
   constructor(

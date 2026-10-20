@@ -9,23 +9,16 @@ import { createHash } from 'node:crypto';
 
 import { AppError } from '@saman/shared';
 import { DB, type Db } from '../../../common/contracts';
-import {
-  WEBHOOK_MAX_BODY_BYTES,
-  WEBHOOK_MAX_HEADER_BYTES,
-  rejectionToReason,
-} from '../domain/webhook-signature';
+import { WEBHOOK_MAX_BODY_BYTES, WEBHOOK_MAX_HEADER_BYTES, rejectionToReason } from '../domain/webhook-signature';
 import type { ChannelCode } from '../domain/channel.types';
 import { minimizePayload, type JsonValue } from '../domain/pii';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import type { KeyValueStore } from '../ports/key-value.port';
 import { KEY_VALUE } from '../channels.tokens';
-import type { AdapterRegistry } from './adapter.registry';
-import type { ChannelAccountService } from './channel-accounts.service';
-import {
-  SqlChannelWebhookRepository,
-  type WebhookEventRow,
-} from '../repositories/channel-webhook.repository';
+import { AdapterRegistry } from './adapter.registry';
+import { ChannelAccountService } from './channel-accounts.service';
+import { SqlChannelWebhookRepository, type WebhookEventRow } from '../repositories/channel-webhook.repository';
 import { SqlChannelAccountRepository } from '../repositories/channel-account.repository';
 import { asRecord } from '../infrastructure/sql';
 

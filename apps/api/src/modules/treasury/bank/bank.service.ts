@@ -3,7 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../../common/contracts';
-import type { BankRepository } from './bank.repository';
+import { BankRepository } from './bank.repository';
 import type { BankAccountRecord, StatementLineRecord } from './bank.repository';
 import { asDb, notFound, validation } from '../persistence/sql-support';
 

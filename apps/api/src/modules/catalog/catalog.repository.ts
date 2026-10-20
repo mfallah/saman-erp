@@ -251,7 +251,7 @@ export class CatalogRepository {
     const pattern = params.search === null ? null : `%${params.search}%`;
     return tx<CategoryRow[]>`
       select ${categoryColumns(tx)}
-      from erp.catalog.product_categories
+      from erp.product_categories
       where organization_id = ${params.orgId}
         and deleted_at is null
         and (${params.parentInternalId}::bigint is null or parent_id = ${params.parentInternalId}::bigint)
@@ -268,7 +268,7 @@ export class CatalogRepository {
   ): Promise<number> {
     const rows = await tx<{ total: string }[]>`
       select count(*)::text as total
-      from erp.catalog.product_categories
+      from erp.product_categories
       where organization_id = ${params.orgId}
         and deleted_at is null
         and (${params.parentInternalId}::bigint is null or parent_id = ${params.parentInternalId}::bigint)
@@ -280,7 +280,7 @@ export class CatalogRepository {
   async findCategory(tx: Db, orgId: BigIntish, publicId: string): Promise<CategoryRow | null> {
     const rows = await tx<CategoryRow[]>`
       select ${categoryColumns(tx)}
-      from erp.catalog.product_categories
+      from erp.product_categories
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null
       limit 1
     `;
@@ -290,7 +290,7 @@ export class CatalogRepository {
   async findCategoryForUpdate(tx: Db, orgId: BigIntish, publicId: string): Promise<CategoryRow | null> {
     const rows = await tx<CategoryRow[]>`
       select ${categoryColumns(tx)}
-      from erp.catalog.product_categories
+      from erp.product_categories
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null
       for update
     `;
@@ -300,7 +300,7 @@ export class CatalogRepository {
   async categoryCodeExists(tx: Db, orgId: BigIntish, code: string, exceptInternalId?: BigIntish): Promise<boolean> {
     const rows = await tx<{ exists: boolean }[]>`
       select exists(
-        select 1 from erp.catalog.product_categories
+        select 1 from erp.product_categories
         where organization_id = ${orgId} and code = ${code} and deleted_at is null
           and (${exceptInternalId ?? null}::bigint is null or id <> ${exceptInternalId ?? null}::bigint)
       ) as exists
@@ -310,7 +310,7 @@ export class CatalogRepository {
 
   async insertCategory(tx: Db, input: CategoryInsert): Promise<CategoryRow> {
     const rows = await tx<CategoryRow[]>`
-      insert into erp.catalog.product_categories (
+      insert into erp.product_categories (
         organization_id, parent_id, code, name, name_en, path, level, sort_order, is_active, image_file_id
       ) values (
         ${input.orgId}, ${input.parentInternalId}, ${input.code}, ${input.nameFa}, ${input.nameEn},
@@ -328,7 +328,7 @@ export class CatalogRepository {
     input: CategoryUpdate,
   ): Promise<CategoryRow> {
     const rows = await tx<CategoryRow[]>`
-      update erp.catalog.product_categories
+      update erp.product_categories
       set name = ${input.nameFa},
           name_en = ${input.nameEn},
           sort_order = ${input.sortOrder},
@@ -344,7 +344,7 @@ export class CatalogRepository {
 
   async softDeleteCategory(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<void> {
     await tx`
-      update erp.catalog.product_categories
+      update erp.product_categories
       set deleted_at = now(), is_active = false, updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
@@ -352,7 +352,7 @@ export class CatalogRepository {
 
   async countCategoryChildren(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.product_categories
+      select count(*)::text as total from erp.product_categories
       where organization_id = ${orgId} and parent_id = ${internalId} and deleted_at is null
     `;
     return Number(rows[0]?.total ?? '0');
@@ -360,7 +360,7 @@ export class CatalogRepository {
 
   async countCategoryProducts(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.products
+      select count(*)::text as total from erp.products
       where organization_id = ${orgId} and category_id = ${internalId} and deleted_at is null
     `;
     return Number(rows[0]?.total ?? '0');
@@ -370,7 +370,7 @@ export class CatalogRepository {
   async subtree(tx: Db, orgId: BigIntish, path: string): Promise<CategoryRow[]> {
     return tx<CategoryRow[]>`
       select ${categoryColumns(tx)}
-      from erp.catalog.product_categories
+      from erp.product_categories
       where organization_id = ${orgId} and deleted_at is null and path like ${`${path}%`}
       order by level asc
       for update
@@ -384,7 +384,7 @@ export class CatalogRepository {
   ): Promise<void> {
     for (const update of updates) {
       await tx`
-        update erp.catalog.product_categories
+        update erp.product_categories
         set path = ${update.path}, level = ${update.level}, updated_at = now(), version = version + 1
         where organization_id = ${orgId} and id = ${update.internalId}
       `;
@@ -400,7 +400,7 @@ export class CatalogRepository {
     level: number,
   ): Promise<CategoryRow> {
     const rows = await tx<CategoryRow[]>`
-      update erp.catalog.product_categories
+      update erp.product_categories
       set parent_id = ${parentInternalId}, path = ${path}, level = ${level},
           updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
@@ -413,8 +413,8 @@ export class CatalogRepository {
     return tx`
       select ca.attribute_id::text as "attributeId", ca.is_required as "isRequired",
              ca.is_variant_axis as "isVariantAxis", ca.sort_order as "sortOrder"
-      from erp.catalog.category_attributes ca
-      join erp.catalog.product_attributes a on a.id = ca.attribute_id
+      from erp.category_attributes ca
+      join erp.product_attributes a on a.id = ca.attribute_id
       where a.organization_id = ${orgId} and ca.category_id = ${categoryInternalId} and a.deleted_at is null
       order by ca.sort_order asc
     `;
@@ -425,10 +425,10 @@ export class CatalogRepository {
     categoryInternalId: BigIntish,
     links: readonly { attributeInternalId: BigIntish; isRequired: boolean; isVariantAxis: boolean; sortOrder: number }[],
   ): Promise<void> {
-    await tx`delete from erp.catalog.category_attributes where category_id = ${categoryInternalId}`;
+    await tx`delete from erp.category_attributes where category_id = ${categoryInternalId}`;
     for (const link of links) {
       await tx`
-        insert into erp.catalog.category_attributes
+        insert into erp.category_attributes
           (category_id, attribute_id, is_required, is_variant_axis, sort_order)
         values (${categoryInternalId}, ${link.attributeInternalId}, ${link.isRequired},
                 ${link.isVariantAxis}, ${link.sortOrder})
@@ -445,7 +445,7 @@ export class CatalogRepository {
     const pattern = params.search === null ? null : `%${params.search}%`;
     return tx<BrandRow[]>`
       select ${brandColumns(tx)}
-      from erp.catalog.brands
+      from erp.brands
       where organization_id = ${params.orgId} and deleted_at is null
         and (${params.onlyActive}::boolean is null or is_active = ${params.onlyActive}::boolean)
         and (${pattern}::text is null or name ilike ${pattern})
@@ -456,7 +456,7 @@ export class CatalogRepository {
 
   async countBrands(tx: Db, params: { orgId: BigIntish; onlyActive: boolean | null }): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.brands
+      select count(*)::text as total from erp.brands
       where organization_id = ${params.orgId} and deleted_at is null
         and (${params.onlyActive}::boolean is null or is_active = ${params.onlyActive}::boolean)
     `;
@@ -465,7 +465,7 @@ export class CatalogRepository {
 
   async findBrand(tx: Db, orgId: BigIntish, publicId: string): Promise<BrandRow | null> {
     const rows = await tx<BrandRow[]>`
-      select ${brandColumns(tx)} from erp.catalog.brands
+      select ${brandColumns(tx)} from erp.brands
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null limit 1
     `;
     return rows[0] ?? null;
@@ -473,7 +473,7 @@ export class CatalogRepository {
 
   async insertBrand(tx: Db, input: BrandInsert): Promise<BrandRow> {
     const rows = await tx<BrandRow[]>`
-      insert into erp.catalog.brands (organization_id, name, slug, country, logo_file_id, is_active)
+      insert into erp.brands (organization_id, name, slug, country, logo_file_id, is_active)
       values (${input.orgId}, ${input.nameFa}, ${input.slug}, ${input.country},
               ${input.logoFileInternalId}, ${input.isActive})
       returning ${brandColumns(tx)}
@@ -483,7 +483,7 @@ export class CatalogRepository {
 
   async updateBrand(tx: Db, orgId: BigIntish, internalId: BigIntish, input: BrandUpdate): Promise<BrandRow> {
     const rows = await tx<BrandRow[]>`
-      update erp.catalog.brands
+      update erp.brands
       set name = ${input.nameFa}, slug = ${input.slug},
           logo_file_id = ${input.logoFileInternalId}, is_active = ${input.isActive},
           updated_at = now(), version = version + 1
@@ -495,7 +495,7 @@ export class CatalogRepository {
 
   async softDeleteBrand(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<void> {
     await tx`
-      update erp.catalog.brands set deleted_at = now(), is_active = false,
+      update erp.brands set deleted_at = now(), is_active = false,
         updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
@@ -503,7 +503,7 @@ export class CatalogRepository {
 
   async countBrandProducts(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.products
+      select count(*)::text as total from erp.products
       where organization_id = ${orgId} and brand_id = ${internalId} and deleted_at is null
     `;
     return Number(rows[0]?.total ?? '0');
@@ -524,7 +524,7 @@ export class CatalogRepository {
   ): Promise<UnitRow[]> {
     const pattern = params.search === null ? null : `%${params.search}%`;
     return tx<UnitRow[]>`
-      select ${unitColumns(tx)} from erp.catalog.units_of_measure
+      select ${unitColumns(tx)} from erp.units_of_measure
       where organization_id = ${params.orgId} and deleted_at is null
         and (${params.dimension}::text is null or dimension = ${params.dimension})
         and (${params.onlyActive}::boolean is null or is_active = ${params.onlyActive}::boolean)
@@ -536,7 +536,7 @@ export class CatalogRepository {
 
   async countUnits(tx: Db, params: { orgId: BigIntish; dimension: string | null }): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.units_of_measure
+      select count(*)::text as total from erp.units_of_measure
       where organization_id = ${params.orgId} and deleted_at is null
         and (${params.dimension}::text is null or dimension = ${params.dimension})
     `;
@@ -545,7 +545,7 @@ export class CatalogRepository {
 
   async findUnit(tx: Db, orgId: BigIntish, publicId: string): Promise<UnitRow | null> {
     const rows = await tx<UnitRow[]>`
-      select ${unitColumns(tx)} from erp.catalog.units_of_measure
+      select ${unitColumns(tx)} from erp.units_of_measure
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null limit 1
     `;
     return rows[0] ?? null;
@@ -553,7 +553,7 @@ export class CatalogRepository {
 
   async findUnitByCode(tx: Db, orgId: BigIntish, code: string): Promise<UnitRow | null> {
     const rows = await tx<UnitRow[]>`
-      select ${unitColumns(tx)} from erp.catalog.units_of_measure
+      select ${unitColumns(tx)} from erp.units_of_measure
       where organization_id = ${orgId} and code = ${code} and deleted_at is null limit 1
     `;
     return rows[0] ?? null;
@@ -561,7 +561,7 @@ export class CatalogRepository {
 
   async findBaseUnit(tx: Db, orgId: BigIntish, dimension: string): Promise<UnitRow | null> {
     const rows = await tx<UnitRow[]>`
-      select ${unitColumns(tx)} from erp.catalog.units_of_measure
+      select ${unitColumns(tx)} from erp.units_of_measure
       where organization_id = ${orgId} and dimension = ${dimension} and is_base and deleted_at is null
       limit 1
     `;
@@ -570,7 +570,7 @@ export class CatalogRepository {
 
   async insertUnit(tx: Db, input: UnitInsert): Promise<UnitRow> {
     const rows = await tx<UnitRow[]>`
-      insert into erp.catalog.units_of_measure
+      insert into erp.units_of_measure
         (organization_id, code, name, symbol, dimension, is_base, decimal_precision)
       values (${input.orgId}, ${input.code}, ${input.nameFa}, ${input.symbol}, ${input.dimension},
               ${input.isBase}, ${input.decimalPrecision})
@@ -586,7 +586,7 @@ export class CatalogRepository {
     input: { nameFa: string; symbol: string; isActive: boolean },
   ): Promise<UnitRow> {
     const rows = await tx<UnitRow[]>`
-      update erp.catalog.units_of_measure
+      update erp.units_of_measure
       set name = ${input.nameFa}, symbol = ${input.symbol}, is_active = ${input.isActive},
           updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
@@ -597,7 +597,7 @@ export class CatalogRepository {
 
   async softDeleteUnit(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<void> {
     await tx`
-      update erp.catalog.units_of_measure set deleted_at = now(), is_active = false,
+      update erp.units_of_measure set deleted_at = now(), is_active = false,
         updated_at = now(), version = version + 1
       where organization_id = ${orgId} and id = ${internalId}
     `;
@@ -606,10 +606,10 @@ export class CatalogRepository {
   async countUnitsInUse(tx: Db, orgId: BigIntish, unitInternalId: BigIntish): Promise<number> {
     const rows = await tx<{ total: string }[]>`
       select (
-        (select count(*) from erp.catalog.product_variants v
-          join erp.catalog.products p on p.id = v.product_id
+        (select count(*) from erp.product_variants v
+          join erp.products p on p.id = v.product_id
          where p.organization_id = ${orgId} and v.base_uom_id = ${unitInternalId} and v.deleted_at is null)
-        + (select count(*) from erp.catalog.products p
+        + (select count(*) from erp.products p
             where p.organization_id = ${orgId} and p.base_uom_id = ${unitInternalId} and p.deleted_at is null)
       )::text as total
     `;
@@ -621,8 +621,8 @@ export class CatalogRepository {
       select uc.id::text as "internalId", uc.from_unit_id::text as "fromUnitId",
              uc.to_unit_id::text as "toUnitId", tu.code as "toUnitCode",
              uc.factor::text as factor, uc.is_exact as "isExact"
-      from erp.catalog.unit_conversions uc
-      join erp.catalog.units_of_measure tu on tu.id = uc.to_unit_id
+      from erp.unit_conversions uc
+      join erp.units_of_measure tu on tu.id = uc.to_unit_id
       where uc.organization_id = ${orgId} and uc.from_unit_id = ${fromUnitInternalId}
       order by tu.code asc
     `;
@@ -638,7 +638,7 @@ export class CatalogRepository {
       select uc.id::text as "internalId", uc.from_unit_id::text as "fromUnitId",
              uc.to_unit_id::text as "toUnitId", ''::text as "toUnitCode",
              uc.factor::text as factor, uc.is_exact as "isExact"
-      from erp.catalog.unit_conversions uc
+      from erp.unit_conversions uc
       where uc.organization_id = ${orgId} and uc.from_unit_id = ${fromUnitInternalId}
         and uc.to_unit_id = ${toUnitInternalId}
       limit 1
@@ -654,7 +654,7 @@ export class CatalogRepository {
     factor: string,
   ): Promise<void> {
     await tx`
-      insert into erp.catalog.unit_conversions (organization_id, from_unit_id, to_unit_id, factor, is_exact)
+      insert into erp.unit_conversions (organization_id, from_unit_id, to_unit_id, factor, is_exact)
       values (${orgId}, ${fromUnitInternalId}, ${toUnitInternalId}, ${factor}::numeric, true)
       on conflict (from_unit_id, to_unit_id) do update set factor = excluded.factor
     `;
@@ -662,7 +662,7 @@ export class CatalogRepository {
 
   async deleteConversion(tx: Db, orgId: BigIntish, conversionInternalId: BigIntish): Promise<boolean> {
     const rows = await tx<{ id: string }[]>`
-      delete from erp.catalog.unit_conversions
+      delete from erp.unit_conversions
       where organization_id = ${orgId} and id = ${conversionInternalId}
       returning id::text as id
     `;
@@ -686,8 +686,8 @@ export class CatalogRepository {
     const pattern = params.search === null ? null : `%${params.search}%`;
     return tx<AttributeRow[]>`
       select distinct ${attributeColumns(tx)}
-      from erp.catalog.product_attributes a
-      left join erp.catalog.category_attributes ca on ca.attribute_id = a.id
+      from erp.product_attributes a
+      left join erp.category_attributes ca on ca.attribute_id = a.id
       where a.organization_id = ${params.orgId} and a.deleted_at is null
         and (${params.categoryInternalId}::bigint is null or ca.category_id = ${params.categoryInternalId}::bigint)
         and (${params.dataType}::text is null or a.data_type = ${params.dataType})
@@ -700,7 +700,7 @@ export class CatalogRepository {
 
   async countAttributes(tx: Db, params: { orgId: BigIntish }): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.product_attributes
+      select count(*)::text as total from erp.product_attributes
       where organization_id = ${params.orgId} and deleted_at is null
     `;
     return Number(rows[0]?.total ?? '0');
@@ -708,7 +708,7 @@ export class CatalogRepository {
 
   async findAttribute(tx: Db, orgId: BigIntish, publicId: string): Promise<AttributeRow | null> {
     const rows = await tx<AttributeRow[]>`
-      select ${attributeColumns(tx)} from erp.catalog.product_attributes
+      select ${attributeColumns(tx)} from erp.product_attributes
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null limit 1
     `;
     return rows[0] ?? null;
@@ -716,7 +716,7 @@ export class CatalogRepository {
 
   async insertAttribute(tx: Db, input: AttributeInsert): Promise<AttributeRow> {
     const rows = await tx<AttributeRow[]>`
-      insert into erp.catalog.product_attributes
+      insert into erp.product_attributes
         (organization_id, code, name, data_type, is_variant_axis, is_required, is_filterable, sort_order, unit_id)
       values (${input.orgId}, ${input.code}, ${input.nameFa}, ${input.dataType},
               ${input.isVariantAxis}, ${input.isRequired}, ${input.isFilterable}, ${input.sortOrder},
@@ -733,7 +733,7 @@ export class CatalogRepository {
     input: { nameFa: string; dataType: string; isRequired: boolean; isFilterable: boolean; sortOrder: number },
   ): Promise<AttributeRow> {
     const rows = await tx<AttributeRow[]>`
-      update erp.catalog.product_attributes
+      update erp.product_attributes
       set name = ${input.nameFa}, data_type = ${input.dataType}, is_required = ${input.isRequired},
           is_filterable = ${input.isFilterable}, sort_order = ${input.sortOrder},
           updated_at = now()
@@ -745,14 +745,14 @@ export class CatalogRepository {
 
   async softDeleteAttribute(tx: Db, orgId: BigIntish, internalId: BigIntish): Promise<void> {
     await tx`
-      update erp.catalog.product_attributes set deleted_at = now(), updated_at = now()
+      update erp.product_attributes set deleted_at = now(), updated_at = now()
       where organization_id = ${orgId} and id = ${internalId}
     `;
   }
 
   async listAttributeValues(tx: Db, attributeInternalId: BigIntish): Promise<AttributeValueRow[]> {
     return tx<AttributeValueRow[]>`
-      select ${attributeValueColumns(tx)} from erp.catalog.product_attribute_values
+      select ${attributeValueColumns(tx)} from erp.product_attribute_values
       where attribute_id = ${attributeInternalId}
       order by sort_order asc, value asc
     `;
@@ -760,7 +760,7 @@ export class CatalogRepository {
 
   async findAttributeValue(tx: Db, publicId: string): Promise<AttributeValueRow | null> {
     const rows = await tx<AttributeValueRow[]>`
-      select ${attributeValueColumns(tx)} from erp.catalog.product_attribute_values
+      select ${attributeValueColumns(tx)} from erp.product_attribute_values
       where public_id = ${publicId} limit 1
     `;
     return rows[0] ?? null;
@@ -774,13 +774,13 @@ export class CatalogRepository {
     for (const value of values) {
       if (value.publicId === null) {
         await tx`
-          insert into erp.catalog.product_attribute_values (attribute_id, public_id, value, sort_order)
+          insert into erp.product_attribute_values (attribute_id, public_id, value, sort_order)
           values (${attributeInternalId}, gen_random_uuid(), ${value.valueFa}, ${value.sortOrder})
           on conflict (attribute_id, value) do update set sort_order = excluded.sort_order, is_active = true
         `;
       } else {
         await tx`
-          update erp.catalog.product_attribute_values
+          update erp.product_attribute_values
           set value = ${value.valueFa}, sort_order = ${value.sortOrder}, is_active = true
           where attribute_id = ${attributeInternalId} and public_id = ${value.publicId}
         `;
@@ -796,7 +796,7 @@ export class CatalogRepository {
     input: { valueFa: string; sortOrder: number },
   ): Promise<AttributeValueRow | null> {
     const rows = await tx<AttributeValueRow[]>`
-      update erp.catalog.product_attribute_values
+      update erp.product_attribute_values
       set value = ${input.valueFa}, sort_order = ${input.sortOrder}
       where attribute_id = ${attributeInternalId} and public_id = ${valuePublicId}
       returning ${attributeValueColumns(tx)}
@@ -806,14 +806,14 @@ export class CatalogRepository {
 
   async deleteAttributeValue(tx: Db, valueInternalId: BigIntish): Promise<boolean> {
     const rows = await tx<{ id: string }[]>`
-      delete from erp.catalog.product_attribute_values where id = ${valueInternalId} returning id::text as id
+      delete from erp.product_attribute_values where id = ${valueInternalId} returning id::text as id
     `;
     return rows.length > 0;
   }
 
   async countVariantAttributesUsing(attributeInternalId: BigIntish, tx: Db): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.product_variant_attributes
+      select count(*)::text as total from erp.product_variant_attributes
       where attribute_id = ${attributeInternalId}
     `;
     return Number(rows[0]?.total ?? '0');
@@ -821,7 +821,7 @@ export class CatalogRepository {
 
   async countAttributeValueUsage(tx: Db, valueInternalId: BigIntish): Promise<number> {
     const rows = await tx<{ total: string }[]>`
-      select count(*)::text as total from erp.catalog.product_variant_attributes
+      select count(*)::text as total from erp.product_variant_attributes
       where value_id = ${valueInternalId}
     `;
     return Number(rows[0]?.total ?? '0');
@@ -832,10 +832,10 @@ export class CatalogRepository {
     categoryInternalId: BigIntish,
     attributeInternalIds: readonly bigint[],
   ): Promise<void> {
-    await tx`delete from erp.catalog.category_attributes where category_id = ${categoryInternalId}`;
+    await tx`delete from erp.category_attributes where category_id = ${categoryInternalId}`;
     for (const attributeInternalId of attributeInternalIds) {
       await tx`
-        insert into erp.catalog.category_attributes (category_id, attribute_id)
+        insert into erp.category_attributes (category_id, attribute_id)
         values (${categoryInternalId}, ${attributeInternalId})
         on conflict do nothing
       `;
@@ -883,9 +883,9 @@ export class CatalogRepository {
                  order by v.sort_order) filter (where v.id is not null),
                '[]'::jsonb
              ) as values
-      from erp.catalog.product_attributes a
-      left join erp.catalog.category_attributes ca on ca.attribute_id = a.id and ca.category_id = ${categoryInternalId}
-      left join erp.catalog.product_attribute_values v on v.attribute_id = a.id and v.is_active
+      from erp.product_attributes a
+      left join erp.category_attributes ca on ca.attribute_id = a.id and ca.category_id = ${categoryInternalId}
+      left join erp.product_attribute_values v on v.attribute_id = a.id and v.is_active
       where a.organization_id = ${orgId} and a.deleted_at is null
         and (ca.attribute_id is not null or a.is_required)
       group by a.id, ca.is_required, ca.is_variant_axis
@@ -913,7 +913,7 @@ export class CatalogRepository {
       select m.id::text as "internalId", m.public_id as id, m.product_id::text as "productId",
              m.variant_id::text as "variantId", m.file_id::text as "fileId", m.media_type as "mediaType",
              m.alt, m.sort_order as "sortOrder", m.is_primary as "isPrimary"
-      from erp.catalog.product_media m
+      from erp.product_media m
       where m.product_id = ${productInternalId}
       order by m.sort_order asc, m.created_at asc
     `;
@@ -925,7 +925,7 @@ export class CatalogRepository {
       select m.id::text as "internalId", m.public_id as id, m.product_id::text as "productId",
              m.variant_id::text as "variantId", m.file_id::text as "fileId", m.media_type as "mediaType",
              m.alt, m.sort_order as "sortOrder", m.is_primary as "isPrimary"
-      from erp.catalog.product_media m
+      from erp.product_media m
       where m.product_id = ${productInternalId} and m.public_id = ${mediaPublicId}
       limit 1
     `;
@@ -944,10 +944,10 @@ export class CatalogRepository {
       isPrimary: boolean;
     },
   ): Promise<MediaRow> {    if (input.isPrimary) {
-      await tx`update erp.catalog.product_media set is_primary = false where product_id = ${input.productInternalId}`;
+      await tx`update erp.product_media set is_primary = false where product_id = ${input.productInternalId}`;
     }
     const rows = await tx<MediaRow[]>`
-      insert into erp.catalog.product_media
+      insert into erp.product_media
         (product_id, variant_id, file_id, media_type, alt, sort_order, is_primary, public_id)
       values (${input.productInternalId}, ${input.variantInternalId}, ${input.fileInternalId},
               ${input.mediaType}, ${input.alt}, ${input.sortOrder}, ${input.isPrimary}, gen_random_uuid())
@@ -965,10 +965,10 @@ export class CatalogRepository {
     input: { alt: string | null; sortOrder: number; isPrimary: boolean },
   ): Promise<MediaRow | null> {
     if (input.isPrimary) {
-      await tx`update erp.catalog.product_media set is_primary = false where product_id = ${productInternalId}`;
+      await tx`update erp.product_media set is_primary = false where product_id = ${productInternalId}`;
     }
     const rows = await tx<MediaRow[]>`
-      update erp.catalog.product_media
+      update erp.product_media
       set alt = ${input.alt}, sort_order = ${input.sortOrder}, is_primary = ${input.isPrimary}
       where product_id = ${productInternalId} and id = ${mediaInternalId}
       returning id::text as "internalId", public_id as id, product_id::text as "productId",
@@ -980,7 +980,7 @@ export class CatalogRepository {
 
   async deleteMedia(tx: Db, productInternalId: BigIntish, mediaInternalId: BigIntish): Promise<boolean> {
     const rows = await tx<{ id: string }[]>`
-      delete from erp.catalog.product_media
+      delete from erp.product_media
       where product_id = ${productInternalId} and id = ${mediaInternalId} returning id::text as id
     `;
     return rows.length > 0;
@@ -994,7 +994,7 @@ export class CatalogRepository {
    */
   async resolveFileId(tx: Db, orgId: BigIntish, filePublicId: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.platform.file_assets
+      select id::text as id from erp.file_assets
       where organization_id = ${orgId} and public_id = ${filePublicId} and deleted_at is null
       limit 1
     `;

@@ -34,9 +34,9 @@ import { MetricsService } from '../modules/metrics/metrics.service';
   imports: [AppConfigModule],
   providers: [
     DatabaseProvider,
-    { provide: DB, useExisting: DatabaseProvider },
+    { provide: DB, useFactory: (provider: DatabaseProvider) => provider.client, inject: [DatabaseProvider] },
     RedisProvider,
-    { provide: REDIS, useExisting: RedisProvider },
+    { provide: REDIS, useFactory: (provider: RedisProvider) => provider.client, inject: [RedisProvider] },
     AuditWriter,
     { provide: AUDIT, useExisting: AuditWriter },
     OutboxWriter,

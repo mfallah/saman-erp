@@ -60,9 +60,7 @@ import {
     NotificationPreferenceService,
     NotificationTemplateService,
     NOTIFICATION_KV,
-    NOTIFICATION_SMS_PORT,
   ],
 })
 export class NotificationsModule {}
 
-import { NOTIFICATION_SMS_PORT } from './services/notifications.service';

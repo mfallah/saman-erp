@@ -2,18 +2,9 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import type { JournalService } from '../journal/journal.service';
+import { JournalService } from '../journal/journal.service';
 import type { JournalLineDto } from '../journal/journal.service';
-import {
-  AppendJournalLineSchema,
-  CreateJournalSchema,
-  JournalFilterSchema,
-  ReverseJournalSchema,
-  UpdateJournalSchema,
-  parseDto,
-  toBigInt,
-  toMoney,
-} from '../dto';
+import { AppendJournalLineSchema, CreateJournalSchema, JournalFilterSchema, ReverseJournalSchema, UpdateJournalSchema, parseDto, toBigInt, toMoney } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
 import { journalOut } from '../http/serialise';
 

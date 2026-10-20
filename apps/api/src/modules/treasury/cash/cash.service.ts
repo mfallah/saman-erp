@@ -3,8 +3,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../../common/contracts';
-import type { PostingService } from '../../accounting/posting/posting.service';
-import type { CashRepository } from './cash.repository';
+import { PostingService } from '../../accounting/posting/posting.service';
+import { CashRepository } from './cash.repository';
 import type { CashBoxRecord, CashSessionRecord, CashTransactionRecord } from './cash.repository';
 import { asDb, notFound, validation } from '../persistence/sql-support';
 

@@ -2,19 +2,7 @@
  * Inventory HTTP surface (`API.md` §4.4). Balance/ledger reads are cursor lists;
  * all business rules live in `InventoryService`.
  */
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Headers,
-  HttpCode,
-  Param,
-  Patch,
-  Post,
-  Query,
-  Res,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { buildCursorMeta } from '@saman/shared';
 import type { FastifyReply } from 'fastify';
@@ -26,32 +14,8 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './inventory.pg-support';
-import type { InventoryService } from './inventory.service';
-import {
-  AdjustmentListQuery,
-  ApproveBody,
-  AvailabilityQuery,
-  BalanceListQuery,
-  ConsumeReservationBody,
-  CountListQuery,
-  CountScanBody,
-  CreateAdjustmentBody,
-  CreateCountBody,
-  CreateReservationBody,
-  CreateTransferBody,
-  IdParam,
-  IntegrityCheckQuery,
-  LedgerListQuery,
-  ReceiveTransferBody,
-  ReleaseReservationBody,
-  ReservationListQuery,
-  TransferCancelBody,
-  TransferListQuery,
-  ValuationLayersQuery,
-  ValuationQuery,
-  VoidBody,
-  parseWith,
-} from './dto/inventory.dto';
+import { InventoryService } from './inventory.service';
+import { AdjustmentListQuery, ApproveBody, AvailabilityQuery, BalanceListQuery, ConsumeReservationBody, CountListQuery, CountScanBody, CreateAdjustmentBody, CreateCountBody, CreateReservationBody, CreateTransferBody, IdParam, IntegrityCheckQuery, LedgerListQuery, ReceiveTransferBody, ReleaseReservationBody, ReservationListQuery, TransferCancelBody, TransferListQuery, ValuationLayersQuery, ValuationQuery, VoidBody, parseWith } from './dto/inventory.dto';
 
 function cursorList(items: readonly unknown[], limit: number, hasMore: boolean) {
   return apiData(items, {

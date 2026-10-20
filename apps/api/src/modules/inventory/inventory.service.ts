@@ -18,77 +18,18 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError, parseMoney } from '@saman/shared';
 
-import {
-  AUDIT,
-  DB,
-  EVENT_BUS,
-  type AuditPort,
-  type Db as ContractDb,
-  type EventPort,
-  type TenantContext,
-} from '../../common/contracts';
-import type { CatalogLookupService} from '../catalog/product.service';
+import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
+import { CatalogLookupService } from '../catalog/product.service';
 import { type VariantLookup } from '../catalog/product.service';
 import type { Db } from './inventory.pg-support';
 import { notFound, parseIfMatch, toBigInt, versionConflict } from './inventory.pg-support';
-import type { InventoryRepository} from './inventory.repository';
+import { InventoryRepository } from './inventory.repository';
 import { type AdjustmentRow, type BalanceRow, type LedgerRow, type ReservationRow } from './inventory.repository';
-import {
-  INVENTORY_ACCOUNTING_EVENTS,
-  INVENTORY_EVENTS,
-  type AdjustmentPayload,
-  type CountPayload,
-  type LedgerMovementPayload,
-  type ReservationPayload,
-  type TransferPayload,
-  type ValuationPayload,
-} from './inventory.events';
-import {
-  applyMovementToBalance,
-  applyReservationDelta,
-  assertValidMovement,
-  availableQuantity,
-  isInboundType,
-  isOutboundType,
-  signedQuantity,
-  type InventoryTransactionType,
-} from './engines/ledger.engine';
-import {
-  absQuantity,
-  addQuantity,
-  compareQuantity,
-  divideMoneyByQuantity,
-  formatQuantity,
-  isPositiveQuantity,
-  multiplyMoneyByQuantity,
-  normalizeQuantity,
-  parseQuantity,
-  subQuantity,
-} from './engines/quantity.engine';
-import {
-  assertAllocatable,
-  groupReservations,
-  planAllocation,
-  reservationExpiry,
-  reservationRemaining,
-  type AllocationPlan,
-  type BalanceCandidate,
-} from './engines/allocation.engine';
-import {
-  applyIssueCostToAverage,
-  applyReceiptToAverage,
-  consumeLayersAtUnitCost,
-  consumeLayersFifo,
-  layersValue,
-  reconcileLayersWithAverage,
-  resolveInboundCost,
-  resolveIssueCost,
-  sortLayersFifo,
-  type AverageCostState,
-  type CostLayer,
-  type CostMethod,
-  type LayerConsumptionResult,
-} from './engines/cost.engine';
+import { INVENTORY_ACCOUNTING_EVENTS, INVENTORY_EVENTS, type AdjustmentPayload, type CountPayload, type LedgerMovementPayload, type ReservationPayload, type TransferPayload, type ValuationPayload } from './inventory.events';
+import { applyMovementToBalance, applyReservationDelta, assertValidMovement, availableQuantity, isInboundType, isOutboundType, signedQuantity, type InventoryTransactionType } from './engines/ledger.engine';
+import { absQuantity, addQuantity, compareQuantity, divideMoneyByQuantity, formatQuantity, isPositiveQuantity, multiplyMoneyByQuantity, normalizeQuantity, parseQuantity, subQuantity } from './engines/quantity.engine';
+import { assertAllocatable, groupReservations, planAllocation, reservationExpiry, reservationRemaining, type AllocationPlan, type BalanceCandidate } from './engines/allocation.engine';
+import { applyIssueCostToAverage, applyReceiptToAverage, consumeLayersAtUnitCost, consumeLayersFifo, layersValue, reconcileLayersWithAverage, resolveInboundCost, resolveIssueCost, sortLayersFifo, type AverageCostState, type CostLayer, type CostMethod, type LayerConsumptionResult } from './engines/cost.engine';
 
 const DEFAULT_RESERVATION_TTL_MINUTES = 30;
 /** Manual stock adjustments above this IRR value need a second approver (`ADR-0008`). */

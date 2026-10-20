@@ -7,11 +7,11 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../common/contracts';
-import type { PostingService } from '../accounting/posting/posting.service';
+import { PostingService } from '../accounting/posting/posting.service';
 import { asDb, notFound, validation } from '../treasury/persistence/sql-support';
 import { assertNoRevenueReRecognition, assertSettlementNet, reconcileSettlement } from './settlement';
 import type { SettlementAmounts, SettlementLine } from './settlement';
-import type { SettlementsRepository } from './settlements.repository';
+import { SettlementsRepository } from './settlements.repository';
 import type { SettlementLineRecord, SettlementRecord } from './settlements.repository';
 
 export interface CreateSettlementInput {

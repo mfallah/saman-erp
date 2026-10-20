@@ -7,41 +7,17 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 
-import {
-  AUDIT,
-  DB,
-  EVENT_BUS,
-  type AuditPort,
-  type Db as ContractDb,
-  type EventPort,
-  type TenantContext,
-} from '../../common/contracts';
-import type { CatalogLookupService } from '../catalog/product.service';
-import type { InventoryService } from '../inventory/inventory.service';
+import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
+import { CatalogLookupService } from '../catalog/product.service';
+import { InventoryService } from '../inventory/inventory.service';
 import { addQuantity, compareQuantity, subQuantity } from '../inventory/engines/quantity.engine';
-import type { SalesService } from '../sales/sales.service';
+import { SalesService } from '../sales/sales.service';
 import type { Db } from './warehouse.pg-support';
 import { notFound, toBigInt } from './warehouse.pg-support';
-import type {
-  WarehouseRepository} from './warehouse.repository';
-import {
-  type LocationRow,
-  type PickTaskRow,
-  type PickWaveRow,
-  type WarehouseRow,
-} from './warehouse.repository';
+import { WarehouseRepository } from './warehouse.repository';
+import { type LocationRow, type PickTaskRow, type PickWaveRow, type WarehouseRow } from './warehouse.repository';
 import { WAREHOUSE_EVENTS, type PickTaskEventPayload, type WaveEventPayload } from './warehouse.events';
-import {
-  assertValidLocationParent,
-  assignPickRoute,
-  generateLocationCode,
-  labelNumber,
-  normalizeLocationBarcode,
-  orderPickTasks,
-  suggestPutaway,
-  verifyScan,
-  type LocationNodeType,
-} from './engines/location.engine';
+import { assertValidLocationParent, assignPickRoute, generateLocationCode, labelNumber, normalizeLocationBarcode, orderPickTasks, suggestPutaway, verifyScan, type LocationNodeType } from './engines/location.engine';
 import type {
   AssignTaskBody,
   BulkCreateLocationsBody,

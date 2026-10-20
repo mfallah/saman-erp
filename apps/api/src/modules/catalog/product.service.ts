@@ -12,36 +12,11 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError, formatMoney, parseMoney } from '@saman/shared';
 
-import {
-  AUDIT,
-  DB,
-  EVENT_BUS,
-  type AuditPort,
-  type Db as ContractDb,
-  type EventPort,
-  type TenantContext,
-} from '../../common/contracts';
+import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
 import type { Db } from './pg-support';
-import {
-  CATALOG_EVENTS,
-  type BarcodeEventPayload,
-  type CostChangedPayload,
-  type PriceChangedPayload,
-  type ProductEventPayload,
-  type VariantEventPayload,
-} from './catalog.events';
-import type { CatalogRepository } from './catalog.repository';import type {
-  ProductRepository} from './product.repository';
-import {
-  type BarcodeRow,
-  type CostHistoryRow,
-  type PriceHistoryRow,
-  type ProductRow,
-  type ReorderRuleRow,
-  type SupplierLinkRow,
-  type VariantAttributeRow,
-  type VariantRow,
-} from './product.repository';
+import { CATALOG_EVENTS, type BarcodeEventPayload, type CostChangedPayload, type PriceChangedPayload, type ProductEventPayload, type VariantEventPayload } from './catalog.events';
+import { CatalogRepository } from './catalog.repository';import { ProductRepository } from './product.repository';
+import { type BarcodeRow, type CostHistoryRow, type PriceHistoryRow, type ProductRow, type ReorderRuleRow, type SupplierLinkRow, type VariantAttributeRow, type VariantRow } from './product.repository';
 import { CatalogService } from './catalog.service';
 import { type BarcodeIdentityScope, type BarcodeType, assertPrimaryUniqueness, resolveScannedBarcode, validateBarcodeValue } from './engines/barcode.engine';
 import { generateSku, nextAvailableSku } from './engines/sku.engine';import { normalizeSearchQuery, toIlikePattern } from './engines/search.engine';

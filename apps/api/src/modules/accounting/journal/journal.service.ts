@@ -5,10 +5,10 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../../common/contracts';
-import type { ChartOfAccountsRepository } from '../coa/chart-of-accounts.repository';
-import type { FiscalCalendarRepository } from '../periods/fiscal-calendar.repository';
+import { ChartOfAccountsRepository } from '../coa/chart-of-accounts.repository';
+import { FiscalCalendarRepository } from '../periods/fiscal-calendar.repository';
 import { isPostingBlocked } from '../periods/fiscal-calendar';
-import type { JournalRepository } from './journal.repository';
+import { JournalRepository } from './journal.repository';
 import type { JournalFilter, JournalHeaderInput, JournalLineInput, JournalRecord } from './journal.repository';
 import { normalisePagination } from '../persistence/sql-support';
 

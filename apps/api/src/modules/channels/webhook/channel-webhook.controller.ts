@@ -6,21 +6,12 @@
  * (a) recognise the foundation `@Public()` metadata, and (b) capture the raw body before JSON
  * parsing (`rawBody`). Both are exported here as integration contracts.
  */
-import {
-  Controller,
-  Get,
-  Headers,
-  HttpCode,
-  Param,
-  Post,
-  Req,
-  SetMetadata,
-} from '@nestjs/common';
+import { Controller, Get, Headers, HttpCode, Param, Post, Req, SetMetadata } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 
 import { AppError } from '@saman/shared';
 import { Public } from '../../../common/decorators/public.decorator';
-import type { ChannelWebhookService } from '../services/channel-webhook.service';
+import { ChannelWebhookService } from '../services/channel-webhook.service';
 
 export const RAW_BODY_ROUTE_KEY = 'saman:raw-body';
 

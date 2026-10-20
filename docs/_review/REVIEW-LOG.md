@@ -84,6 +84,22 @@ database (17/17 checks in `docs/VERIFICATION.md` §6):
 | R3-RT-05 | `chain_audit()` could not resolve `public.digest()` under its `SECURITY DEFINER` search_path | all such functions use `search_path = erp, public, pg_temp` |
 | R3-RT-06 | `audit_chain_heads.organization_id` wrongly generated as identity | same identity-rule fix as R3-RT-02 |
 
+### Round 3 — defects found by booting the compiled API (2026-10-20)
+
+Running the real server against the real database surfaced integration defects that neither typecheck nor
+static review could catch (all fixed except the last):
+
+| ID | Defect | Fix |
+|---|---|---|
+| RT-E2E-01 | circular import TDZ in `notifications.module.ts` | import hoisted to the top |
+| RT-E2E-02 | Fastify could not load `ajv@8` (hoisted `ajv@6` from ESLint won) | `ajv@^8` added to `apps/api` dependencies |
+| RT-E2E-03 | module exported `NOTIFICATION_SMS_PORT` without providing it | export removed pending a real binding |
+| RT-E2E-04 | 87 DI classes imported with `import type` → Nest resolved `Function` | value imports (46 files) |
+| RT-E2E-05 | `DB`/`REDIS` tokens exposed the provider wrapper, not the client | factory aliases |
+| RT-E2E-06 | 440 SQL statements used non-existent `erp.<module>.` schema prefixes | normalised to `erp.` |
+| RT-E2E-07 | `/auth/me` and self-service routes rejected by default-deny | `@AuthenticatedOnly()` + guard support |
+| **TD-24** | write repositories reference columns absent from the implemented schema | **open — v1.1 blocker** |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning

@@ -273,11 +273,11 @@ function balanceColumns(tx: Db) {
 
 function balanceFrom(tx: Db) {
   return tx`
-    from erp.inventory.inventory_balances b
-    join erp.warehouse.warehouses w on w.id = b.warehouse_id
-    join erp.warehouse.warehouse_locations l on l.id = b.location_id
-    join erp.catalog.product_variants v on v.id = b.product_variant_id
-    join erp.catalog.products p on p.id = v.product_id
+    from erp.inventory_balances b
+    join erp.warehouses w on w.id = b.warehouse_id
+    join erp.warehouse_locations l on l.id = b.location_id
+    join erp.product_variants v on v.id = b.product_variant_id
+    join erp.products p on p.id = v.product_id
   `;
 }
 
@@ -310,11 +310,11 @@ function ledgerColumns(tx: Db) {
 
 function ledgerFrom(tx: Db) {
   return tx`
-    from erp.inventory.inventory_transactions t
-    join erp.warehouse.warehouses w on w.id = t.warehouse_id
-    join erp.warehouse.warehouse_locations l on l.id = t.location_id
-    join erp.catalog.product_variants v on v.id = t.product_variant_id
-    left join erp.inventory.inventory_lots lt on lt.id = t.lot_id
+    from erp.inventory_transactions t
+    join erp.warehouses w on w.id = t.warehouse_id
+    join erp.warehouse_locations l on l.id = t.location_id
+    join erp.product_variants v on v.id = t.product_variant_id
+    left join erp.inventory_lots lt on lt.id = t.lot_id
   `;
 }
 
@@ -344,10 +344,10 @@ function reservationColumns(tx: Db) {
 
 function reservationFrom(tx: Db) {
   return tx`
-    from erp.inventory.stock_reservations r
-    join erp.warehouse.warehouses w on w.id = r.warehouse_id
-    join erp.warehouse.warehouse_locations l on l.id = r.location_id
-    join erp.catalog.product_variants v on v.id = r.product_variant_id
+    from erp.stock_reservations r
+    join erp.warehouses w on w.id = r.warehouse_id
+    join erp.warehouse_locations l on l.id = r.location_id
+    join erp.product_variants v on v.id = r.product_variant_id
   `;
 }
 
@@ -447,7 +447,7 @@ export class InventoryRepository {
   ): Promise<void> {
     for (const key of keys) {
       await tx`
-        insert into erp.inventory.inventory_balances
+        insert into erp.inventory_balances
           (organization_id, warehouse_id, location_id, product_variant_id, public_id)
         values (${orgId}, ${key.warehouseInternalId}, ${key.locationInternalId},
                 ${key.variantInternalId}, gen_random_uuid())
@@ -507,7 +507,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_balances
+      update erp.inventory_balances
       set on_hand = ${patch.onHand}::numeric,
           reserved = ${patch.reserved}::numeric,
           damaged = ${patch.damaged}::numeric,
@@ -521,7 +521,7 @@ export class InventoryRepository {
 
   async setLastCounted(tx: Db, internalId: bigint, countedAt: string): Promise<void> {
     await tx`
-      update erp.inventory.inventory_balances
+      update erp.inventory_balances
       set last_counted_at = ${countedAt}::timestamptz, updated_at = now(), version = version + 1
       where id = ${internalId}
     `;
@@ -542,7 +542,7 @@ export class InventoryRepository {
              b.location_id::text as "locationInternalId",
              b.product_variant_id::text as "variantInternalId",
              (b.on_hand - b.reserved - b.safety_buffer - b.damaged)::text as available
-      from erp.inventory.inventory_balances b
+      from erp.inventory_balances b
       where b.organization_id = ${orgId}
         and b.product_variant_id = any(${params.variantInternalIds}::bigint[])
         and (${params.warehouseInternalIds === null}::boolean
@@ -567,7 +567,7 @@ export class InventoryRepository {
     for (const key of keys) {
       const rows = await tx<{ available: string }[]>`
         select (on_hand - reserved - safety_buffer - damaged)::text as available
-        from erp.inventory.inventory_balances
+        from erp.inventory_balances
         where organization_id = ${orgId} and warehouse_id = ${key.warehouseInternalId}
           and location_id = ${key.locationInternalId} and product_variant_id = ${key.variantInternalId}
       `;
@@ -600,7 +600,7 @@ export class InventoryRepository {
       select location_id::text as "locationInternalId",
              product_variant_id::text as "variantInternalId",
              on_hand::text as "onHand"
-      from erp.inventory.inventory_balances
+      from erp.inventory_balances
       where organization_id = ${orgId} and warehouse_id = ${params.warehouseInternalId} and on_hand > 0
         and (${params.locationInternalIds === null}::boolean
              or location_id = any(${params.locationInternalIds ?? []}::bigint[]))
@@ -613,7 +613,7 @@ export class InventoryRepository {
   /** Read-only resolution of warehouse public id (owned by `warehouse` module). */
   async resolveWarehouseId(tx: Db, orgId: bigint, publicId: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.warehouse.warehouses
+      select id::text as id from erp.warehouses
       where organization_id = ${orgId} and public_id = ${publicId} and deleted_at is null limit 1
     `;
     return rows[0] === undefined ? null : BigInt(rows[0].id);
@@ -622,8 +622,8 @@ export class InventoryRepository {
   /** Read-only resolution of location public id (owned by `warehouse` module). */
   async resolveLocationId(tx: Db, orgId: bigint, publicId: string): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
-      select l.id::text as id from erp.warehouse.warehouse_locations l
-      join erp.warehouse.warehouses w on w.id = l.warehouse_id
+      select l.id::text as id from erp.warehouse_locations l
+      join erp.warehouses w on w.id = l.warehouse_id
       where w.organization_id = ${orgId} and l.public_id = ${publicId} and l.is_active limit 1
     `;
     return rows[0] === undefined ? null : BigInt(rows[0].id);
@@ -638,9 +638,9 @@ export class InventoryRepository {
   ): Promise<{ warehouseId: string; locationId: string; variantId: string }> {
     const rows = await tx<{ warehouseId: string; locationId: string; variantId: string }[]>`
       select w.public_id as "warehouseId", l.public_id as "locationId", v.public_id as "variantId"
-      from erp.warehouse.warehouses w
-      cross join erp.warehouse.warehouse_locations l
-      cross join erp.catalog.product_variants v
+      from erp.warehouses w
+      cross join erp.warehouse_locations l
+      cross join erp.product_variants v
       where w.id = ${warehouseInternalId} and l.id = ${locationInternalId} and v.id = ${variantInternalId}
     `;
     return rows[0] as { warehouseId: string; locationId: string; variantId: string };
@@ -650,7 +650,7 @@ export class InventoryRepository {
 
   async insertTransaction(tx: Db, input: LedgerInsert): Promise<LedgerRow> {
     const rows = await tx<{ id: string; created_at: string }[]>`
-      insert into erp.inventory.inventory_transactions (
+      insert into erp.inventory_transactions (
         organization_id, public_id, warehouse_id, location_id, product_variant_id,
         transaction_type, quantity, unit_cost_amount, total_cost_amount, currency,
         lot_id, serial_id, inventory_unit_id, reference_type, reference_id, reference_public_id,
@@ -671,7 +671,7 @@ export class InventoryRepository {
     // Global idempotency dedupe table (non-partitioned, `R1-D B-07`).
     if (input.idempotencyKey !== null) {
       await tx`
-        insert into erp.inventory.inventory_ledger_keys
+        insert into erp.inventory_ledger_keys
           (idempotency_key, organization_id, inventory_transaction_id, transaction_created_at)
         values (${input.idempotencyKey}, ${input.orgId}, ${created.id}::bigint, ${created.created_at}::timestamptz)
         on conflict (idempotency_key) do nothing
@@ -743,10 +743,10 @@ export class InventoryRepository {
     return tx<{ warehouseId: string; locationId: string; variantId: string; quantitySum: string }[]>`
       select w.public_id as "warehouseId", l.public_id as "locationId", v.public_id as "variantId",
              sum(t.quantity)::text as "quantitySum"
-      from erp.inventory.inventory_transactions t
-      join erp.warehouse.warehouses w on w.id = t.warehouse_id
-      join erp.warehouse.warehouse_locations l on l.id = t.location_id
-      join erp.catalog.product_variants v on v.id = t.product_variant_id
+      from erp.inventory_transactions t
+      join erp.warehouses w on w.id = t.warehouse_id
+      join erp.warehouse_locations l on l.id = t.location_id
+      join erp.product_variants v on v.id = t.product_variant_id
       where t.organization_id = ${orgId}
         and (${params.warehouseInternalId}::bigint is null or t.warehouse_id = ${params.warehouseInternalId}::bigint)
         and (${params.since}::timestamptz is null or t.created_at >= ${params.since}::timestamptz)
@@ -762,10 +762,10 @@ export class InventoryRepository {
     return tx<{ warehouseId: string; locationId: string; variantId: string; onHand: string }[]>`
       select w.public_id as "warehouseId", l.public_id as "locationId", v.public_id as "variantId",
              b.on_hand::text as "onHand"
-      from erp.inventory.inventory_balances b
-      join erp.warehouse.warehouses w on w.id = b.warehouse_id
-      join erp.warehouse.warehouse_locations l on l.id = b.location_id
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
+      from erp.inventory_balances b
+      join erp.warehouses w on w.id = b.warehouse_id
+      join erp.warehouse_locations l on l.id = b.location_id
+      join erp.product_variants v on v.id = b.product_variant_id
       where b.organization_id = ${orgId}
         and (${warehouseInternalId}::bigint is null or b.warehouse_id = ${warehouseInternalId}::bigint)
     `;
@@ -789,7 +789,7 @@ export class InventoryRepository {
     },
   ): Promise<ReservationRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.inventory.stock_reservations (
+      insert into erp.stock_reservations (
         organization_id, public_id, warehouse_id, location_id, product_variant_id, quantity,
         reference_type, reference_id, reservation_no, status, expires_at, created_by,
         consumed_qty, released_qty
@@ -881,7 +881,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      update erp.inventory.stock_reservations
+      update erp.stock_reservations
       set status = ${patch.status},
           consumed_qty = ${patch.consumedQuantity}::numeric,
           released_qty = ${patch.releasedQuantity}::numeric,
@@ -907,7 +907,7 @@ export class InventoryRepository {
     },
   ): Promise<AdjustmentRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.inventory.stock_adjustments
+      insert into erp.stock_adjustments
         (organization_id, public_id, warehouse_id, adjustment_no, reason_code, status,
          description, requires_approval, created_by)
       values (${input.orgId}, gen_random_uuid(), ${input.warehouseInternalId}, ${input.adjustmentNo},
@@ -925,8 +925,8 @@ export class InventoryRepository {
              a.approved_by::text as "approvedBy", a.approved_at::text as "approvedAt",
              a.applied_at::text as "appliedAt", a.journal_entry_id::text as "journalEntryId",
              a.version, a.created_at::text as "createdAt", a.created_by::text as "createdBy"
-      from erp.inventory.stock_adjustments a
-      join erp.warehouse.warehouses w on w.id = a.warehouse_id
+      from erp.stock_adjustments a
+      join erp.warehouses w on w.id = a.warehouse_id
       where a.id = ${created.id}::bigint
     `;
     return full[0] as AdjustmentRow;
@@ -945,8 +945,8 @@ export class InventoryRepository {
              a.approved_by::text as "approvedBy", a.approved_at::text as "approvedAt",
              a.applied_at::text as "appliedAt", a.journal_entry_id::text as "journalEntryId",
              a.version, a.created_at::text as "createdAt", a.created_by::text as "createdBy"
-      from erp.inventory.stock_adjustments a
-      join erp.warehouse.warehouses w on w.id = a.warehouse_id
+      from erp.stock_adjustments a
+      join erp.warehouses w on w.id = a.warehouse_id
       where a.organization_id = ${params.orgId}
         and (${params.status}::text is null or a.status = ${params.status})
         and (${params.type}::text is null or a.reason_code = ${params.type})
@@ -966,8 +966,8 @@ export class InventoryRepository {
              a.approved_by::text as "approvedBy", a.approved_at::text as "approvedAt",
              a.applied_at::text as "appliedAt", a.journal_entry_id::text as "journalEntryId",
              a.version, a.created_at::text as "createdAt", a.created_by::text as "createdBy"
-      from erp.inventory.stock_adjustments a
-      join erp.warehouse.warehouses w on w.id = a.warehouse_id
+      from erp.stock_adjustments a
+      join erp.warehouses w on w.id = a.warehouse_id
       where a.organization_id = ${orgId} and a.public_id = ${publicId}
     `;
     return rows[0] ?? null;
@@ -983,8 +983,8 @@ export class InventoryRepository {
              a.approved_by::text as "approvedBy", a.approved_at::text as "approvedAt",
              a.applied_at::text as "appliedAt", a.journal_entry_id::text as "journalEntryId",
              a.version, a.created_at::text as "createdAt", a.created_by::text as "createdBy"
-      from erp.inventory.stock_adjustments a
-      join erp.warehouse.warehouses w on w.id = a.warehouse_id
+      from erp.stock_adjustments a
+      join erp.warehouses w on w.id = a.warehouse_id
       where a.organization_id = ${orgId} and a.public_id = ${publicId}
       for update of a
     `;
@@ -1005,7 +1005,7 @@ export class InventoryRepository {
     },
   ): Promise<AdjustmentLineRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.inventory.stock_adjustment_lines
+      insert into erp.stock_adjustment_lines
         (adjustment_id, public_id, product_variant_id, location_id, lot_id, system_qty,
          counted_qty, difference_qty, unit_cost_amount)
       values (${input.adjustmentInternalId}, gen_random_uuid(), ${input.variantInternalId},
@@ -1025,10 +1025,10 @@ export class InventoryRepository {
              l.system_qty::text as "systemQuantity", l.counted_qty::text as "countedQuantity",
              l.difference_qty::text as "differenceQuantity", l.unit_cost_amount::text as "unitCostAmount",
              l.inventory_transaction_id::text as "inventoryTransactionId"
-      from erp.inventory.stock_adjustment_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      join erp.warehouse.warehouse_locations wl on wl.id = l.location_id
-      left join erp.inventory.inventory_lots lt on lt.id = l.lot_id
+      from erp.stock_adjustment_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
+      join erp.warehouse_locations wl on wl.id = l.location_id
+      left join erp.inventory_lots lt on lt.id = l.lot_id
       where l.id = ${id}::bigint
     `;
     return rows[0] ?? null;
@@ -1036,7 +1036,7 @@ export class InventoryRepository {
 
   async listAdjustmentLines(tx: Db, adjustmentInternalId: bigint): Promise<AdjustmentLineRow[]> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.inventory.stock_adjustment_lines
+      select id::text as id from erp.stock_adjustment_lines
       where adjustment_id = ${adjustmentInternalId} order by id asc
     `;
     const lines: AdjustmentLineRow[] = [];
@@ -1053,7 +1053,7 @@ export class InventoryRepository {
     patch: { status: string; approvedBy?: bigint | null; applied?: boolean },
   ): Promise<void> {
     await tx`
-      update erp.inventory.stock_adjustments
+      update erp.stock_adjustments
       set status = ${patch.status},
           approved_by = coalesce(${patch.approvedBy ?? null}, approved_by),
           approved_at = case when ${patch.approvedBy === undefined || patch.approvedBy === null}::boolean
@@ -1070,7 +1070,7 @@ export class InventoryRepository {
     transactionInternalId: bigint,
   ): Promise<void> {
     await tx`
-      update erp.inventory.stock_adjustment_lines
+      update erp.stock_adjustment_lines
       set inventory_transaction_id = ${transactionInternalId}
       where id = ${lineInternalId}
     `;
@@ -1090,7 +1090,7 @@ export class InventoryRepository {
     },
   ): Promise<TransferRow> {
     const rows = await tx<TransferRow[]>`
-      insert into erp.inventory.inventory_transfers
+      insert into erp.inventory_transfers
         (organization_id, public_id, transfer_no, from_warehouse_id, to_warehouse_id, status, notes, requested_by)
       values (${input.orgId}, gen_random_uuid(), ${input.transferNo}, ${input.fromWarehouseInternalId},
               ${input.toWarehouseInternalId}, 'draft', ${input.notes}, ${input.requestedBy})
@@ -1112,9 +1112,9 @@ export class InventoryRepository {
              t.status, t.requested_by::text as "requestedBy", t.approved_by::text as "approvedBy",
              t.dispatched_at::text as "dispatchedAt", t.received_at::text as "receivedAt",
              t.carrier, t.notes, t.version, t.created_at::text as "createdAt"
-      from erp.inventory.inventory_transfers t
-      join erp.warehouse.warehouses fw on fw.id = t.from_warehouse_id
-      join erp.warehouse.warehouses tw on tw.id = t.to_warehouse_id
+      from erp.inventory_transfers t
+      join erp.warehouses fw on fw.id = t.from_warehouse_id
+      join erp.warehouses tw on tw.id = t.to_warehouse_id
       where t.organization_id = ${orgId} and t.public_id = ${publicId}
     `;
     return rows[0] ?? null;
@@ -1128,9 +1128,9 @@ export class InventoryRepository {
              t.status, t.requested_by::text as "requestedBy", t.approved_by::text as "approvedBy",
              t.dispatched_at::text as "dispatchedAt", t.received_at::text as "receivedAt",
              t.carrier, t.notes, t.version, t.created_at::text as "createdAt"
-      from erp.inventory.inventory_transfers t
-      join erp.warehouse.warehouses fw on fw.id = t.from_warehouse_id
-      join erp.warehouse.warehouses tw on tw.id = t.to_warehouse_id
+      from erp.inventory_transfers t
+      join erp.warehouses fw on fw.id = t.from_warehouse_id
+      join erp.warehouses tw on tw.id = t.to_warehouse_id
       where t.organization_id = ${orgId} and t.public_id = ${publicId}
       for update of t
     `;
@@ -1154,9 +1154,9 @@ export class InventoryRepository {
              t.status, t.requested_by::text as "requestedBy", t.approved_by::text as "approvedBy",
              t.dispatched_at::text as "dispatchedAt", t.received_at::text as "receivedAt",
              t.carrier, t.notes, t.version, t.created_at::text as "createdAt"
-      from erp.inventory.inventory_transfers t
-      join erp.warehouse.warehouses fw on fw.id = t.from_warehouse_id
-      join erp.warehouse.warehouses tw on tw.id = t.to_warehouse_id
+      from erp.inventory_transfers t
+      join erp.warehouses fw on fw.id = t.from_warehouse_id
+      join erp.warehouses tw on tw.id = t.to_warehouse_id
       where t.organization_id = ${params.orgId}
         and (${params.status}::text is null or t.status = ${params.status})
         and (${params.fromWarehouseInternalId}::bigint is null or t.from_warehouse_id = ${params.fromWarehouseInternalId}::bigint)
@@ -1172,7 +1172,7 @@ export class InventoryRepository {
     patch: { status: string; dispatched?: boolean; received?: boolean; approvedBy?: bigint | null },
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_transfers
+      update erp.inventory_transfers
       set status = ${patch.status},
           approved_by = coalesce(${patch.approvedBy ?? null}, approved_by),
           dispatched_at = case when ${patch.dispatched === true}::boolean then now() else dispatched_at end,
@@ -1194,7 +1194,7 @@ export class InventoryRepository {
     },
   ): Promise<TransferLineRow> {
     const rows = await tx<{ id: string }[]>`
-      insert into erp.inventory.inventory_transfer_lines
+      insert into erp.inventory_transfer_lines
         (transfer_id, public_id, product_variant_id, lot_id, quantity, dispatched_qty, received_qty,
          from_location_id, to_location_id, unit_cost_amount)
       values (${input.transferInternalId}, gen_random_uuid(), ${input.variantInternalId},
@@ -1213,11 +1213,11 @@ export class InventoryRepository {
              l.received_qty::text as "receivedQuantity", fl.public_id as "fromLocationId",
              l.from_location_id::text as "fromLocationInternalId", tl.public_id as "toLocationId",
              l.to_location_id::text as "toLocationInternalId", l.unit_cost_amount::text as "unitCostAmount"
-      from erp.inventory.inventory_transfer_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      left join erp.warehouse.warehouse_locations fl on fl.id = l.from_location_id
-      left join erp.warehouse.warehouse_locations tl on tl.id = l.to_location_id
-      left join erp.inventory.inventory_lots lt on lt.id = l.lot_id
+      from erp.inventory_transfer_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
+      left join erp.warehouse_locations fl on fl.id = l.from_location_id
+      left join erp.warehouse_locations tl on tl.id = l.to_location_id
+      left join erp.inventory_lots lt on lt.id = l.lot_id
       where l.id = ${id}::bigint
     `;
     return rows[0] ?? null;
@@ -1225,7 +1225,7 @@ export class InventoryRepository {
 
   async listTransferLines(tx: Db, transferInternalId: bigint): Promise<TransferLineRow[]> {
     const rows = await tx<{ id: string }[]>`
-      select id::text as id from erp.inventory.inventory_transfer_lines
+      select id::text as id from erp.inventory_transfer_lines
       where transfer_id = ${transferInternalId} order by id asc
     `;
     const lines: TransferLineRow[] = [];
@@ -1242,7 +1242,7 @@ export class InventoryRepository {
     patch: { dispatchedQuantity: string; receivedQuantity: string; toLocationInternalId?: bigint | null },
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_transfer_lines
+      update erp.inventory_transfer_lines
       set dispatched_qty = ${patch.dispatchedQuantity}::numeric,
           received_qty = ${patch.receivedQuantity}::numeric,
           to_location_id = coalesce(${patch.toLocationInternalId ?? null}, to_location_id)
@@ -1264,7 +1264,7 @@ export class InventoryRepository {
     },
   ): Promise<CountRow> {
     const rows = await tx<CountRow[]>`
-      insert into erp.inventory.stock_counts
+      insert into erp.stock_counts
         (organization_id, public_id, warehouse_id, count_no, count_type, status, zone_id, counted_by)
       values (${input.orgId}, gen_random_uuid(), ${input.warehouseInternalId}, ${input.countNo},
               ${input.countType}, 'draft', ${input.zoneInternalId}, ${input.createdBy})
@@ -1286,8 +1286,8 @@ export class InventoryRepository {
              c.started_at::text as "startedAt", c.completed_at::text as "completedAt",
              c.counted_by::text as "countedBy", c.approved_by::text as "approvedBy",
              c.adjustment_id::text as "adjustmentId", c.version, c.created_at::text as "createdAt"
-      from erp.inventory.stock_counts c
-      join erp.warehouse.warehouses w on w.id = c.warehouse_id
+      from erp.stock_counts c
+      join erp.warehouses w on w.id = c.warehouse_id
       where c.organization_id = ${orgId} and c.public_id = ${publicId}
     `;
     return rows[0] ?? null;
@@ -1301,8 +1301,8 @@ export class InventoryRepository {
              c.started_at::text as "startedAt", c.completed_at::text as "completedAt",
              c.counted_by::text as "countedBy", c.approved_by::text as "approvedBy",
              c.adjustment_id::text as "adjustmentId", c.version, c.created_at::text as "createdAt"
-      from erp.inventory.stock_counts c
-      join erp.warehouse.warehouses w on w.id = c.warehouse_id
+      from erp.stock_counts c
+      join erp.warehouses w on w.id = c.warehouse_id
       where c.organization_id = ${orgId} and c.public_id = ${publicId}
       for update of c
     `;
@@ -1320,8 +1320,8 @@ export class InventoryRepository {
              c.started_at::text as "startedAt", c.completed_at::text as "completedAt",
              c.counted_by::text as "countedBy", c.approved_by::text as "approvedBy",
              c.adjustment_id::text as "adjustmentId", c.version, c.created_at::text as "createdAt"
-      from erp.inventory.stock_counts c
-      join erp.warehouse.warehouses w on w.id = c.warehouse_id
+      from erp.stock_counts c
+      join erp.warehouses w on w.id = c.warehouse_id
       where c.organization_id = ${params.orgId}
         and (${params.status}::text is null or c.status = ${params.status})
         and (${params.type}::text is null or c.count_type = ${params.type})
@@ -1333,7 +1333,7 @@ export class InventoryRepository {
 
   async updateCountStatus(tx: Db, internalId: bigint, status: string): Promise<void> {
     await tx`
-      update erp.inventory.stock_counts
+      update erp.stock_counts
       set status = ${status},
           started_at = case when ${status} = 'counting' then coalesce(started_at, now()) else started_at end,
           completed_at = case when ${status} in ('approved', 'applied', 'cancelled') then now() else completed_at end,
@@ -1354,7 +1354,7 @@ export class InventoryRepository {
   ): Promise<void> {
     for (const line of lines) {
       await tx`
-        insert into erp.inventory.stock_count_lines
+        insert into erp.stock_count_lines
           (stock_count_id, public_id, location_id, product_variant_id, lot_id, expected_qty)
         values (${countInternalId}, gen_random_uuid(), ${line.locationInternalId},
                 ${line.variantInternalId}, ${line.lotInternalId}, ${line.expectedQuantity}::numeric)
@@ -1370,10 +1370,10 @@ export class InventoryRepository {
              l.product_variant_id::text as "variantInternalId", lt.public_id as "lotId",
              l.expected_qty::text as "expectedQuantity", l.counted_qty::text as "countedQuantity",
              l.variance_qty::text as "varianceQuantity", l.counted_at::text as "countedAt", l.notes
-      from erp.inventory.stock_count_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      join erp.warehouse.warehouse_locations wl on wl.id = l.location_id
-      left join erp.inventory.inventory_lots lt on lt.id = l.lot_id
+      from erp.stock_count_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
+      join erp.warehouse_locations wl on wl.id = l.location_id
+      left join erp.inventory_lots lt on lt.id = l.lot_id
       where l.stock_count_id = ${countInternalId}
       order by l.location_id asc, l.product_variant_id asc
     `;
@@ -1393,7 +1393,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.inventory.stock_count_lines
+      insert into erp.stock_count_lines
         (stock_count_id, public_id, location_id, product_variant_id, lot_id, expected_qty,
          counted_qty, variance_qty, counted_by, counted_at)
       values (${countInternalId}, gen_random_uuid(), ${input.locationInternalId},
@@ -1420,9 +1420,9 @@ export class InventoryRepository {
              l.lot_no as "lotNo", l.batch_barcode as "batchBarcode",
              l.manufacture_date::text as "manufactureDate", l.expiry_date::text as "expiryDate",
              s.public_id as "supplierId", l.status
-      from erp.inventory.inventory_lots l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      join erp.warehouse.warehouses w on w.id = l.warehouse_id
+      from erp.inventory_lots l
+      join erp.product_variants v on v.id = l.product_variant_id
+      join erp.warehouses w on w.id = l.warehouse_id
       left join erp.procurement.suppliers s on s.id = l.supplier_id
       where l.organization_id = ${params.orgId}
         and (${params.variantInternalId}::bigint is null or l.product_variant_id = ${params.variantInternalId}::bigint)
@@ -1441,9 +1441,9 @@ export class InventoryRepository {
              l.lot_no as "lotNo", l.batch_barcode as "batchBarcode",
              l.manufacture_date::text as "manufactureDate", l.expiry_date::text as "expiryDate",
              s.public_id as "supplierId", l.status
-      from erp.inventory.inventory_lots l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      join erp.warehouse.warehouses w on w.id = l.warehouse_id
+      from erp.inventory_lots l
+      join erp.product_variants v on v.id = l.product_variant_id
+      join erp.warehouses w on w.id = l.warehouse_id
       left join erp.procurement.suppliers s on s.id = l.supplier_id
       where l.organization_id = ${orgId} and l.public_id = ${publicId}
     `;
@@ -1464,7 +1464,7 @@ export class InventoryRepository {
     },
   ): Promise<{ internalId: string; id: string }> {
     const rows = await tx<{ internalId: string; id: string }[]>`
-      insert into erp.inventory.inventory_lots
+      insert into erp.inventory_lots
         (organization_id, public_id, product_variant_id, warehouse_id, lot_no, manufacture_date,
          expiry_date, supplier_id, goods_receipt_line_id)
       values (${input.orgId}, gen_random_uuid(), ${input.variantInternalId}, ${input.warehouseInternalId},
@@ -1482,7 +1482,7 @@ export class InventoryRepository {
     patch: { manufactureDate: string | null; expiryDate: string | null; status?: string },
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_lots
+      update erp.inventory_lots
       set manufacture_date = ${patch.manufactureDate}::date,
           expiry_date = ${patch.expiryDate}::date,
           status = coalesce(${patch.status ?? null}, status)
@@ -1492,7 +1492,7 @@ export class InventoryRepository {
 
   async countLotStock(tx: Db, lotInternalId: bigint): Promise<string> {
     const rows = await tx<{ total: string }[]>`
-      select coalesce(sum(quantity), 0)::text as total from erp.inventory.inventory_transactions
+      select coalesce(sum(quantity), 0)::text as total from erp.inventory_transactions
       where lot_id = ${lotInternalId} and voided_at is null
     `;
     return rows[0]?.total ?? '0.0000';
@@ -1518,7 +1518,7 @@ export class InventoryRepository {
     const totalCost = input.unitCostAmount * BigInt(Math.round(Number(input.quantity) * 1)) === 0n ? 0n : 0n;
     void totalCost;
     const rows = await tx<{ id: string }[]>`
-      insert into erp.inventory.inventory_cost_layers (
+      insert into erp.inventory_cost_layers (
         organization_id, public_id, warehouse_id, product_variant_id, lot_id,
         receipt_transaction_id, receipt_transaction_created_at, source_kind, received_at,
         original_qty, qty_remaining, unit_cost_amount, cost_remaining_amount, currency
@@ -1535,7 +1535,7 @@ export class InventoryRepository {
     const created = rows[0];
     if (created === undefined) throw new Error('layer_insert_failed');
     const full = await tx<LayerRow[]>`
-      select ${layerColumns(tx)} from erp.inventory.inventory_cost_layers cl
+      select ${layerColumns(tx)} from erp.inventory_cost_layers cl
       where cl.id = ${created.id}::bigint
     `;
     return full[0] as LayerRow;
@@ -1548,7 +1548,7 @@ export class InventoryRepository {
   ): Promise<LayerRow[]> {
     return tx<LayerRow[]>`
       select ${layerColumns(tx)}
-      from erp.inventory.inventory_cost_layers cl
+      from erp.inventory_cost_layers cl
       where cl.warehouse_id = ${warehouseInternalId}
         and cl.product_variant_id = ${variantInternalId}
         and cl.qty_remaining > 0
@@ -1563,7 +1563,7 @@ export class InventoryRepository {
   ): Promise<LayerRow[]> {
     return tx<LayerRow[]>`
       select ${layerColumns(tx)}
-      from erp.inventory.inventory_cost_layers cl
+      from erp.inventory_cost_layers cl
       where (${params.warehouseInternalId}::bigint is null or cl.warehouse_id = ${params.warehouseInternalId}::bigint)
         and (${params.variantInternalId}::bigint is null or cl.product_variant_id = ${params.variantInternalId}::bigint)
         and cl.qty_remaining > 0
@@ -1580,7 +1580,7 @@ export class InventoryRepository {
     isClosed: boolean,
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_cost_layers
+      update erp.inventory_cost_layers
       set qty_remaining = ${quantityRemaining}::numeric,
           cost_remaining_amount = ${costRemainingAmount},
           is_closed = ${isClosed}
@@ -1603,7 +1603,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.inventory.inventory_layer_consumptions
+      insert into erp.inventory_layer_consumptions
         (layer_id, issue_transaction_id, issue_transaction_created_at, warehouse_id,
          product_variant_id, quantity, cost_amount, consumption_kind, created_by)
       values (${input.layerInternalId}, ${input.issueTransactionInternalId},
@@ -1622,7 +1622,7 @@ export class InventoryRepository {
     variantInternalId: bigint,
   ): Promise<AverageCostRow> {
     await tx`
-      insert into erp.inventory.inventory_average_costs
+      insert into erp.inventory_average_costs
         (organization_id, public_id, warehouse_id, product_variant_id)
       values (${orgId}, gen_random_uuid(), ${warehouseInternalId}, ${variantInternalId})
       on conflict (warehouse_id, product_variant_id) do nothing
@@ -1634,7 +1634,7 @@ export class InventoryRepository {
              qty_on_hand::text as "quantityOnHand",
              avg_cost_amount::text as "avgCostAmount",
              total_value_amount::text as "totalValueAmount"
-      from erp.inventory.inventory_average_costs
+      from erp.inventory_average_costs
       where warehouse_id = ${warehouseInternalId} and product_variant_id = ${variantInternalId}
       for update
     `;
@@ -1647,7 +1647,7 @@ export class InventoryRepository {
     patch: { quantityOnHand: string; avgCostAmount: bigint; totalValueAmount: bigint; lastTransactionInternalId: bigint | null },
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_average_costs
+      update erp.inventory_average_costs
       set qty_on_hand = ${patch.quantityOnHand}::numeric,
           avg_cost_amount = ${patch.avgCostAmount},
           total_value_amount = ${patch.totalValueAmount},
@@ -1669,7 +1669,7 @@ export class InventoryRepository {
              qty_on_hand::text as "quantityOnHand",
              avg_cost_amount::text as "avgCostAmount",
              total_value_amount::text as "totalValueAmount"
-      from erp.inventory.inventory_average_costs
+      from erp.inventory_average_costs
       where warehouse_id = ${warehouseInternalId} and product_variant_id = ${variantInternalId}
     `;
     return rows[0] ?? null;
@@ -1688,7 +1688,7 @@ export class InventoryRepository {
     },
   ): Promise<ValuationRunRow> {
     const rows = await tx<ValuationRunRow[]>`
-      insert into erp.inventory.inventory_valuation_runs
+      insert into erp.inventory_valuation_runs
         (organization_id, public_id, warehouse_id, valuation_method, valuation_date, status, run_by)
       values (${input.orgId}, gen_random_uuid(), ${input.warehouseInternalId}, ${input.valuationMethod},
               ${input.valuationDate}::date, 'running', ${input.runBy})
@@ -1716,7 +1716,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      update erp.inventory.inventory_valuation_runs
+      update erp.inventory_valuation_runs
       set status = ${patch.status},
           total_quantity = ${patch.totalQuantity}::numeric,
           total_value_amount = ${patch.totalValueAmount},
@@ -1741,7 +1741,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.inventory.inventory_valuation_lines
+      insert into erp.inventory_valuation_lines
         (run_id, product_variant_id, warehouse_id, quantity, unit_cost_amount, total_value_amount, layer_breakdown)
       values (${input.runInternalId}, ${input.variantInternalId}, ${input.warehouseInternalId},
               ${input.quantity}::numeric, ${input.unitCostAmount}, ${input.totalValueAmount},
@@ -1755,9 +1755,9 @@ export class InventoryRepository {
              w.public_id as "warehouseId", l.quantity::text as quantity,
              l.unit_cost_amount::text as "unitCostAmount",
              l.total_value_amount::text as "totalValueAmount", l.layer_breakdown as "layerBreakdown"
-      from erp.inventory.inventory_valuation_lines l
-      join erp.catalog.product_variants v on v.id = l.product_variant_id
-      join erp.warehouse.warehouses w on w.id = l.warehouse_id
+      from erp.inventory_valuation_lines l
+      join erp.product_variants v on v.id = l.product_variant_id
+      join erp.warehouses w on w.id = l.warehouse_id
       where l.run_id = ${runInternalId}
       order by v.sku asc, w.code asc
     `;
@@ -1772,8 +1772,8 @@ export class InventoryRepository {
              r.total_value_amount::text as "totalValueAmount",
              r.journal_entry_id::text as "journalEntryId", r.completed_at::text as "completedAt",
              r.error_message as "errorMessage", r.created_at::text as "createdAt"
-      from erp.inventory.inventory_valuation_runs r
-      left join erp.warehouse.warehouses w on w.id = r.warehouse_id
+      from erp.inventory_valuation_runs r
+      left join erp.warehouses w on w.id = r.warehouse_id
       where r.organization_id = ${orgId} and r.public_id = ${publicId}
     `;
     return rows[0] ?? null;
@@ -1791,8 +1791,8 @@ export class InventoryRepository {
              r.total_value_amount::text as "totalValueAmount",
              r.journal_entry_id::text as "journalEntryId", r.completed_at::text as "completedAt",
              r.error_message as "errorMessage", r.created_at::text as "createdAt"
-      from erp.inventory.inventory_valuation_runs r
-      left join erp.warehouse.warehouses w on w.id = r.warehouse_id
+      from erp.inventory_valuation_runs r
+      left join erp.warehouses w on w.id = r.warehouse_id
       where r.organization_id = ${params.orgId}
         and (${params.status}::text is null or r.status = ${params.status})
       order by r.created_at desc
@@ -1821,14 +1821,14 @@ export class InventoryRepository {
              coalesce(ac.avg_cost_amount, 0)::text as "unitCostAmount",
              coalesce(ac.total_value_amount, 0)::text as "totalValueAmount",
              coalesce(layers.layer_count, 0)::int as "layerCount"
-      from erp.inventory.inventory_balances b
-      join erp.warehouse.warehouses w on w.id = b.warehouse_id
-      join erp.catalog.product_variants v on v.id = b.product_variant_id
-      left join erp.inventory.inventory_average_costs ac
+      from erp.inventory_balances b
+      join erp.warehouses w on w.id = b.warehouse_id
+      join erp.product_variants v on v.id = b.product_variant_id
+      left join erp.inventory_average_costs ac
         on ac.warehouse_id = b.warehouse_id and ac.product_variant_id = b.product_variant_id
       left join (
         select warehouse_id, product_variant_id, count(*)::int as layer_count
-        from erp.inventory.inventory_cost_layers where qty_remaining > 0
+        from erp.inventory_cost_layers where qty_remaining > 0
         group by warehouse_id, product_variant_id
       ) layers on layers.warehouse_id = b.warehouse_id and layers.product_variant_id = b.product_variant_id
       where b.organization_id = ${params.orgId} and b.on_hand > 0
@@ -1855,7 +1855,7 @@ export class InventoryRepository {
     },
   ): Promise<void> {
     await tx`
-      insert into erp.inventory.inventory_consistency_checks
+      insert into erp.inventory_consistency_checks
         (organization_id, check_type, warehouse_id, product_variant_id, location_id,
          expected_value, actual_value, difference, status, details, checked_at)
       values (${input.orgId}, ${input.checkType}, ${input.warehouseInternalId},
@@ -1881,8 +1881,8 @@ export class InventoryRepository {
     const rows = await tx<{ prefix: string; next_value: string; padding: number; fiscal_year: string }[]>`
       select ns.prefix, ns.next_value::text as next_value, ns.padding,
              to_char(fy.start_date, 'YYYY') as fiscal_year
-      from erp.platform.numbering_sequences ns
-      join erp.accounting.fiscal_years fy on fy.id = ns.fiscal_year_id
+      from erp.numbering_sequences ns
+      join erp.fiscal_years fy on fy.id = ns.fiscal_year_id
       where ns.organization_id = ${orgId}
         and ns.document_type = ${documentType}
         and fy.start_date <= ${businessDate}::date
@@ -1900,10 +1900,10 @@ export class InventoryRepository {
     const value = BigInt(row.next_value);
     const padded = value.toString().padStart(Number(row.padding), '0');
     await tx`
-      update erp.platform.numbering_sequences
+      update erp.numbering_sequences
       set next_value = next_value + 1, last_allocated_at = now()
       where organization_id = ${orgId} and document_type = ${documentType}
-        and fiscal_year_id = (select fiscal_year_id from erp.platform.numbering_sequences
+        and fiscal_year_id = (select fiscal_year_id from erp.numbering_sequences
                               where organization_id = ${orgId} and document_type = ${documentType}
                               limit 1)
     `;
@@ -1921,8 +1921,8 @@ export class InventoryRepository {
   ): Promise<{ periodInternalId: bigint; status: string } | null> {
     const rows = await tx<{ id: string; status: string }[]>`
       select p.id::text as id, p.status
-      from erp.accounting.accounting_periods p
-      join erp.accounting.fiscal_years fy on fy.id = p.fiscal_year_id
+      from erp.accounting_periods p
+      join erp.fiscal_years fy on fy.id = p.fiscal_year_id
       where fy.organization_id = ${orgId}
         and p.start_date <= ${businessDate}::date
         and p.end_date >= ${businessDate}::date
