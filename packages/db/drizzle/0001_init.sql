@@ -5976,6 +5976,36 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION erp.chain_audit(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION erp.chain_audit(integer) TO saman_worker;
+-- ---------- admin RPCs (SECURITY DEFINER; saman_app has no DELETE) ----------
+CREATE OR REPLACE FUNCTION erp.set_user_roles(p_user_id bigint, p_role_ids bigint[]) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
+BEGIN
+  DELETE FROM erp.user_roles ur
+   WHERE ur.user_id = p_user_id
+     AND NOT (ur.role_id = ANY (coalesce(p_role_ids, '{}'::bigint[])));
+  IF coalesce(array_length(p_role_ids, 1), 0) > 0 THEN
+    INSERT INTO erp.user_roles (user_id, role_id)
+    SELECT p_user_id, unnest(p_role_ids)
+    ON CONFLICT DO NOTHING;
+  END IF;
+  UPDATE erp.users SET permissions_version = permissions_version + 1 WHERE id = p_user_id;
+END $$;
+CREATE OR REPLACE FUNCTION erp.set_user_scope(p_user_id bigint, p_org_id bigint, p_branch_ids bigint[], p_warehouse_ids bigint[]) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
+BEGIN
+  DELETE FROM erp.user_scopes WHERE user_id = p_user_id;
+  IF coalesce(array_length(p_branch_ids, 1), 0) > 0 THEN
+    INSERT INTO erp.user_scopes (user_id, scope_type, scope_id, organization_id)
+    SELECT p_user_id, 'branch', unnest(p_branch_ids), p_org_id;
+  END IF;
+  IF coalesce(array_length(p_warehouse_ids, 1), 0) > 0 THEN
+    INSERT INTO erp.user_scopes (user_id, scope_type, scope_id, organization_id)
+    SELECT p_user_id, 'warehouse', unnest(p_warehouse_ids), p_org_id;
+  END IF;
+  UPDATE erp.users SET permissions_version = permissions_version + 1 WHERE id = p_user_id;
+END $$;
+GRANT EXECUTE ON FUNCTION erp.set_user_roles(bigint, bigint[]) TO saman_app;
+GRANT EXECUTE ON FUNCTION erp.set_user_scope(bigint, bigint, bigint[], bigint[]) TO saman_app;
 -- ============================================================================
 -- Grants manifest (R1-S H-12): app = no DELETE; readonly = views only
 -- ============================================================================

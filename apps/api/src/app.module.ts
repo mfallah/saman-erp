@@ -5,6 +5,7 @@ import { AppConfigModule } from './config/config.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { StepUpGuard } from './common/guards/step-up.guard';
+import { ScopeGuard } from './common/guards/scope.guard';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingModule } from './common/logging/logging.module';
@@ -87,6 +88,8 @@ import { AutomationModule } from './modules/automation/automation.module';
     { provide: APP_GUARD, useClass: PermissionsGuard },
     // Step-up third: only routes decorated with @RequireStepUp are affected.
     { provide: APP_GUARD, useClass: StepUpGuard },
+    // Scope fourth: branch/warehouse row-level access for decorated routes.
+    { provide: APP_GUARD, useClass: ScopeGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor },
     { provide: APP_INTERCEPTOR, useClass: HttpMetricsInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },

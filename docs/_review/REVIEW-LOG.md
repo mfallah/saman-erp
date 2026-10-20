@@ -153,6 +153,15 @@ static review could catch (all fixed except the last):
 | TD-34 | carrier rate selection + label PDF | open |
 | TD-32 | ScopeGuard | open |
 
+### Round 7 — ScopeGuard + admin RPCs (2026-10-20)
+
+| ID | Finding | Status |
+|---|---|---|
+| RT-SEC-03 | admin role/scope replacement used `DELETE`, which `saman_app` does not have (500) | **fixed**: SECURITY DEFINER RPCs `set_user_roles` / `set_user_scope` |
+| RT-SEC-04 | no row-level branch/warehouse enforcement | **fixed**: global `ScopeGuard` + `@ScopeCheck`, applied to inventory routes |
+| TD-32 | ScopeGuard missing | **closed** |
+| — | Docker still unavailable on the build host | noted (no code impact) |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning

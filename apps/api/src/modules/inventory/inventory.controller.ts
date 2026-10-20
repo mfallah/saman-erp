@@ -12,6 +12,7 @@ import { CurrentTenant } from '../../common/decorators/current-context.decorator
 import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { RequireStepUp } from '../../common/decorators/require-step-up.decorator';
+import { ScopeCheck } from '../../common/decorators/scope-check.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './inventory.pg-support';
@@ -39,6 +40,7 @@ function versioned(reply: FastifyReply, data: Record<string, unknown>): Record<s
 
 @ApiTags('inventory')
 @ApiBearerAuth()
+@ScopeCheck('warehouseId')
 @Controller('inventory')
 export class InventoryController {
   constructor(private readonly service: InventoryService) {}

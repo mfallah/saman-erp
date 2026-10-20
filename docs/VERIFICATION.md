@@ -450,3 +450,43 @@ event (not by the controller).
 - Procurement & pricing modules — TD-33.
 - Docker/Redis/PG16 host verification — TD-01/TD-25.
 - Carrier rate selection / label PDF — TD-34.
+
+
+---
+
+## 12. ScopeGuard + admin RPCs (2026-10-20, round 5)
+
+### 12.1 Row-level scope enforcement (TD-32)
+
+`@ScopeCheck('warehouseId')` + global `ScopeGuard`: a restricted actor may only
+address resources inside their branch/warehouse scope. Unrestricted (`null`)
+actors pass through. The guard resolves the public uuid to the internal id and
+compares it with the actor's scope, returning `403 identity.scope_denied` otherwise.
+
+```text
+admin sets user scope  warehouseIds=[2]        → 200
+scoped user GET /inventory/balances?warehouseId=1 → 403 scope_denied
+scoped user GET /inventory/balances?warehouseId=2 → 200 (rows returned)
+```
+
+### 12.2 Admin role/scope writes without DELETE privilege (RT-SEC-03)
+
+`saman_app` deliberately has **no DELETE** grant, but the admin service replaced
+role/scope rows with `DELETE`. Fix: two SECURITY DEFINER RPCs in the schema,
+executable by `saman_app`:
+
+- `erp.set_user_roles(user_id, role_ids[])` — deletes removed roles, inserts new ones, bumps `permissions_version`
+- `erp.set_user_scope(user_id, org_id, branch_ids[], warehouse_ids[])` — replaces scope row set
+
+```text
+PUT /users/:id/roles  (with step-up) → 200, roles persisted (warehouse_manager)
+PUT /users/:id/scope                 → 200, warehouseIds ["2"]
+DB: user_roles = [warehouse_manager] · user_scopes = [warehouse → 2]
+```
+
+### 12.3 Still open
+
+- Procurement & pricing modules — TD-33.
+- Carrier rates + label PDF — TD-34.
+- Docker/Redis/PG16 on a host — TD-01/TD-25 (Docker is not installed on the build machine).
+- Remaining TD-13…TD-23 items (per-role DB passwords, channel admin UI, BullMQ).

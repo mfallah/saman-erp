@@ -158,23 +158,16 @@ export class AdminRepository {
     const byCode = new Map(roles.map((row) => [String(row['code']), toBigInt(row['id'])]));
     const roleIds = roleCodes.map((code) => byCode.get(code)).filter((id): id is bigint => id !== undefined);
     if (roleIds.length !== roleCodes.length) return false;
-    await this.sql`delete from erp.user_roles where user_id = ${userId}`;
-    for (const roleId of roleIds) {
-      await this.sql`insert into erp.user_roles (user_id, role_id) values (${userId}, ${roleId}) on conflict do nothing`;
-    }
-    await this.sql`update erp.users set permissions_version = permissions_version + 1 where id = ${userId}`;
+    // saman_app intentionally has no DELETE; the SECURITY DEFINER RPC performs
+    // the replacement transactionally and bumps permissions_version.
+    await this.sql`select erp.set_user_roles(${userId}, ${roleIds.map((id) => id.toString())}::bigint[])`;
     return true;
   }
 
   async setUserScope(orgId: bigint, userId: bigint, branchIds: readonly bigint[], warehouseIds: readonly bigint[]): Promise<void> {
-    await this.sql`delete from erp.user_scopes where user_id = ${userId}`;
-    for (const id of branchIds) {
-      await this.sql`insert into erp.user_scopes (user_id, scope_type, scope_id, organization_id) values (${userId}, 'branch', ${id}, ${orgId}) on conflict do nothing`;
-    }
-    for (const id of warehouseIds) {
-      await this.sql`insert into erp.user_scopes (user_id, scope_type, scope_id, organization_id) values (${userId}, 'warehouse', ${id}, ${orgId}) on conflict do nothing`;
-    }
-    await this.sql`update erp.users set permissions_version = permissions_version + 1 where id = ${userId}`;
+    await this.sql`select erp.set_user_scope(${userId}, ${orgId},
+      ${branchIds.map((id) => id.toString())}::bigint[],
+      ${warehouseIds.map((id) => id.toString())}::bigint[])`;
   }
 
   async revokeUserSessions(userId: bigint, reason: string): Promise<number> {

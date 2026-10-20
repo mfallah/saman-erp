@@ -110,7 +110,7 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-28 | Automatic journal posting from outbox events was not wired in the worker | core accounting | **CLOSED (v1.2.0)**: worker posts inventory events transactionally; journal JV-1405-000001 verified |
 | TD-29 | ~~Transfer accounting payload parity~~ | — | **CLOSED (v1.2.1)**: dispatch/receive post JV-1405-000003/4 with cost from the line |
 | TD-31 | Valuation posting needs a prior-GL snapshot; a zero variance is rejected by the rule | valuation completeness | v1.3 snapshot-based variance |
-| TD-32 | No ScopeGuard: branch/warehouse scope is stored but not enforced on every route | row-level security | v1.2.x guard + query filters |
+| TD-32 | ~~No ScopeGuard~~ | — | **CLOSED (v1.3.1)**: global guard + `@ScopeCheck`, verified 403/200 live; applied to inventory routes (extend to warehouse/sales in v1.4) |
 | TD-30 | ~~Packing / shipping modules~~ | — | **CLOSED (v1.3.0)**: packing tasks, scans, shipment, packages, dispatch (sale_issue + COGS), delivery; E2E verified |
 | TD-33 | Procurement & pricing modules not implemented | catalog/commerce completeness | v1.4 modules |
 | TD-34 | Carrier rate selection and label PDF generation | shipping completeness | v1.3.x |
