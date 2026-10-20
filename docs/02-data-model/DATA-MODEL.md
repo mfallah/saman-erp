@@ -42,6 +42,7 @@ Every table below includes this block unless its row says **no-std** or **overri
 | `version` | `integer` | NO | `1` | optimistic lock; trigger `erp.trg_bump_version` on UPDATE; API `If-Match` |
 
 Rules:
+- **Soft-delete rule (D-H-01):** every natural/unique key on a master-data table is a **partial unique index `... WHERE deleted_at IS NULL`** so a deleted code can be reused while history keeps the old row; this is mandatory for `code`, `sku`, `barcode`, `slug`, `name`-style uniques on all soft-deleted tables.
 - **Master-data tables** additionally have `deleted_at timestamptz NULL` + partial index `ix_<table>_active ON <table> (id) WHERE deleted_at IS NULL` (or the repo's natural filter column). Soft delete is the *only* delete for master data; list repositories always filter `deleted_at IS NULL`.
 - **Transactional/document tables** have **no** `deleted_at`; rows are never deleted. Voiding is explicit (`voided_at`, `voided_by`, `void_reason`, `reversal_of_id`) and corrections are new reversal documents (ADR-0003 §4, ADR-0007 §1).
 - **Append-only tables** (`inventory_transactions`, `audit_logs`, `api_request_logs`, `channel_api_calls`, `journal_lines`, `outbox_events`, `security_events`, `login_attempts`, `data_versions`, `*_scans`, `*_events`) have **no** `version`/`updated_by` and are protected by DB grants: `saman_app` gets `SELECT, INSERT` only; `UPDATE/DELETE` revoked except for the documented lifecycle columns in §5.6.
@@ -72,7 +73,7 @@ Forbidden: `real`, `double precision`, `money`, `numeric` for monetary values, `
 - `snake_case`, plural table names, singular column names. Constraint names are explicit and stable:
   `pk_<table>`, `fk_<table>_<column>`, `uq_<table>_<cols>`, `ck_<table>_<rule>`, `ix_<table>_<cols>`, `ix_<table>_<cols>_partial`.
 - `ON DELETE` policy: `RESTRICT` (default) for references to master and transactional records; `CASCADE` **only** for pure child rows (document lines, scans, mappings, join rows, dimension values of an entry); `SET NULL` only for soft optional attribution (`created_by/updated_by/approved_by`-style human references); never cascade across aggregate roots.
-- Composite FK on the highest-risk relations includes `organization_id` to make cross-org links impossible by construction (ADR-0005): `(organization_id, id)` referenced from inventory, orders, journals.
+- Composite FK on the highest-risk relations includes `organization_id` to make cross-org links impossible by construction (ADR-0005): migrate to `(organization_id, id)` referencing FKs from inventory ledger/balances/reservations, sales orders/lines, journals/lines, payments, goods receipts (D-H-02; applied in migration 0017; a table-by-table coverage matrix is produced by the FK lint job).
 - Multi-tenant column `organization_id bigint NOT NULL` on every aggregate root (and on children only when it is inherited by an FK — no redundant copies). V1 is single-org (`1`), but scoping is enforced in repositories (`TenantContext`) and proven by tests. No RLS in v1 (ADR-0005); migration path documented there.
 
 ### 1.6 Lifecycle status vocabularies (single source: `packages/shared/enums.ts`)
@@ -145,8 +146,8 @@ Cross-cutting infrastructure. Owns the audit trail, the reliable-event machinery
 UQ `uq_system_settings_org_key` (organization_id, key) · CK `ck_system_settings_key_not_blank` · IX organization_id · CK `ck_system_settings_secret_json` (`NOT is_secret OR value_json ? 'ciphertext'`).
 
 **`platform.audit_logs`** *(partitioned, §4)* — append-only security/business audit trail; 7-year retention.
-`organization_id` bigint NN →organizations.id · `actor_user_id` bigint (→users.id, nullable for system) · `actor_type` varchar(20) NN DF `'user'` CK in (`user|system|api_client|channel`) · `api_client_id` bigint · `entity_type` varchar(100) NN · `entity_public_id` uuid · `entity_id` bigint · `action` varchar(80) NN (e.g. `inventory.adjust.applied`, `access.denied`) · `old_data` jsonb · `new_data` jsonb · `diff` jsonb · `ip_address` inet · `user_agent_hash` char(64) · `request_id` uuid · `trace_id` varchar(64) · `severity` varchar(10) NN DF `'info'` CK in (`info|warning|critical`)
-No `deleted_at`, no `version` (append-only). PK `(id, created_at)`. IX `(organization_id, created_at DESC)`, IX `(entity_type, entity_id, created_at DESC)`, IX `(actor_user_id, created_at DESC)`, BRIN created_at. Retention: hot 12 months, cold partitions archived yearly then detached.
+`organization_id` bigint NN →organizations.id · `actor_user_id` bigint (→users.id, nullable for system) · `actor_type` varchar(20) NN DF `'user'` CK in (`user|system|api_client|channel|webhook|machine`) · `api_client_id` bigint · `entity_type` varchar(100) NN · `entity_public_id` uuid · `entity_id` bigint · `action` varchar(80) NN (e.g. `inventory.adjust.applied`, `access.denied`) · `old_data` jsonb · `new_data` jsonb · `diff` jsonb · `ip_address` inet · `user_agent_hash` char(64) · `request_id` uuid · `trace_id` varchar(64) · **`prev_hash` char(64)** · **`entry_hash` char(64)** · **`hash_seq` bigint** (per-org chain sequence) · **`actor_label` varchar(150)** · `severity` varchar(10) NN DF `'info'` CK in (`info|warning|critical`)
+No `deleted_at`, no `version` (append-only). PK `(id, created_at)`. IX `(organization_id, created_at DESC)`, IX `(entity_type, entity_id, created_at DESC)`, IX `(actor_user_id, created_at DESC)`, BRIN created_at. Retention (v1.1, security): hot 12 months, then yearly partitions archived and detached; **total retention 10 years** (security requirement, supersedes ADR-0009 "7 years"); chain verification job runs hourly and raises `audit_mismatch` on any break.
 
 **`platform.security_events`** — authentication/authorization/credential anomalies (session reuse, lockout, permission denial burst, channel credential rotation).
 `organization_id` bigint · `event_type` varchar(60) NN CK in (`login.success|login.failure|login.locked|otp.sent|otp.failed|session.reuse_detected|session.revoked|permission.denied|password.changed|mfa.enrolled|device.trusted|device.revoked|credential.rotated|rate_limited`) · `user_id` bigint · `session_id` bigint →auth_sessions.id PD SET NULL · `ip_address` inet · `user_agent_hash` char(64) · `details` jsonb · `severity` varchar(10) NN DF `'info'`
@@ -162,14 +163,14 @@ IX `(organization_id, created_at DESC)`, IX `(status_code, created_at DESC)`, IX
 
 **`platform.idempotency_keys`** — HTTP idempotency replay store (ADR-0010).
 `organization_id` bigint NN · `key` varchar(200) NN · `scope` varchar(120) NN (e.g. `POST /api/v1/sales/orders`) · `request_hash` char(64) NN · `actor_user_id` bigint · `response_code` smallint · `response_body` jsonb · `resource_type` varchar(60) · `resource_public_id` uuid · `expires_at` timestamptz NN
-UQ `uq_idempotency_keys_org_scope_key` (organization_id, scope, key) · IX expires_at (cleanup). Replay returns original code/body; mismatched request_hash → `409 CONFLICT`.
+UQ `uq_idempotency_keys_org_actor_scope_key` (organization_id, actor_user_id, scope, key) NULLS NOT DISTINCT · IX expires_at (cleanup) · replay lookup includes `actor_user_id` (S-M-02). Replay returns original code/body; mismatched request_hash → `409 CONFLICT`.
 
 **`platform.outbox_events`** *(partitioned, §4)* — transactional outbox; processed partitions dropped after 30 days (ADR-0010).
 `organization_id` bigint NN · `event_type` varchar(100) NN (e.g. `sales.order.confirmed`, `inventory.stock.changed`) · `event_version` smallint NN DF 1 · `aggregate_type` varchar(80) NN · `aggregate_id` bigint NN · `aggregate_public_id` uuid · `payload` jsonb NN · `headers` jsonb NN DF `'{}'` · `status` varchar(20) NN DF `'pending'` CK in (`pending|processing|processed|failed`) · `available_at` timestamptz NN DF now() · `attempts` smallint NN DF 0 · `max_attempts` smallint NN DF 10 · `locked_by` varchar(80) · `locked_at` timestamptz · `processed_at` timestamptz · `last_error` text · `trace_id` varchar(64)
 UQ `uq_outbox_events_event` (event_type, aggregate_type, aggregate_id, event_version, created_at) · IX `ix_outbox_events_pending_partial` `(available_at) WHERE status IN ('pending','failed')` · IX `(aggregate_type, aggregate_id)` · BRIN created_at. Dispatcher: `FOR UPDATE SKIP LOCKED` batches of 100, 1 s poll + `NOTIFY`.
 
 **`platform.integration_dead_letters`** — permanently failed external operations/events, requires operator action.
-`organization_id` bigint NN · `integration` varchar(80) NN CK in (`carexy|digikala|limo_sms|carrier:*` free with prefix) · `operation` varchar(100) NN · `entity_type` varchar(60) · `entity_id` bigint · `payload` jsonb NN · `error_code` varchar(60) · `error_message` text NN · `retry_count` smallint NN DF 0 · `first_failed_at` timestamptz NN DF now() · `last_failed_at` timestamptz NN · `status` varchar(20) NN DF `'open'` CK in (`open|retried|resolved|ignored`) · `resolved_at` timestamptz · `resolved_by` bigint →users.id PD SET NULL
+`organization_id` bigint NN · `integration` varchar(80) NN validated against `platform.enum_values(domain='dead_letter_integration')` (seeded values include `carexy`, `digikala`, `limo_sms`, `post_api`, `partition_maintenance`, `webhook_outbound`; extensible without DDL — D-M-05) · `operation` varchar(100) NN · `entity_type` varchar(60) · `entity_id` bigint · `payload` jsonb NN · `error_code` varchar(60) · `error_message` text NN · `retry_count` smallint NN DF 0 · `first_failed_at` timestamptz NN DF now() · `last_failed_at` timestamptz NN · `status` varchar(20) NN DF `'open'` CK in (`open|retried|resolved|ignored`) · `resolved_at` timestamptz · `resolved_by` bigint →users.id PD SET NULL
 IX `(status, last_failed_at DESC)`, IX integration. Alert at open-count > 10.
 
 **`platform.data_versions`** — immutable snapshot history for entities requiring full version audit (price lists, posting rules, approval workflows, channel mappings, settings).
@@ -177,7 +178,7 @@ IX `(status, last_failed_at DESC)`, IX integration. Alert at open-count > 10.
 UQ `uq_data_versions_entity_version` (entity_type, entity_id, version_no) · IX `(entity_type, entity_id, changed_at DESC)`.
 
 **`platform.file_assets`** — every stored object (media, labels, exports, imports, attachments) with checksum; S3/MinIO key only, no public URLs in DB.
-`organization_id` bigint NN · `file_name` varchar(255) NN · `mime_type` varchar(120) NN · `storage_provider` varchar(20) NN DF `'s3'` CK in (`s3|minio|local`) · `bucket` varchar(120) NN · `storage_key` text NN · `size_bytes` bigint NN DF 0 CK ≥ 0 · `sha256` char(64) NN · `media_kind` varchar(20) NN DF `'document'` CK in (`image|video|document|label|export|import|archive`) · `visibility` varchar(10) NN DF `'private'` CK in (`private|org|public`) · `owner_entity_type` varchar(60) · `owner_entity_id` bigint · `metadata` jsonb NN DF `'{}'` · `scan_status` varchar(20) NN DF `'pending'` CK in (`pending|clean|infected|skipped`)
+`organization_id` bigint NN · `file_name` varchar(255) NN · `mime_type` varchar(120) NN · `storage_provider` varchar(20) NN DF `'s3'` CK in (`s3|minio|local`) · `bucket` varchar(120) NN · `storage_key` text NN · `size_bytes` bigint NN DF 0 CK ≥ 0 · `sha256` char(64) NN · `media_kind` varchar(20) NN DF `'document'` CK in (`image|video|document|label|export|import|archive`) · `visibility` varchar(10) NN DF `'private'` CK in (`private|org|public`) · **`scan_state` varchar(20) NN DF `'pending'` CK in (`pending|scanning|clean|infected|skipped`)** · **`quarantine_path` text** · **`uploaded_by` bigint →users.id PD SET NULL** · **`ready_at` timestamptz** (null until scan+complete; presigned-upload lifecycle) · `owner_entity_type` varchar(60) · `owner_entity_id` bigint · `metadata` jsonb NN DF `'{}'` · `scan_status` varchar(20) NN DF `'pending'` CK in (`pending|clean|infected|skipped`)
 UQ `uq_file_assets_storage_key` (bucket, storage_key) · IX `(owner_entity_type, owner_entity_id)` · IX organization_id. Public bucket never used for uploads (SECURITY §file pipeline).
 
 **`platform.printer_jobs`** — print queue for labels, pick lists, invoices; drives warehouse printers/agents.
@@ -200,7 +201,7 @@ IX `(organization_id, created_at DESC)`, IX `(mobile, created_at DESC)`, IX `(st
 `organization_id` bigint NN · `document_type` varchar(50) NN CK (see §6.5 registry) · `fiscal_year_id` bigint →fiscal_years.id PD RESTRICT · `prefix` varchar(20) NN · `next_value` bigint NN DF 1 CK > 0 · `padding` smallint NN DF 6 · `reset_policy` varchar(20) NN DF `'fiscal_year'` CK in (`fiscal_year|never`) · `last_allocated_at` timestamptz
 UQ `uq_numbering_sequences_org_doc_year` (organization_id, document_type, fiscal_year_id) · IX organization_id. Allocation uses `UPDATE … SET next_value = next_value + 1 RETURNING` (row lock; gap-free per ADR-0014; never reused after void).
 
-**`platform.saved_filters`** — user/admin saved list filters & views per module.
+**`platform.saved_filters`** — user/admin saved list filters & views per module (platform-owned; reporting endpoints consume it via the platform service — D-L-04).
 `user_id` bigint NN →users.id PD CASCADE · `module` varchar(50) NN · `name` varchar(150) NN · `filter_json` jsonb NN DF `'{}'` · `sort_json` jsonb NN DF `'{}'` · `is_shared` boolean NN DF false
 UQ `uq_saved_filters_user_module_name` (user_id, module, name) · IX (module).
 
@@ -259,8 +260,8 @@ UQ `uq_role_permissions_role_permission` (role_id, permission_id) · IX permissi
 UQ `uq_auth_sessions_token_hash` (refresh_token_hash) · IX `(user_id, revoked_at)` · IX `(session_family_id)` · IX expires_at (cleanup). Presenting a revoked/replaced token revokes the family and writes `security_events`.
 
 **`identity.user_devices`** — trusted devices (2FA bypass ≤30 days, revocation, push/label printers association).
-`user_id` bigint NN →users.id PD CASCADE · `device_fingerprint_hash` char(64) NN · `label` varchar(150) · `platform` varchar(40) · `user_agent_hash` char(64) · `trusted` boolean NN DF false · `trusted_until` timestamptz · `first_seen_at` timestamptz NN DF now() · `last_seen_at` timestamptz NN DF now() · `revoked_at` timestamptz
-UQ `uq_user_devices_user_fingerprint` (user_id, device_fingerprint_hash) · IX `(user_id, trusted)`.
+`user_id` bigint NN →users.id PD CASCADE · `device_fingerprint_hash` char(64) NN (display label only — **never an authenticator**) · **`device_secret_hash` char(64) NN** (SHA-256 of a server-issued 32-byte secret delivered in an HttpOnly cookie; trust requires matching secret) · **`secret_issued_at` timestamptz NN DF now()** · **`secret_rotated_at` timestamptz** · `label` varchar(150) · `platform` varchar(40) · `user_agent_hash` char(64) · `trusted` boolean NN DF false · `trusted_until` timestamptz · `first_seen_at` timestamptz NN DF now() · `last_seen_at` timestamptz NN DF now() · `revoked_at` timestamptz
+UQ `uq_user_devices_user_fingerprint` (user_id, device_fingerprint_hash) · **CK `ck_user_devices_trusted_secret` (`NOT trusted OR device_secret_hash IS NOT NULL`)** · IX `(user_id, trusted)`.
 
 **`identity.otp_challenges`** — OTP codes for login, device trust, sensitive actions (hashed, single-use, 2 min).
 `organization_id` bigint · `user_id` bigint →users.id PD CASCADE · `mobile` varchar(20) NN · `purpose` varchar(40) NN CK in (`login|device_trust|password_change|action_confirm|channel_credential`) · `code_hash` char(64) NN · `provider` varchar(40) NN DF `'limo_sms'` · `provider_request_id` varchar(150) · `attempt_count` smallint NN DF 0 CK ≥ 0 · `max_attempts` smallint NN DF 5 · `status` varchar(20) NN DF `'pending'` CK in (`pending|verified|expired|locked|consumed`) · `expires_at` timestamptz NN · `verified_at` timestamptz · `consumed_at` timestamptz · `ip_address` inet
@@ -300,7 +301,7 @@ UQ `uq_fx_rates_org_currency_date` (organization_id, currency_code, effective_da
 
 **`org.holidays`** — official Iranian holidays/weekends used for delivery-date promises and due-date calculations (Jalali-aware at the edge).
 `organization_id` bigint · `holiday_date` date NN · `title_fa` varchar(200) NN · `is_official` boolean NN DF true · `is_working_day` boolean NN DF false · `recurring_kind` varchar(20) NN DF `'fixed'` CK in (`fixed|lunar|none`)
-UQ `uq_holidays_date_title` (holiday_date, title_fa) · IX holiday_date.
+UQ `uq_holidays_org_date_title` (organization_id, holiday_date, title_fa) · IX holiday_date.
 
 ---
 
@@ -353,8 +354,8 @@ UQ `uq_product_variant_attributes_variant_attr` (variant_id, attribute_id) · IX
 UQ `uq_category_attributes_cat_attr` (category_id, attribute_id) · IX attribute_id.
 
 **`catalog.product_media`** — images/videos attached to product or variant; bytes in S3 (`file_assets`).
-`product_id` bigint NN →products.id PD CASCADE · `variant_id` bigint →product_variants.id PD CASCADE · `file_id` bigint NN →file_assets.id PD RESTRICT · `media_type` varchar(20) NN DF `'image'` CK in (`image|video|document|360`) · `alt` varchar(250) · `sort_order` integer NN DF 0 · `is_primary` boolean NN DF false
-IX product_id · IX variant_id · IX file_id · CK `ck_product_media_owner` (`product_id IS NOT NULL OR variant_id IS NOT NULL`) — service always sets product_id. UQ primary per product: `uq_product_media_primary ON (product_id) WHERE is_primary`.
+`product_id` bigint →products.id PD CASCADE · `variant_id` bigint →product_variants.id PD CASCADE · `file_id` bigint NN →file_assets.id PD RESTRICT · `media_type` varchar(20) NN DF `'image'` CK in (`image|video|document|360`) · `alt` varchar(250) · `sort_order` integer NN DF 0 · `is_primary` boolean NN DF false
+IX product_id · IX variant_id · IX file_id · CK `ck_product_media_owner` (`product_id IS NOT NULL OR variant_id IS NOT NULL`) — either owner is valid (variant-only media allowed); service sets `product_id` when known. UQ primary per product: `uq_product_media_primary ON (product_id) WHERE is_primary`.
 
 **`catalog.product_specs`** — grouped specification sections (e.g. «مشخصات فنی») for storefront/channel content.
 `product_id` bigint NN →products.id PD CASCADE · `title` varchar(200) NN · `sort_order` integer NN DF 0
@@ -407,7 +408,7 @@ UQ `uq_warehouse_racks_aisle_code` (aisle_id, code) · IX aisle_id.
 UQ `uq_warehouse_shelves_rack_code` (rack_id, code) · IX rack_id.
 
 **`warehouse.warehouse_bins`** — bin/slot (final cell `07`) with capacity.
-`shelf_id` bigint NN →warehouse_shelves.id PD RESTRICT · `code` varchar(20) NN · `bin_type` varchar(30) NN DF `'standard'` CK in (`standard|pallet|oversize|pick_face|staging`) · `capacity_qty` numeric(18,4) · `capacity_weight_kg` numeric(18,4) · `is_pick_face` boolean NN DF true · `is_active` boolean NN DF true
+`shelf_id` bigint NN →warehouse_shelves.id PD RESTRICT · `code` varchar(20) NN · `bin_type` varchar(30) NN DF `'standard'` CK in (`standard|pallet|oversize|pick_face|staging`) · `capacity_qty` numeric(18,4) · **`capacity_weight_grams` integer** (weight policy: grams, never numeric kg — D-H-07) · `is_pick_face` boolean NN DF true · `is_active` boolean NN DF true
 UQ `uq_warehouse_bins_shelf_code` (shelf_id, code) · IX shelf_id.
 
 **`warehouse.warehouse_locations`** — the **only** address stock uses; leaf linked to the full chain with a computed hierarchical code (kept in sync by trigger/service) and scanner code.
@@ -458,7 +459,7 @@ UQ `uq_warehouse_devices_wh_identifier` (warehouse_id, identifier) partial `WHER
 
 ### 2.6 Module `inventory` — ledger, balances, cost layers, reservations, lots, units, counts, adjustments, transfers, valuation (20 tables)
 
-**The stock truth.** ADR-0007 rules are binding: append-only ledger + balance projection in the same transaction + fixed lock order; `inventory_balances` CHECK constraints make negative stock impossible. Money valuation is `bigint` IRR; quantities `numeric(18,4)`.
+**Ledger sign rule (D-M-11):** `inventory_transactions.quantity` is signed and the sign is **derived from `transaction_type`** (in-types positive: receipt/transfer_in/return_in/adjustment_in/opening; out-types negative: sale_issue/adjustment_out/transfer_out/damage_out/scrap_out/count_correction_out); the posting service rejects a row whose sign contradicts its type. **The stock truth.** ADR-0007 rules are binding: append-only ledger + balance projection in the same transaction + fixed lock order; `inventory_balances` CHECK constraints make negative stock impossible. Money valuation is `bigint` IRR; quantities `numeric(18,4)`.
 
 **`inventory.inventory_balances`** — hot projection: one row per `(warehouse_id, location_id, product_variant_id)`; maintained by `InventoryService` in the same transaction as the ledger insert (never by trigger). Also exists per warehouse with `location_id IS NULL`? **No** — location is mandatory; warehouse-level availability is aggregated. Contains no money.
 `organization_id` bigint NN (composite FK `(organization_id, warehouse_id)` →warehouses) · `warehouse_id` bigint NN →warehouses.id PD RESTRICT · `location_id` bigint NN →warehouse_locations.id PD RESTRICT · `product_variant_id` bigint NN →product_variants.id PD RESTRICT · `on_hand` numeric(18,4) NN DF 0 · `reserved` numeric(18,4) NN DF 0 · `safety_buffer` numeric(18,4) NN DF 0 · `damaged` numeric(18,4) NN DF 0 · `in_transit` numeric(18,4) NN DF 0 · `last_transaction_id` bigint · `last_counted_at` timestamptz · `updated_at` (std)
@@ -485,8 +486,8 @@ UQ `uq_inventory_units_inventory_code` (inventory_code) · UQ `uq_inventory_unit
 IX `(inventory_unit_id, event_at DESC)` · IX from_location_id · IX to_location_id.
 
 **`inventory.stock_reservations`** — reservation rows created inside the allocation transaction (ADR-0007 §3); lifecycle `active → consumed | released | expired`.
-`organization_id` bigint NN · `warehouse_id` bigint NN →warehouses.id PD RESTRICT · `location_id` bigint NN →warehouse_locations.id PD RESTRICT · `product_variant_id` bigint NN →product_variants.id PD RESTRICT · `quantity` numeric(18,4) NN CK > 0 · `reference_type` varchar(40) NN CK in (`sales_order|sales_order_line|transfer|stock_count|manual`) · `reference_id` bigint NN · `reservation_no` varchar(50) NN · `status` varchar(20) NN DF `'active'` CK in (`active|consumed|released|expired`) · `consumed_at` timestamptz · `released_at` timestamptz · `expires_at` timestamptz · `created_by` bigint
-UQ `uq_stock_reservations_no` (reservation_no) · IX `(reference_type, reference_id)` · IX `(warehouse_id, product_variant_id)` partial `WHERE status = 'active'` · IX `(status, expires_at)` · IX product_variant_id · IX location_id. Reservation consumes into `inventory_transactions(transaction_type='reservation_consume')` on issue. Expiry released by `fulfillment:expire-reservations` job.
+`organization_id` bigint NN · `warehouse_id` bigint NN →warehouses.id PD RESTRICT · `location_id` bigint NN →warehouse_locations.id PD RESTRICT · `product_variant_id` bigint NN →product_variants.id PD RESTRICT · `quantity` numeric(18,4) NN CK > 0 · `reference_type` varchar(40) NN CK in (`sales_order|sales_order_line|transfer|stock_count|manual`) · `reference_id` bigint NN · `reservation_no` varchar(50) NN · `status` varchar(20) NN DF `'active'` CK in (`active|partially_consumed|consumed|released|expired`) · **`consumed_qty` numeric(18,4) NN DF 0 CK ≥ 0** · **`released_qty` numeric(18,4) NN DF 0 CK ≥ 0** · **`consumed_transaction_id` bigint** (last issue) · `consumed_at` timestamptz · `released_at` timestamptz · `expires_at` timestamptz · `created_by` bigint
+UQ `uq_stock_reservations_no` (reservation_no) · IX `(reference_type, reference_id)` · IX `(warehouse_id, product_variant_id)` partial `WHERE status = 'active'` · IX `(status, expires_at)` · IX product_variant_id · IX location_id · **CK `ck_stock_reservations_consumption` (`consumed_qty + released_qty <= quantity`)**. Reservation consumes into `inventory_transactions(transaction_type='reservation_consume')` on issue. Expiry released by `fulfillment:expire-reservations` job.
 
 **`inventory.stock_adjustments`** — manual stock correction document (write-off, damage, found stock); maker-checker above threshold (ADR-0008 §5).
 `organization_id` bigint NN · `warehouse_id` bigint NN →warehouses.id PD RESTRICT · `adjustment_no` varchar(60) NN · `reason_code` varchar(50) NN CK in (`damage|loss|theft|found|expiry|quality|correction|write_off|sample|return_to_stock`) · `status` varchar(20) NN DF `'draft'` CK in (`draft|pending_approval|approved|applied|rejected|voided`) · `description` text · `requires_approval` boolean NN DF false · `approval_request_id` bigint →approval_requests.id PD SET NULL · `approved_by` bigint →users.id PD SET NULL · `approved_at` timestamptz · `applied_at` timestamptz · `journal_entry_id` bigint →journal_entries.id PD SET NULL
@@ -785,8 +786,8 @@ UQ `uq_journal_lines_entry_line` (journal_entry_id, line_no) · IX account_id ·
 UQ `uq_journal_line_dimensions_line_dim` (journal_line_id, dimension_id) · IX dimension_id · IX dimension_value_id.
 
 **`accounting.account_balances`** — period balances projection (per account × period × optional dimension); maintained in the same transaction as posting; supports trial balance/BS/P&L fast.
-`organization_id` bigint NN · `fiscal_year_id` bigint NN →fiscal_years.id PD RESTRICT · `period_id` bigint NN →accounting_periods.id PD RESTRICT · `account_id` bigint NN →chart_of_accounts.id PD RESTRICT · `dimension_value_id` bigint →dimension_values.id PD RESTRICT · `opening_debit_amount` bigint NN DF 0 · `opening_credit_amount` bigint NN DF 0 · `period_debit_amount` bigint NN DF 0 · `period_credit_amount` bigint NN DF 0 · `closing_debit_amount` bigint NN DF 0 · `closing_credit_amount` bigint NN DF 0 · `last_journal_line_id` bigint
-UQ `uq_account_balances_period_account_dim` (period_id, account_id, dimension_value_id) (NULLS NOT DISTINCT in PG16) · IX account_id · IX fiscal_year_id · IX dimension_value_id · CK `ck_account_balances_balanced` (`closing_debit_amount - closing_credit_amount = opening_debit_amount - opening_credit_amount + period_debit_amount - period_credit_amount`).
+`organization_id` bigint NN · `fiscal_year_id` bigint NN →fiscal_years.id PD RESTRICT · `period_id` bigint NN →accounting_periods.id PD RESTRICT · `account_id` bigint NN →chart_of_accounts.id PD RESTRICT · `opening_debit_amount` bigint NN DF 0 · `opening_credit_amount` bigint NN DF 0 · `period_debit_amount` bigint NN DF 0 · `period_credit_amount` bigint NN DF 0 · `closing_debit_amount` bigint NN DF 0 · `closing_credit_amount` bigint NN DF 0 · `last_journal_line_id` bigint (v1.1: **no dimension column** — per-dimension reporting joins `journal_line_dimensions` to `journal_lines`; this avoids the single-dimension double-count, A-H-13) 
+UQ `uq_account_balances_period_account` (period_id, account_id) · IX account_id · IX fiscal_year_id · CK `ck_account_balances_balanced` (`closing_debit_amount - closing_credit_amount = opening_debit_amount - opening_credit_amount + period_debit_amount - period_credit_amount`).
 
 **`accounting.tax_rates`** — tax rate master (VAT 10%, exempt 0%, withholding), effective-dated; seeded §6.4.
 `organization_id` bigint NN · `code` varchar(40) NN · `name_fa` varchar(150) NN · `tax_type` varchar(30) NN DF `'vat'` CK in (`vat|withholding|income|excise|duty|exempt`) · `rate_percent` numeric(9,6) NN DF 0 CK between 0 and 1 · **`gl_account_id` bigint →chart_of_accounts.id PD RESTRICT** (output VAT payable `2-1-05-001` for sales, input VAT receivable `1-1-06-001` for purchases, withholding liability `2-1-13-001`) · **`is_recoverable` boolean NN DF true** · `effective_from` date NN · `effective_to` date · `is_default` boolean NN DF false · `is_active` boolean NN DF true
@@ -884,7 +885,7 @@ IX `(cash_account_id, transaction_date DESC)` · IX cash_session_id · IX paymen
 
 **`treasury.bank_transactions`** — imported/reconciled bank statement lines and internal bank movements (book side vs statement side flagged).
 `bank_account_id` bigint NN →bank_accounts.id PD RESTRICT · `source` varchar(20) NN CK in (`internal|statement|manual`) · `value_date` date NN · `post_date` date · `direction` varchar(10) NN CK in (`debit|credit`) · `amount` bigint NN CK > 0 · `balance_after_amount` bigint · `description` varchar(500) · `bank_reference` varchar(150) · `payment_id` bigint →payments.id PD SET NULL · `journal_entry_id` bigint →journal_entries.id PD SET NULL · `status` varchar(20) NN DF `'unmatched'` CK in (`matched|unmatched|ignored`) · `match_rule` varchar(40) · `import_batch_id` varchar(60)
-UQ `uq_bank_transactions_account_ref` (bank_account_id, bank_reference) partial `WHERE bank_reference IS NOT NULL` · IX `(bank_account_id, value_date DESC)` · IX `(status, value_date)` · IX payment_id · IX journal_entry_id · CK `ck_bank_transactions_direction` (`(source='statement' AND direction IN ('debit','credit')) OR (source<>'statement' AND direction IN ('debit','credit'))` — single vocabulary; statements use bank perspective, documented).
+UQ `uq_bank_transactions_account_ref` (bank_account_id, bank_reference) partial `WHERE bank_reference IS NOT NULL` · IX `(bank_account_id, value_date DESC)` · IX `(status, value_date)` · IX payment_id · IX journal_entry_id · CK `ck_bank_transactions_direction` (`direction IN ('debit','credit')`) — single vocabulary; statement-side lines live in `bank_statement_lines` (v1.1), so the old tautology is removed.
 
 **`treasury.bank_reconciliations`** — reconciliation statement per account/period: opening/closing statement vs book balance, status and differences.
 `bank_account_id` bigint NN →bank_accounts.id PD RESTRICT · `reconciliation_no` varchar(60) NN · `period_start_date` date NN · `period_end_date` date NN · `statement_opening_balance_amount` bigint NN · `statement_closing_balance_amount` bigint NN · `book_opening_balance_amount` bigint NN · `book_closing_balance_amount` bigint NN · `difference_amount` bigint NN DF 0 · `status` varchar(20) NN DF `'in_progress'` CK in (`in_progress|completed|approved`) · `completed_at` timestamptz · `completed_by` bigint →users.id PD SET NULL · `approved_by` bigint →users.id PD SET NULL
@@ -906,13 +907,7 @@ IX `(cheque_id, event_date)` · IX `(event_type, event_date DESC)` · IX journal
 
 ### 2.14 Module `partners` — partners/shares, capital & current ledger, profit distribution, channel settlements (9 tables)
 
-**`partners.shareholders`** — shareholders/partners master with ownership share and capital.
-`organization_id` bigint NN · `code` varchar(40) NN · `name` varchar(250) NN · `shareholder_type` varchar(20) NN DF `'person'` CK in (`person|company|fund`) · `national_id` varchar(20) · `mobile` varchar(20) · `share_count` numeric(30,6) NN DF 0 CK ≥ 0 · `ownership_percent` numeric(9,6) NN DF 0 CK between 0 and 1 · `capital_value_amount` bigint NN DF 0 · `partner_account_id` bigint →partner_accounts.id PD SET NULL · `is_active` boolean NN DF true · `deleted_at` timestamptz
-UQ `uq_shareholders_org_code` (organization_id, code) · UQ `uq_shareholders_org_national_id` (organization_id, national_id) partial `WHERE national_id IS NOT NULL` · IX partner_account_id · CK `ck_shareholders_ownership_range` (`ownership_percent >= 0 AND ownership_percent <= 1`).
-
-**`partners.shareholder_transactions`** — capital changes, drawings, distributions per shareholder with journal link.
-`shareholder_id` bigint NN →shareholders.id PD RESTRICT · `transaction_type` varchar(40) NN CK in (`capital_increase|capital_decrease|drawing|profit_share|loss_share|loan|repayment|dividend_paid`) · `amount` bigint NN (signed by direction column: `direction` in/out) · `direction` varchar(10) NN CK in (`in|out`) · `share_count` numeric(30,6) · `transaction_date` date NN · `journal_entry_id` bigint →journal_entries.id PD SET NULL · `description` text
-IX `(shareholder_id, transaction_date DESC)` · IX journal_entry_id.
+**Partners master (v1.1)** — `partners.partners`, `partners.partner_shares` and `partners.partner_capital_transactions` (defined in §2.17) replace the former `shareholders`/`shareholder_transactions` tables. API resources `shareholder.*` and `partner.*` both operate on `partners` rows (type filter); ownership history lives in `partner_shares` (effective-dated) and capital/current movements in `partner_capital_transactions`. Profit distribution references `partners.id`.
 
 **`partners.partner_accounts`** — current account (حساب جاری شرکا) per partner type/id, linked to a CoA detail account.
 `organization_id` bigint NN · `partner_type` varchar(30) NN CK in (`customer|supplier|shareholder|employee|channel`) · `partner_id` bigint NN · `account_id` bigint NN →chart_of_accounts.id PD RESTRICT · `credit_limit_amount` bigint NN DF 0 · `opening_balance_amount` bigint NN DF 0 · `current_balance_amount` bigint NN DF 0 · `is_active` boolean NN DF true
@@ -945,7 +940,7 @@ IX settlement_id · IX sales_order_id · IX line_type.
 Read-only surfaces over operational data; heavy reports run as SQL/matviews from the worker, never in write transactions (ARCHITECTURE §6).
 
 **`reporting.report_definitions`** — report registry: code, required permission, parameter schema, SQL/view binding.
-`organization_id` bigint NN · `code` varchar(80) NN · `name_fa` varchar(200) NN · `module` varchar(40) NN · `report_kind` varchar(20) NN DF `'sql'` CK in (`sql|matview|external`) · `query_definition` jsonb NN DF `'{}'` (bound query id + allowed filters; no user-supplied SQL) · `parameter_schema` jsonb NN DF `'{}'` · `required_permission_key` varchar(120) · `is_system` boolean NN DF false · `is_active` boolean NN DF true
+`organization_id` bigint NN · `code` varchar(80) NN · `name_fa` varchar(200) NN · `module` varchar(40) NN · `report_kind` varchar(20) NN DF `'sql'` CK in (`sql|matview|external`) · `query_definition` jsonb NN DF `'{}'` (bound query id + allowed filters; no user-supplied SQL) · `parameter_schema` jsonb NN DF `'{}'` · **`required_permissions` text[] NN DF '{}'** (array of registry keys; endpoint requires ALL — S-H-09; e.g. balance-sheet → `report.run` + `accounting.balance.read`) · `is_system` boolean NN DF false · `is_active` boolean NN DF true
 UQ `uq_report_definitions_org_code` (organization_id, code) · IX `(module, is_active)`.
 
 **`reporting.report_runs`** — execution record of a report (status, params, output file, row count, duration) for audit and caching.
@@ -953,7 +948,7 @@ UQ `uq_report_definitions_org_code` (organization_id, code) · IX `(module, is_a
 IX `(report_id, created_at DESC)` · IX `(requested_by, created_at DESC)` · IX `(status, created_at)`.
 
 **`reporting.dashboard_widgets`** — widget catalogue (KPI card, chart, table) with typed config and required permission.
-`organization_id` bigint NN · `code` varchar(80) NN · `name_fa` varchar(150) NN · `widget_type` varchar(20) NN CK in (`kpi|line_chart|bar_chart|pie_chart|table|list`) · `module` varchar(40) NN · `config` jsonb NN DF `'{}'` · `required_permission_key` varchar(120) · `cache_seconds` integer NN DF 60 · `is_active` boolean NN DF true
+`organization_id` bigint NN · `code` varchar(80) NN · `name_fa` varchar(150) NN · `widget_type` varchar(20) NN CK in (`kpi|line_chart|bar_chart|pie_chart|table|list`) · `module` varchar(40) NN · `config` jsonb NN DF `'{}'` · **`required_permissions` text[] NN DF '{}'** (widget resolution requires all keys; dashboards inherit the strictest widget — S-H-09) · `cache_seconds` integer NN DF 60 · `is_active` boolean NN DF true
 UQ `uq_dashboard_widgets_org_code` (organization_id, code).
 
 **`reporting.user_dashboard_widgets`** — per-user widget layout/instance config.
@@ -977,15 +972,15 @@ UQ `uq_business_rules_org_code` (organization_id, code) · IX `(module, rule_kin
 UQ `uq_alert_rules_org_code` (organization_id, code).
 
 **`automation.alert_events`** — fired alert occurrences with state (firing/resolved/acknowledged) and notification links.
-`alert_rule_id` bigint NN →alert_rules.id PD CASCADE · `entity_type` varchar(60) · `entity_id` bigint · `metric_value` numeric(18,6) · `severity` varchar(10) NN · `status` varchar(20) NN DF `'firing'` CK in (`firing|acknowledged|resolved|silenced`) · `fired_at` timestamptz NN DF now() · `resolved_at` timestamptz · `acknowledged_by` bigint →users.id PD SET NULL · `details` jsonb
-IX `(alert_rule_id, fired_at DESC)` · IX `(status, severity)` · IX `(entity_type, entity_id)`.
+`alert_rule_id` bigint NN →alert_rules.id PD CASCADE · `entity_type` varchar(60) · `entity_id` bigint · `metric_value` numeric(18,6) · `severity` varchar(10) NN · `status` varchar(20) NN DF `'firing'` CK in (`firing|acknowledged|resolved|silenced`) · `fired_at` timestamptz NN DF now() · `resolved_at` timestamptz · `acknowledged_at` timestamptz · `acknowledged_by` bigint →users.id PD SET NULL · **`assigned_to` bigint →users.id PD SET NULL** · **`note` text** · `details` jsonb
+IX `(alert_rule_id, fired_at DESC)` · IX `(status, severity)` · IX `(entity_type, entity_id)` · IX assigned_to.
 
 **`automation.fraud_flags`** — suspicious order/customer/channel signals from rules (velocity, address mismatch, repeated failed COD, channel anomalies); review workflow.
 `organization_id` bigint NN · `entity_type` varchar(50) NN CK in (`sales_order|customer|payment|cheque|channel_account|refund`) · `entity_id` bigint NN · `entity_public_id` uuid · `rule_code` varchar(80) NN · `severity` varchar(10) NN DF `'medium'` CK in (`low|medium|high|critical`) · `score` numeric(9,6) NN DF 0 · `status` varchar(20) NN DF `'open'` CK in (`open|under_review|confirmed_fraud|false_positive|resolved`) · `details` jsonb · `reviewed_by` bigint →users.id PD SET NULL · `reviewed_at` timestamptz · `review_note` text
 UQ `uq_fraud_flags_entity_rule` (entity_type, entity_id, rule_code) partial `WHERE status = 'open'` · IX `(organization_id, status, severity)` · IX `(entity_type, entity_id)` · IX reviewed_by.
 
 
-### 2.17 Revision v1.1 additions (24 new tables; see §10 for finding IDs)
+### 2.17 Revision v1.1 additions (26 new tables; see §10 for finding IDs)
 
 These tables resolve the R1 review persistence gaps. All use the standard column block (§1.3) unless noted, are owned by the module prefix shown, and are included in the 215-table count.
 
@@ -1510,7 +1505,7 @@ erDiagram
 | Table | Partition key | Retention | Archive before detach | Notes |
 |---|---|---|---|---|
 | `erp.inventory_transactions` | monthly RANGE on `created_at` | keep 25 months hot | yearly CSV/Parquet to S3 | largest table; append-only; queries must constrain `created_at` |
-| `erp.audit_logs` | monthly RANGE on `created_at` | 7 years total (12 months hot) | yearly Parquet export to S3 (compliance) | immutable |
+| `erp.audit_logs` | monthly RANGE on `created_at` | **10 years total** (12 months hot) | yearly Parquet export to S3 (compliance) | immutable + hash-chained |
 | `erp.api_request_logs` | monthly RANGE on `created_at` | 90 days | none | bodies only on errors |
 | `erp.channel_api_calls` | monthly RANGE on `created_at` | 180 days | none | redacted payloads |
 | `erp.outbox_events` | monthly RANGE on `created_at` | processed partitions 30 days | none | pending rows always kept (they are in the current month partition) |
@@ -1940,14 +1935,16 @@ Matviews are the **only** heavy read surfaces; no report query scans a raw trans
 
 | Object class | `saman_app` | `saman_worker` | `saman_readonly` | `saman_migrator` |
 |---|---|---|---|---|
-| business tables | SELECT/INSERT/UPDATE (no DELETE) | same | SELECT on views/matviews only | ALL |
+| business tables | SELECT/INSERT/UPDATE (**no DELETE**; `saman_app` DELETE is revoked on every table and re-granted only where a trigger-managed lifecycle exists) | same | **views/matviews only — no base-table SELECT** (S-H-12) | ALL |
 | append-only tables | SELECT/INSERT (+documented column UPDATE) | same | SELECT on views | ALL |
 | `channel_credentials.ciphertext` | SELECT (column grant) | SELECT | **none** | ALL |
+| `password_history`, `login_attempts`, `user_devices`, `otp_challenges`, `auth_sessions`, `security_events` | SELECT (auth module only) | SELECT | **none** | ALL |
+| `audit_logs`, `system_settings` | SELECT | SELECT | **none** (audited views only) | ALL |
 | sequences | USAGE | USAGE | none | ALL |
 | functions | EXECUTE (whitelist) | EXECUTE (whitelist) | EXECUTE (report fns) | ALL |
 | `erp` schema | USAGE | USAGE | USAGE | CREATE |
 
-No role owns tables except `saman_migrator`; `saman_app` cannot `TRUNCATE`, `ALTER`, `DROP`, or bypass RLS (future). Statement timeouts: `saman_app=5s`, `saman_worker=30m`, `saman_migrator=0`.
+Grants are generated from an explicit manifest and CI compares `\dp` output with it (S-H-12). No role owns tables except `saman_migrator`; `saman_app` cannot `TRUNCATE`, `ALTER`, `DROP`, or bypass RLS (future). Statement timeouts: `saman_app=5s`, `saman_worker=30m`, `saman_migrator=0`.
 
 ### 5.6 Append-only exceptions table (allowed UPDATE columns)
 
@@ -1969,10 +1966,10 @@ Seed runs as `pnpm db:seed` on every deploy: **idempotent upserts keyed by natur
 
 ### 6.1 Roles (8 system roles, immutable)
 
-| role code | name (fa) | scope_mode | Grant summary (expanded from the 412-key registry at seed time) |
+| role code | name (fa) | scope_mode | Grant summary (expanded from the 414-key registry at seed time) |
 |---|---|---|---|
-| `superadmin` | مدیر سیستم | all | every key in §6.2, including `identity.break_glass.use`; break-glass actions are always audited (`severity=critical`) |
-| `admin` | مدیر کل | all | every key except `identity.break_glass.use`; may approve any workflow; `channel.credential.write/delete` allowed but each use opens an `approval_requests` record |
+| `superadmin` | مدیر سیستم | all | every key in §6.2, including `identity.break_glass.use`, `approval.config.manage`, `user.reset_password`, `accounting.journal.post_high_value`, `export.read_all`; break-glass actions are always audited (`severity=critical`) |
+| `admin` | مدیر کل | all | every key except `identity.break_glass.use`, `approval.config.manage`, `user.reset_password`; may approve any workflow; `channel.credential.write/delete` allowed but each use opens an `approval_requests` record |
 | `finance_manager` | مدیر مالی | all | `accounting.*`, `ledger`, `payment.*`, `bank.*`, `cash*`, `cheque.*`, `reconciliation.*`, `partner*`, `shareholder*`, `profit.distribution.*`, `settlement.*`, `report.*`, `dashboard.*`, `price.list.*`, `pricing*`, `price.snapshot.read`, `marketplace.fee.*`, `sales.refund.approve`, `inventory.valuation.*`, plus reads: `sales.order.read`, `purchase.order.read`, `supplier.read`, `customer.read`, `inventory.balance.read`, `inventory.ledger.read`; **no** inventory mutation, no warehouse execution |
 | `accountant` | حسابدار | branch | `accounting.journal.read/create/update/post`, `accounting.coa.read`, `accounting.dimension.read`, `accounting.period.read`, `accounting.ledger.read`, `accounting.balance.read`, `accounting.tax.read`, `accounting.link.read`, `accounting.valuation.read`, `payment.read/create/submit`, `cheque.read/issue/deposit`, `bank.account.read`, `cash.transaction.read/create`, `report.read/run`, `customer.invoice.read`, `sales.order.read`, `inventory.balance.read`; no `accounting.journal.reverse`, no `accounting.period.close`, no `product.cost.read` beyond journal view |
 | `warehouse_manager` | مدیر انبار | warehouse | `warehouse.*` (incl. `warehouse.device`, `putaway`, `pick`, `pack`, `wave`), `inventory` (adjust/count/reserve/transfer), `inventory.adjust.read/approve/post`, `inventory.count.read/approve/post`, `inventory.transfer.read/approve`, `inventory.balance.read`, `inventory.ledger.read`, `inventory.lot.read`, `inventory.serial.read`, `inventory.unit.read/update`, `goods.receipt.*`, `purchase.order.read`, `sales.order.read`, `fulfillment.allocate`, `shipment.read/create`, `reorder.rule.*`, `label.read`, `package.read`; **no** `product.cost.read`, no pricing/accounting |
@@ -1984,9 +1981,10 @@ Seed rules: `is_system=true` for all eight; `role_permissions` are replaced from
 
 ### 6.2 Permission-key registry (source of truth: `docs/03-api-contract/API.md §5 Permission-key registry`)
 
-Keys are `<resource>.<action>`; `permissions.resource` = all dot-segments except the last; `permissions.action` = last segment. `description_fa` is seeded per key (short Persian label used by role UI). **Seed exactly this registry — 412 keys / 131 resources** — copied from `03-api-contract/API.md` §5.2 (generated from the endpoint catalog; names are owned by the API contract, this document owns the seed mechanics). A route referencing a key outside this set fails CI; a key never referenced by a route fails the permission-registry test. `is_system=true` for all seeded keys; grants reference exact keys only (no wildcards in DB).
+Keys are `<resource>.<action>`; `permissions.resource` = all dot-segments except the last; `permissions.action` = last segment. `description_fa` is seeded per key (short Persian label used by role UI). **Seed exactly this registry — 414 keys / 131 resources** — copied from `03-api-contract/API.md` §5.2 (generated from the endpoint catalog; names are owned by the API contract, this document owns the seed mechanics). A route referencing a key outside this set fails CI; a key never referenced by a route fails the permission-registry test. `is_system=true` for all seeded keys; grants reference exact keys only (no wildcards in DB).
 
 ```text
+
 accounting.balance: read
 accounting.budget: activate, approve, create, delete, read, update
 accounting.coa: create, delete, import, read, update
@@ -1994,7 +1992,7 @@ accounting.dimension: create, delete, read, update
 accounting.document: create, export, issue, read, void
 accounting.expense: approve, create, delete, pay, read, update
 accounting.fiscal_year: close, create, read, reopen, update
-accounting.journal: approve, create, delete, post, read, reverse, update
+accounting.journal: approve, create, delete, post, post_high_value, read, reverse, update
 accounting.ledger: read
 accounting.link: create, delete, read
 accounting.period: close, read, reopen
@@ -2003,9 +2001,9 @@ accounting.tax: create, delete, read, update
 accounting.valuation: post, read, run
 api_client: create, delete, read, rotate, update
 api_request_log: read
-approval: act, request
+approval: act, config.manage, request
 approval.request: read
-approval.workflow: manage, read
+approval.workflow: read
 attribute: create, delete, read, update
 audit: export, read
 automation.alert: ack, manage, read
@@ -2037,7 +2035,7 @@ dashboard: create, delete, read, update
 data.version: read
 department: create, delete, read, update
 device: read, revoke
-export: create, delete, read
+export: delete, read, read_all
 file: create, delete, read
 file.link: create
 fulfillment: allocate
@@ -2107,7 +2105,7 @@ system.backup: read, run
 system.maintenance: read, run
 system.metrics: read
 unit: create, delete, read, update
-user: create, delete, read, update
+user: create, delete, read, reset_password, update
 user.scope: assign
 variant: create, delete, read, update
 warehouse: create, delete, device, pack, pick, putaway, read, update, wave
@@ -2120,160 +2118,235 @@ warehouse.wave: read
 webhook.outbound: manage, read
 ```
 
-**Derivation rules:** the last dot segment is the action (`resource` may contain dots); a bare capability key (`inventory.adjust`, `inventory.count`, `inventory.transfer`, `inventory.reserve`, `fulfillment.allocate`, `pricing.calculate`) gates the *initiating* operation, while its stricter `.approve`/`.post` siblings are separation-of-duties gates (ADR-0008 §5). Sensitive reads are explicit (`product.cost.read`, `accounting.balance.read`, `security_event.read`) and are never implied by a generic read. Seed count check: `SELECT count(*) FROM erp.permissions WHERE is_system` must equal **412** (`MIGRATION-NOTES.md` §4.7).
+**Derivation rules:** the last dot segment is the action (`resource` may contain dots); a bare capability key (`inventory.adjust`, `inventory.count`, `inventory.transfer`, `inventory.reserve`, `fulfillment.allocate`, `pricing.calculate`) gates the *initiating* operation, while its stricter `.approve`/`.post` siblings are separation-of-duties gates (ADR-0008 §5). Sensitive reads are explicit (`product.cost.read`, `accounting.balance.read`, `security_event.read`) and are never implied by a generic read. Seed count check: `SELECT count(*) FROM erp.permissions WHERE is_system` must equal **414** (`MIGRATION-NOTES.md` §4.7).
 
 **Resource → owning module mapping (`permissions.module`)** — the seed's `resource→module` map: `user|role|permission|session|device|identity.*` → `identity`; `organization|branch|department|currency|holiday` → `org`; `product|variant|barcode|category|brand|attribute|media|unit` → `catalog`; `inventory*|reorder.rule` → `inventory`; `warehouse*` → `warehouse`; `supplier*|purchase.order|goods.receipt` → `procurement`; `sales.*|customer*|fulfillment` → `sales`; `shipment|package|label|carrier|shipping.rate` → `fulfillment`; `price.*|pricing*|marketplace.fee` → `pricing`; `channel*|webhook.outbound` → `channels`; `accounting.*|approval*` → `accounting`; `payment*|bank.*|cash*|cheque|reconciliation` → `treasury`; `partner*|shareholder*|profit.distribution|settlement` → `partners`; `report|dashboard` → `reporting`; `automation*` → `automation`; everything else (`api_client, api_request_log, audit, data.version, export, file*, import, integration.dead_letter, job, notification*, outbox, printer*, saved_filter, security_event, setting, sms*, system*`) → `platform`.
 
 **Keys with no dedicated table** (capability/ops guards, mapped to the table they operate on for audit purposes): `notification.template` → `sms_templates`; `bank.statement` → `bank_transactions`; `accounting.ledger` → `journal_lines` (via `v_trial_balance`/ledger views); `accounting.link` → `accounting_document_links`; `webhook.outbound` → `outbox_events`; `file.link` → `file_assets` owner columns; `cash.session` → `treasury.cash_sessions`; `identity.break_glass` → `audit_logs` + `security_events` (no state); `system.metrics|system.backup|system.maintenance` → operational endpoints (no table; `partition_maintenance_log`/`export_jobs` record the work). These keys are still seeded and granted exactly like any other.
 
-### 6.3 Iranian 6-level chart of accounts (seed)
+### 6.3 Iranian 6-level chart of accounts (exact seed manifest)
 
-Codes: `L1` 1 digit, `L2` `L1-L2`, `L3` `L1-L2-LL`, `L4` `L1-L2-LL-LLL`, `L5` `…-LL` (cost center), `L6` `…-LLL` (project). `parent` = code without last segment. `is_postable` only for L4 (default), L5, L6 rows created for actual centers/projects. `organization_id=1`. `normal_balance`/`account_type` shown per level-3/4 row (L1/L2 inherit by type). Total seeded rows: 5 + 10 + 38 + 62 + 8 + 6 = 129 (L5/L6 are templates created per cost center/project).
+**v1.1 rewrite (R1-A B-04/B-05, R1-D B-04):** the seed is now an exact, executable manifest with every mandatory column, asserted counts, explicit contra rows and no placeholder codes. Inheritance rule keeps it compact: a row's `account_type` is inherited from its L1 group (`1=asset, 2=liability, 3=equity, 4=income, 5=expense`); `normal_balance` is inherited from L2 unless the row is listed in the contra override table; `nature='operational'` unless listed as contra; `is_postable=true` for **all L4** rows (and for L5/L6 rows created per cost center/project), `false` for L1–L3. Every row: `organization_id=1`, `currency='IRR'`, `deleted_at=NULL`, `is_active=true`. Each row's `parent_id` is resolved by code.
 
-**Level 1 — groups**
+**Asserted counts** (CI: `erp.validate_coa_seed()`): L1 **5**, L2 **10**, L3 **60**, L4 **94**, L5 templates **8**, L6 templates **6** → **183 manifest rows**. Postable accounts: 85 permanent + 14 templates.
 
-| code | name_fa | account_type | normal_balance |
+#### L1 — groups (5)
+
+| code | name_fa | account_type | normal_balance | nature |
+|---|---|---|---|---|
+| `1` | دارایی‌ها | asset | debit | operational |
+| `2` | بدهی‌ها | liability | credit | operational |
+| `3` | حقوق صاحبان سرمایه | equity | credit | operational |
+| `4` | درآمدها | income | credit | operational |
+| `5` | هزینه‌ها | expense | debit | operational |
+
+#### L2 — کل (10)
+
+| code | name_fa | parent | normal_balance |
 |---|---|---|---|
-| `1` | دارایی‌ها | asset | debit |
-| `2` | بدهی‌ها | liability | credit |
-| `3` | حقوق صاحبان سرمایه | equity | credit |
-| `4` | درآمدها | income | credit |
-| `5` | هزینه‌ها | expense | debit |
+| `1-1` | دارایی‌های جاری | 1 | debit |
+| `1-2` | دارایی‌های غیرجاری | 1 | debit |
+| `2-1` | بدهی‌های جاری | 2 | credit |
+| `2-2` | بدهی‌های بلندمدت | 2 | credit |
+| `3-1` | سرمایه | 3 | credit |
+| `3-2` | سود و اندوخته | 3 | credit |
+| `4-1` | درآمد عملیاتی | 4 | credit |
+| `4-2` | سایر درآمدها | 4 | credit |
+| `5-1` | بهای تمام‌شده کالای فروش‌رفته و ضایعات | 5 | debit |
+| `5-2` | هزینه‌های عملیاتی | 5 | debit |
 
-**Level 2 — کل**
+#### Contra overrides (explicit; `nature='contra'`, opposite normal side)
 
-| code | name_fa | parent |
-|---|---|---|
-| `1-1` | دارایی‌های جاری | 1 |
-| `1-2` | دارایی‌های غیرجاری | 1 |
-| `2-1` | بدهی‌های جاری | 2 |
-| `2-2` | بدهی‌های بلندمدت | 2 |
-| `3-1` | سرمایه | 3 |
-| `3-2` | سود و اندوخته | 3 |
-| `4-1` | درآمد عملیاتی | 4 |
-| `4-2` | سایر درآمدها | 4 |
-| `5-1` | بهای تمام‌شده کالای فروش‌رفته | 5 |
-| `5-2` | هزینه‌های عملیاتی | 5 |
+| code | name_fa | parent | account_type | normal_balance | why |
+|---|---|---|---|---|---|
+| `1-2-02` | استهلاک انباشته دارایی‌های ثابت | 1-2 | asset | **credit** | contra-asset |
+| `3-1-02` | سرمایه پرداخت‌نشده | 3-1 | equity | **debit** | contra-equity |
+| `4-1-02` | برگشت از فروش | 4-1 | income | **debit** | contra-revenue |
+| `4-1-03` | تخفیفات فروش | 4-1 | income | **debit** | contra-revenue |
+| `1-1-03-003` | ذخیره مطالبات مشکوک‌الوصول | 1-1-03 | asset | **credit** | contra-asset (L4) |
+| `2-1-08-001` | سود سهام پرداختنی | 2-1-08 | liability | credit | normal (not contra; listed for explicitness) |
+| `1-1-09` | حساب تسویه کانال‌های فروش | 1-1 | asset | debit | clearing asset (normal) |
+| `2-1-12` | حساب‌های تسویه درگاه پرداخت | 2-1 | liability | credit | clearing liability (normal) |
 
-**Level 3 — معین** (38 rows)
+CI test: every row with `nature='contra'` must have `normal_balance` opposite its group's natural side (`erp.assert_contra_signs()`).
 
-| code | name_fa | parent |
-|---|---|---|
-| `1-1-01` | موجودی نقد و بانک | 1-1 |
-| `1-1-02` | سرمایه‌گذاری‌های کوتاه‌مدت | 1-1 |
-| `1-1-03` | حساب‌های دریافتنی تجاری | 1-1 |
-| `1-1-04` | موجودی کالا | 1-1 |
-| `1-1-05` | پیش‌پرداخت‌ها و علی‌الحساب | 1-1 |
-| `1-1-06` | مالیات بر ارزش افزوده دریافتنی | 1-1 |
-| `1-1-07` | چک‌های دریافتنی | 1-1 |
-| `1-1-08` | حساب‌های دریافتنی از کانال‌های فروش | 1-1 |
-| `1-2-01` | دارایی‌های ثابت مشهود | 1-2 |
-| `1-2-02` | استهلاک انباشته دارایی‌های ثابت | 1-2 |
-| `1-2-03` | دارایی‌های نامشهود | 1-2 |
-| `1-2-04` | سرمایه‌گذاری‌های بلندمدت | 1-2 |
-| `2-1-01` | حساب‌های پرداختنی تجاری | 2-1 |
-| `2-1-02` | اسناد پرداختنی | 2-1 |
-| `2-1-03` | معوقات بیمه | 2-1 |
-| `2-1-04` | معوقات مالیات | 2-1 |
-| `2-1-05` | مالیات بر ارزش افزوده پرداختنی | 2-1 |
-| `2-1-06` | پیش‌دریافت از مشتریان | 2-1 |
-| `2-1-07` | حقوق و دستمزد پرداختنی | 2-1 |
-| `2-1-08` | سود سهام پرداختنی | 2-1 |
-| `2-1-09` | چک‌های پرداختنی | 2-1 |
-| `2-1-10` | حساب‌های پرداختنی به کانال‌های فروش | 2-1 |
-| `2-2-01` | وام‌ها و تسهیلات بانکی بلندمدت | 2-2 |
-| `2-2-02` | بدهی‌های سنواتی کارکنان | 2-2 |
-| `3-1-01` | سرمایه ثبت‌شده | 3-1 |
-| `3-1-02` | سرمایه پرداخت‌نشده | 3-1 |
-| `3-2-01` | سود (زیان) انباشته | 3-2 |
-| `3-2-02` | اندوخته قانونی | 3-2 |
-| `3-2-03` | سایر اندوخته‌ها | 3-2 |
-| `3-2-04` | سود (زیان) دوره جاری | 3-2 |
-| `4-1-01` | فروش کالا | 4-1 |
-| `4-1-02` | برگشت از فروش | 4-1 |
-| `4-1-03` | تخفیفات فروش | 4-1 |
-| `4-1-04` | درآمد حمل و ارسال | 4-1 |
-| `4-2-01` | سود سپرده‌های بانکی | 4-2 |
-| `4-2-02` | درآمد متفرقه | 4-2 |
-| `5-1-01` | بهای تمام‌شده کالای فروخته‌شده | 5-1 |
-| `5-1-02` | کسری و ضایعات انبار | 5-1 |
-| `5-2-01` | هزینه‌های حمل و نقل | 5-2 |
+#### L3 — معین (59 rows)
 
-**Level 3 (continued) — 5-2 operating expense detail** (added to the same 5-2 parent; part of the 38 count above): `5-2-02` بسته‌بندی، `5-2-03` کارمزد پلتفرم‌ها، `5-2-04` تبلیغات و بازاریابی، `5-2-05` هزینه‌های پرسنلی، `5-2-06` استهلاک، `5-2-07` هزینه‌های مالی و بانکی، `5-2-08` مالیات بر درآمد، `5-2-09` اجاره، `5-2-10` هزینه متفرقه. *(Count: the 38 rows above include `5-2-01`; these nine continue the list — final L3 count = 38.)*
+| code | name_fa | parent | normal_balance | nature |
+|---|---|---|---|---|
+| `1-1-01` | موجودی نقد و بانک | 1-1 | debit | operational |
+| `1-1-02` | سرمایه‌گذاری‌های کوتاه‌مدت | 1-1 | debit | operational |
+| `1-1-03` | حساب‌های دریافتنی تجاری | 1-1 | debit | operational |
+| `1-1-04` | موجودی کالا | 1-1 | debit | operational |
+| `1-1-05` | پیش‌پرداخت‌ها و علی‌الحساب | 1-1 | debit | operational |
+| `1-1-06` | مالیات بر ارزش افزوده دریافتنی (اعتبار مالیاتی) | 1-1 | debit | operational |
+| `1-1-07` | چک‌های دریافتنی | 1-1 | debit | operational |
+| `1-1-08` | حساب‌های دریافتنی از کانال‌های فروش | 1-1 | debit | operational |
+| `1-1-09` | حساب تسویه کانال‌های فروش (clearing) | 1-1 | debit | operational |
+| `1-1-10` | موجودی کالای در راه و امانی | 1-1 | debit | operational |
+| `1-2-01` | دارایی‌های ثابت مشهود | 1-2 | debit | operational |
+| `1-2-02` | استهلاک انباشته دارایی‌های ثابت | 1-2 | credit | **contra** |
+| `1-2-03` | دارایی‌های نامشهود | 1-2 | debit | operational |
+| `1-2-04` | سرمایه‌گذاری‌های بلندمدت | 1-2 | debit | operational |
+| `1-2-05` | استهلاک انباشته دارایی‌های نامشهود | 1-2 | credit | **contra** |
+| `2-1-01` | حساب‌های پرداختنی تجاری | 2-1 | credit | operational |
+| `2-1-02` | اسناد پرداختنی | 2-1 | credit | operational |
+| `2-1-03` | معوقات بیمه | 2-1 | credit | operational |
+| `2-1-04` | معوقات مالیات بر درآمد | 2-1 | credit | operational |
+| `2-1-05` | مالیات بر ارزش افزوده پرداختنی (خروجی) | 2-1 | credit | operational |
+| `2-1-06` | پیش‌دریافت از مشتریان | 2-1 | credit | operational |
+| `2-1-07` | حقوق و دستمزد پرداختنی | 2-1 | credit | operational |
+| `2-1-08` | سود سهام پرداختنی | 2-1 | credit | operational |
+| `2-1-09` | چک‌های پرداختنی | 2-1 | credit | operational |
+| `2-1-10` | پرداختنی کارمزد کانال‌های فروش | 2-1 | credit | operational |
+| `2-1-11` | کالای دریافت‌شده بدون فاکتور (GRNI) | 2-1 | credit | operational |
+| `2-1-12` | حساب‌های تسویه درگاه پرداخت (POS/درگاه/COD) | 2-1 | credit | operational |
+| `2-1-13` | مالیات تکلیفی پرداختنی | 2-1 | credit | operational |
+| `2-2-01` | وام‌ها و تسهیلات بانکی بلندمدت | 2-2 | credit | operational |
+| `2-2-02` | بدهی‌های سنواتی کارکنان | 2-2 | credit | operational |
+| `3-1-01` | سرمایه ثبت‌شده | 3-1 | credit | operational |
+| `3-1-02` | سرمایه پرداخت‌نشده | 3-1 | debit | **contra** |
+| `3-2-01` | سود (زیان) انباشته | 3-2 | credit | operational |
+| `3-2-02` | اندوخته قانونی | 3-2 | credit | operational |
+| `3-2-03` | سایر اندوخته‌ها | 3-2 | credit | operational |
+| `3-2-04` | سود (زیان) دوره جاری | 3-2 | credit | operational |
+| `3-2-05` | تعدیلات سنواتی | 3-2 | credit | operational |
+| `4-1-01` | فروش کالا | 4-1 | credit | operational |
+| `4-1-02` | برگشت از فروش | 4-1 | debit | **contra** |
+| `4-1-03` | تخفیفات فروش | 4-1 | debit | **contra** |
+| `4-1-04` | درآمد حمل و ارسال (بازپرداخت‌شده) | 4-1 | credit | operational |
+| `4-2-01` | سود سپرده‌های بانکی | 4-2 | credit | operational |
+| `4-2-02` | اضافه صندوق و درآمد متفرقه | 4-2 | credit | operational |
+| `5-1-01` | بهای تمام‌شده کالای فروخته‌شده (COGS) | 5-1 | debit | operational |
+| `5-1-02` | کسری شمارش انبار | 5-1 | debit | operational |
+| `5-1-03` | ضایعات و دمیج انبار | 5-1 | debit | operational |
+| `5-2-01` | هزینه‌های حمل و نقل | 5-2 | debit | operational |
+| `5-2-02` | هزینه بسته‌بندی | 5-2 | debit | operational |
+| `5-2-03` | کارمزد پلتفرم‌ها و درگاه‌ها | 5-2 | debit | operational |
+| `5-2-04` | تبلیغات و بازاریابی | 5-2 | debit | operational |
+| `5-2-05` | هزینه‌های پرسنلی | 5-2 | debit | operational |
+| `5-2-06` | هزینه استهلاک | 5-2 | debit | operational |
+| `5-2-07` | هزینه‌های مالی و بانکی | 5-2 | debit | operational |
+| `5-2-08` | هزینه مالیات بر درآمد | 5-2 | debit | operational |
+| `5-2-09` | اجاره | 5-2 | debit | operational |
+| `5-2-10` | هزینه متفرقه | 5-2 | debit | operational |
+| `5-2-11` | هزینه مطالبات مشکوک‌الوصول | 5-2 | debit | operational |
+| `5-2-12` | کسری صندوق | 5-2 | debit | operational |
+| `5-2-13` | تفاوت تسویه کانال‌ها | 5-2 | debit | operational |
+| `5-2-14` | تفاوت گرد کردن و باقیمانده توزیع | 5-2 | debit | operational |
 
-**Level 4 — تفصیلی (postable) — 62 rows** (default posting accounts; generated for all L3 groups above)
+*(60 rows; `1-1-10` carries the old `1-1-04-002` in-transit role at L3 and is postable only via its L4 children.)*
 
-| code | name_fa | parent |
-|---|---|---|
-| `1-1-01-001` | صندوق مرکزی | 1-1-01 |
-| `1-1-01-002` | بانک‌ها (حساب اصلی) | 1-1-01 |
-| `1-1-01-003` | صندوق فروشگاه | 1-1-01 |
-| `1-1-02-001` | سپرده سرمایه‌گذاری کوتاه‌مدت | 1-1-02 |
-| `1-1-03-001` | دریافتنی از مشتریان | 1-1-03 |
-| `1-1-03-002` | اسناد دریافتنی | 1-1-03 |
-| `1-1-03-003` | ذخیره مطالبات مشکوک‌الوصول | 1-1-03 |
-| `1-1-04-001` | موجودی کالای بازرگانی | 1-1-04 |
-| `1-1-04-002` | موجودی کالای در راه | 1-1-04 |
-| `1-1-04-003` | موجودی کالای امانی/کانال | 1-1-04 |
-| `1-1-05-001` | پیش‌پرداخت به تأمین‌کنندگان | 1-1-05 |
-| `1-1-06-001` | مالیات بر ارزش افزوده دریافتنی | 1-1-06 |
-| `1-1-07-001` | چک‌های دریافتنی در جریان وصول | 1-1-07 |
-| `1-1-07-002` | چک‌های دریافتنی نزد صندوق | 1-1-07 |
-| `1-1-08-001` | دریافتنی از دیجی‌کالا | 1-1-08 |
-| `1-1-08-002` | دریافتنی از کرکسی | 1-1-08 |
-| `1-2-01-001` | زمین | 1-2-01 |
-| `1-2-01-002` | ساختمان | 1-2-01 |
-| `1-2-01-003` | ماشین‌آلات و تجهیزات | 1-2-01 |
-| `1-2-01-004` | وسایل نقلیه | 1-2-01 |
-| `1-2-01-005` | رایانه و تجهیزات اداری | 1-2-01 |
-| `1-2-02-001` | استهلاک انباشته ساختمان | 1-2-02 |
-| `1-2-02-002` | استهلاک انباشته تجهیزات | 1-2-02 |
-| `1-2-03-001` | نرم‌افزار و لایسنس | 1-2-03 |
-| `1-2-04-001` | سرمایه‌گذاری بلندمدت | 1-2-04 |
-| `2-1-01-001` | پرداختنی به تأمین‌کنندگان | 2-1-01 |
-| `2-1-01-002` | اسناد پرداختنی | 2-1-01 |
-| `2-1-02-001` | اسناد پرداختنی بلندمدت | 2-1-02 |
-| `2-1-03-001` | بیمه تأمین اجتماعی پرداختنی | 2-1-03 |
-| `2-1-04-001` | مالیات بر درآمد پرداختنی | 2-1-04 |
-| `2-1-05-001` | مالیات بر ارزش افزوده پرداختنی | 2-1-05 |
-| `2-1-06-001` | پیش‌دریافت از مشتریان | 2-1-06 |
-| `2-1-07-001` | حقوق و دستمزد پرداختنی | 2-1-07 |
-| `2-1-08-001` | سود سهام پرداختنی | 2-1-08 |
-| `2-1-09-001` | چک‌های پرداختنی | 2-1-09 |
-| `2-1-10-001` | پرداختنی کارمزد کانال‌ها | 2-1-10 |
-| `2-2-01-001` | تسهیلات بانکی بلندمدت | 2-2-01 |
-| `2-2-02-001` | ذخیره سنوات کارکنان | 2-2-02 |
-| `3-1-01-001` | سرمایه ثبت‌شده | 3-1-01 |
-| `3-1-02-001` | سرمایه پرداخت‌نشده | 3-1-02 |
-| `3-2-01-001` | سود انباشته | 3-2-01 |
-| `3-2-02-001` | اندوخته قانونی | 3-2-02 |
-| `3-2-03-001` | سایر اندوخته‌ها | 3-2-03 |
-| `3-2-04-001` | سود (زیان) دوره جاری | 3-2-04 |
-| `4-1-01-001` | فروش از سایت اختصاصی (کرکسی) | 4-1-01 |
-| `4-1-01-002` | فروش از دیجی‌کالا | 4-1-01 |
-| `4-1-01-003` | فروش از اسنپ‌شاپ | 4-1-01 |
-| `4-1-01-004` | فروش از تپسی‌شاپ | 4-1-01 |
-| `4-1-01-005` | فروش حضوری/POS | 4-1-01 |
-| `4-1-02-001` | برگشت از فروش | 4-1-02 |
-| `4-1-03-001` | تخفیفات فروش | 4-1-03 |
-| `4-1-04-001` | درآمد حمل و ارسال | 4-1-04 |
-| `4-2-01-001` | سود سپرده بانکی | 4-2-01 |
-| `4-2-02-001` | درآمد متفرقه | 4-2-02 |
-| `5-1-01-001` | بهای تمام‌شده کالای فروش‌رفته | 5-1-01 |
-| `5-1-02-001` | کسری انبار | 5-1-02 |
-| `5-2-01-001` | هزینه حمل و نقل | 5-2-01 |
-| `5-2-02-001` | هزینه بسته‌بندی | 5-2-02 |
-| `5-2-03-001` | کارمزد دیجی‌کالا | 5-2-03 |
-| `5-2-03-002` | کارمزد کرکسی/درگاه | 5-2-03 |
-| `5-2-04-001` | هزینه تبلیغات | 5-2-04 |
-| `5-2-05-001` | هزینه حقوق و مزایا | 5-2-05 |
+#### L4 — تفصیلی, postable (94 rows; all `is_postable=true`)
 
-**Level 5 — مرکز هزینه (templates, 8 rows)** — dimension `cost_center` mirrors these; posting selects L5 rows only when cost-center accounting is enabled for the account. Codes `…-01` … `…-08` under `5-2` groups: انبار مرکزی، فروش، بازاریابی، مالی، اداری، فناوری اطلاعات، پشتیبانی مشتریان، عمومی.
+Rule: `account_type`/`normal_balance` inherited from the L3 parent; only `1-1-03-003` is contra (credit). Listing is `code name_fa` (parent = code minus last segment). Fenced block is directly parseable by the seed generator.
 
-**Level 6 — پروژه (templates, 6 rows)** — `dimension_values` of dimension `project`: توسعه فروشگاه، راه‌اندازی انبار جدید، پروژه یکپارچه‌سازی کانال، پروژه حسابداری، پروژه بهبود فرایند، بدون پروژه.
+```text
+1-1-01-001 صندوق مرکزی
+1-1-01-002 بانک‌ها - حساب اصلی
+1-1-01-003 صندوق فروشگاه
+1-1-01-004 حساب واسط درگاه پرداخت (در انتظار تسویه)
+1-1-01-005 حساب واسط POS و پرداخت در محل
+1-1-02-001 سپرده سرمایه‌گذاری کوتاه‌مدت
+1-1-03-001 دریافتنی از مشتریان
+1-1-03-002 اسناد دریافتنی
+1-1-03-003 ذخیره مطالبات مشکوک‌الوصول
+1-1-03-004 دریافتنی از مشتریان - اعتباری
+1-1-04-001 موجودی کالای بازرگانی
+1-1-04-002 موجودی کالای در جریان ساخت/بسته‌بندی
+1-1-05-001 پیش‌پرداخت به تأمین‌کنندگان
+1-1-05-002 علی‌الحساب کارکنان
+1-1-06-001 مالیات بر ارزش افزوده دریافتنی
+1-1-06-002 اعتبار مالیاتی صادرات
+1-1-07-001 چک‌های دریافتنی نزد صندوق
+1-1-07-002 چک‌های دریافتنی در جریان وصول (در جریان)
+1-1-08-001 دریافتنی از دیجی‌کالا
+1-1-08-002 دریافتنی از کرکسی
+1-1-08-003 دریافتنی از اسنپ‌شاپ
+1-1-08-004 دریافتنی از تپسی‌شاپ
+1-1-09-001 تسویه در جریان کانال‌ها
+1-1-09-002 وجه در راه کانال‌ها
+1-1-10-001 موجودی کالای در راه
+1-1-10-002 موجودی کالای امانی نزد کانال
+1-2-01-001 زمین
+1-2-01-002 ساختمان
+1-2-01-003 ماشین‌آلات و تجهیزات
+1-2-01-004 وسایل نقلیه
+1-2-01-005 رایانه و تجهیزات اداری
+1-2-02-001 استهلاک انباشته ساختمان
+1-2-02-002 استهلاک انباشته تجهیزات
+1-2-03-001 نرم‌افزار و لایسنس
+1-2-04-001 سرمایه‌گذاری بلندمدت
+1-2-05-001 استهلاک انباشته دارایی‌های نامشهود
+2-1-01-001 پرداختنی به تأمین‌کنندگان
+2-1-01-002 اسناد پرداختنی
+2-1-01-003 پرداختنی به کانال‌های فروش
+2-1-02-001 اسناد پرداختنی بلندمدت
+2-1-03-001 بیمه تأمین اجتماعی پرداختنی
+2-1-04-001 مالیات بر درآمد پرداختنی
+2-1-05-001 مالیات بر ارزش افزوده پرداختنی
+2-1-06-001 پیش‌دریافت از مشتریان
+2-1-07-001 حقوق و دستمزد پرداختنی
+2-1-08-001 سود سهام پرداختنی
+2-1-09-001 چک‌های پرداختنی
+2-1-10-001 پرداختنی کارمزد کانال‌ها
+2-1-11-001 GRNI - کالای دریافت‌شده بدون فاکتور
+2-1-12-001 تسویه درگاه پرداخت اینترنتی
+2-1-12-002 تسویه POS
+2-1-12-003 تسویه پرداخت در محل (COD)
+2-1-13-001 مالیات تکلیفی پرداختنی
+2-2-01-001 تسهیلات بانکی بلندمدت
+2-2-02-001 ذخیره سنوات کارکنان
+3-1-01-001 سرمایه ثبت‌شده
+3-1-02-001 سرمایه پرداخت‌نشده
+3-2-01-001 سود انباشته
+3-2-02-001 اندوخته قانونی
+3-2-03-001 سایر اندوخته‌ها
+3-2-04-001 سود (زیان) دوره جاری
+3-2-05-001 تعدیلات سنواتی
+4-1-01-001 فروش از سایت اختصاصی (کرکسی)
+4-1-01-002 فروش از دیجی‌کالا
+4-1-01-003 فروش از اسنپ‌شاپ
+4-1-01-004 فروش از تپسی‌شاپ
+4-1-01-005 فروش حضوری/POS
+4-1-02-001 برگشت از فروش
+4-1-03-001 تخفیفات فروش
+4-1-04-001 درآمد حمل و ارسال
+4-2-01-001 سود سپرده بانکی
+4-2-02-001 اضافه صندوق
+4-2-02-002 درآمد متفرقه
+5-1-01-001 بهای تمام‌شده کالای فروش‌رفته
+5-1-02-001 کسری شمارش انبار
+5-1-02-002 اضافه شمارش انبار (درآمد)
+5-1-03-001 ضایعات انبار
+5-1-03-002 دمیج و خرابی
+5-2-01-001 هزینه حمل و نقل
+5-2-02-001 هزینه بسته‌بندی
+5-2-03-001 کارمزد دیجی‌کالا
+5-2-03-002 کارمزد کرکسی/درگاه
+5-2-03-003 کارمزد اسنپ‌شاپ/تپسی‌شاپ
+5-2-04-001 هزینه تبلیغات
+5-2-05-001 هزینه حقوق و مزایا
+5-2-06-001 هزینه استهلاک
+5-2-07-001 هزینه‌های بانکی
+5-2-08-001 هزینه مالیات بر درآمد
+5-2-09-001 اجاره
+5-2-10-001 هزینه متفرقه
+5-2-11-001 هزینه مطالبات مشکوک‌الوصول
+5-2-12-001 کسری صندوق
+5-2-13-001 تفاوت تسویه کانال‌ها
+5-2-14-001 تفاوت گرد کردن و باقیمانده
+```
 
-L5/L6 rows under an account are created lazily by `AccountingService.ensureCostCenterAccount(accountId, costCenterId)`: code = `<L4 code>-<cc>` / `-<cc>-<project>`; `parent_id` = the L4 row; `is_postable=true`; `account_level` 5/6. This keeps the six-level structure real in `chart_of_accounts` without pre-seeding thousands of combinations.
+Count check: the fence must contain exactly 94 lines; `erp.validate_coa_seed()` asserts this.
 
+#### L5 — cost-center templates (8; `account_level=5`, parent = the L4 account they extend)
+
+`01` انبار مرکزی، `02` فروش، `03` بازاریابی، `04` مالی، `05` اداری، `06` فناوری اطلاعات، `07` پشتیبانی مشتریان، `08` عمومی. Materialized lazily by `AccountingService.ensureCostCenterAccount(accountId, costCenterId)` → code `<L4>-<cc>`, `parent_id=L4`, `is_postable=true`, `account_level=5`.
+
+#### L6 — project templates (6; `account_level=6`, parent = the **L5** row, not L4 — R1-D B-04)
+
+`001` توسعه فروشگاه، `002` راه‌اندازی انبار جدید، `003` یکپارچه‌سازی کانال، `004` پروژه حسابداری، `005` بهبود فرایند، `006` بدون پروژه. Materialized lazily: code `<L5>-<project>`, parent `L5` row.
 ### 6.4 Units of measure + conversions
 
 Units (14): `PCS` عدد (count/base, precision 0), `KG` کیلوگرم (mass/base, 3), `G` گرم (mass, 3), `L` لیتر (volume/base, 3), `ML` میلی‌لیتر (volume, 3), `M` متر (length/base, 2), `CM` سانتی‌متر (length, 2), `M2` مترمربع (area/base, 4), `PACK` بسته (package, 0), `CARTON6` کارتن ۶تایی (package, 0), `CARTON12` کارتن ۱۲تایی (package, 0), `SHANE30` شانه ۳۰تایی (package, 0), `PAIR` جفت (count, 0), `SET` ست (count, 0). Base per dimension: PCS, KG, L, M, M2.
@@ -2333,41 +2406,83 @@ Fee rules (5): DK commission percent 8% per category «دیجیتال», 12% «�
 
 Warehouse `WH-THR` «انبار مرکزی تهران» (main, branch `BR-01`). Zones: `A` (A-class fast movers, storage, pick_seq 10), `B` (storage, 20), `C` (bulk/oversize, storage, 30), `RECV` receiving, `SHIP` shipping, `PACK` packing. Aisles: A-01, A-02, B-01, B-02, C-01. Racks: `R1`..`R3` per aisle. Shelves: levels 1–3 (`S1`,`S2`,`S3`). Bins: `01`..`04` per shelf. Locations (12 sample): `A-01-R1-1-01`, `A-01-R1-1-02`, `A-01-R1-2-01`, `A-02-R1-1-01`, `A-02-R2-1-01`, `B-01-R1-1-01`, `B-01-R1-1-02`, `B-02-R1-2-01`, `C-01-R1-1-01`, `C-01-R2-1-01`, `RECV-01` (receiving, location_type receiving), `SHIP-01` (shipping). Packing stations: `PS-01`, `PS-02` in `PACK` zone. Devices: `SCN-01` scanner, `PRN-01` ZPL printer (bound to PS-01). That is 1 warehouse + 6 zones + 5 aisles + 15 racks + 45 shelves + 180 bins + 12 locations — the seed creates the full tree programmatically from code (`A/B/C-01..`, levels 1..3, bins 01..04) and the 12 named locations explicitly.
 
-### 6.10 Default settings (`system_settings`), partition registry, posting rules, approval workflows
+### 6.10 Default settings, posting engine, closing, numbering, seed order
 
-**Settings (30)**: `general.company_name`, `general.logo_file_id`, `general.timezone=Asia/Tehran`, `general.locale=fa-IR`, `general.date_display=jalali`, `general.currency=IRR` (read-only), `inventory.valuation_method=moving_average` (mirrors org, change requires approval), `inventory.allow_negative_stock=false` (immutable in v1), `inventory.default_safety_stock=0`, `inventory.reservation_ttl_minutes=30`, `inventory.count_variance_threshold_percent=0.02`, `sales.default_price_list_id`, `sales.order_prefix=SLS`, `sales.require_approval_refund_above=50000000`, `sales.otp_required_refund=false`, `fulfillment.default_carrier=POST`, `fulfillment.free_shipping_threshold=20000000`, `fulfillment.pick_wave_max_orders=50`, `pricing.rounding_mode=nearest_1000`, `pricing.minimum_margin_percent=0.05`, `pricing.auto_recalc_on_cost_change=true`, `accounting.auto_post_sales=true`, `accounting.auto_post_purchase=true`, `accounting.journal_approval_threshold=100000000`, `accounting.fiscal_year_start_month=1`, `accounting.tax_rate_default_id`, `channels.stock_push_debounce_seconds=3`, `channels.stock_push_batch_size=200`, `notifications.sms_otp_provider=limo_sms`, `notifications.low_stock_alert=true`, `security.otp_ttl_seconds=120`, `security.session_absolute_days=7`, `security.max_login_failures=10`, `security.lockout_minutes=15`, `security.require_2fa_new_device=true`, `files.max_upload_mb=20`, `files.allowed_mime=image/jpeg,image/png,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv`.
+**Settings (34 keys, `system_settings`, seeded idempotently)**: `general.company_name`, `general.logo_file_id`, `general.timezone=Asia/Tehran`, `general.locale=fa-IR`, `general.date_display=jalali`, `general.currency=IRR` (read-only), `inventory.valuation_method=moving_average`, `inventory.allow_negative_stock=false` (immutable), `inventory.default_safety_stock=0`, `inventory.reservation_ttl_minutes=30`, `inventory.count_variance_threshold_percent=0.02`, `inventory.costing.precision=4`, `sales.default_price_list_id`, `sales.order_prefix=SLS`, `sales.require_approval_refund_above=50000000`, `sales.rounding_account=5-2-14-001`, `sales.header_discount_distribution=largest_remainder`, `fulfillment.default_carrier=POST`, `fulfillment.free_shipping_threshold=20000000`, `fulfillment.pick_wave_max_orders=50`, `fulfillment.shipping_revenue_account=4-1-04-001`, `pricing.rounding_mode=nearest_1000`, `pricing.minimum_margin_percent=0.05`, `pricing.auto_recalc_on_cost_change=true`, `accounting.auto_post_sales=true`, `accounting.auto_post_purchase=true`, `accounting.journal_approval_threshold=100000000`, `accounting.fiscal_year_start_month=1`, `accounting.tax_rate_default_id`, `accounting.legal_reserve_percent=0.05`, `accounting.legal_reserve_cap_percent=0.10`, `accounting.inventory_gl_account=1-1-04-001`, `accounting.grni_account=2-1-11-001`, `accounting.cogs_account=5-1-01-001`, `channels.stock_push_debounce_seconds=3`, `channels.stock_push_batch_size=200`, `notifications.sms_otp_provider=limo_sms`, `notifications.low_stock_alert=true`, `security.otp_ttl_seconds=120`, `security.session_absolute_days=7`, `security.max_login_failures=10`, `security.lockout_minutes=15`, `security.require_2fa_new_device=true`, `security.audit_retention_years=10`, `files.max_upload_mb=20`, `files.allowed_mime=image/jpeg,image/png,image/webp,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv`, `files.persist_http_bodies_in_prod=false`.
+**Partition registry seed** (`platform.partitioned_tables_registry`): the five rows in §4.4 (inventory_transactions 6 hot/25 warm, audit_logs 12 hot/120 archive, api_request_logs 3, channel_api_calls 6, outbox_events 1) — all `is_enabled=true`.
 
-**`platform.partitioned_tables_registry` seed** — exactly the five rows in §4.4 (`inventory_transactions` 25 months + archive, `audit_logs` 84 + archive + hot 12, `api_request_logs` 3, `channel_api_calls` 6, `outbox_events` 1).
+#### 6.10.1 Posting architecture (decision: code-owned services + simple declarative rules)
 
-**`accounting.posting_rules` seed (8 rules, 2 legs each; debit first)**
+Per R1-A B-10 / R1-D B-05, the engine is primarily **code-owned posting services** (`modules/accounting/posting/<event>.posting.ts`), because a correct sale/purchase/settlement requires multi-entry, conditional and resolver-driven logic no two-column rule table can express. `posting_rules`/`posting_rule_lines` remain for simple two-leg, operator-tunable mappings (expense→account, fee variants, minor variance) inside an immutable versioned `posting_rule_sets`; every journal stores `posting_rule_set_id` so any posted entry is reproducible. Each event service is unit-tested against the matrix below (`VAT-inclusive`, `VAT-exempt`, discounted, fractional-qty and reversal variants). **No `00x` placeholder exists**: channel-specific accounts resolve through `posting_rule_lines.account_resolver` → `1-1-08-001..004`, `4-1-01-001..005`, `5-2-03-001..003` (one row per active channel mapping).
 
-| code | event_type | debit | credit | expressions |
+#### 6.10.2 Event → Dr/Cr matrix (complete; every event in the `event_type` enum)
+
+All amounts are `bigint` IRR; `R` = account resolver key resolved by the service to a concrete seeded account from §6.3 (never a wildcard). VAT legs apply only when the invoice carries a valid tax id/rate; exempt sales omit them.
+
+| # | event_type | Debit | Credit | Notes |
 |---|---|---|---|---|
-| `SALE-ON-CREDIT` | `sales.invoice.issued` | `1-1-03-001` دریافتنی از مشتریان | `4-1-01-00x` فروش (channel-specific) | debit `gross_amount`, credit `net_amount`; second pair: debit `5-1-01-001` COGS / credit `1-1-04-001` inventory, `cogs_amount` |
-| `SALE-ON-PAYMENT` | `sales.payment.received` | `1-1-01-002` بانک | `1-1-03-001` دریافتنی | `event.amount` |
-| `SALE-FEE` | `channel.fee.accrued` | `5-2-03-00x` کارمزد کانال | `2-1-10-001` پرداختنی کارمزد کانال‌ها | `event.fee_amount` |
-| `PURCHASE-ON-RECEIPT` | `inventory.receipt.posted` | `1-1-04-001` موجودی کالا | `2-1-01-001` پرداختنی تأمین‌کننده | `event.amount` (unit_cost × qty) |
-| `PURCHASE-PAYMENT` | `purchase.payment.paid` | `2-1-01-001` پرداختنی | `1-1-01-002` بانک | `event.amount` |
-| `SALES-RETURN` | `sales.return.received` | `4-1-02-001` برگشت از فروش | `1-1-03-001` دریافتنی | `event.amount`; restock pair: debit `1-1-04-001` / credit `5-1-01-001` `event.cogs_amount` when `restock_action=restock` |
-| `REFUND` | `sales.refund.paid` | `1-1-03-001` دریافتنی/بستانکار مشتری | `1-1-01-002` بانک | `event.amount` |
-| `INVENTORY-ADJ` | `inventory.adjustment.posted` | `5-1-02-001` کسری انبار (or credit if gain: `1-1-04-001` debit) | `1-1-04-001` موجودی کالا | `event.amount` (loss debits 5-1-02, gain credits 5-1-02) |
-| `CHEQUE-RECEIVED` | `cheque.received` | `1-1-07-002` چک دریافتنی | `1-1-03-001` دریافتنی | `event.amount` |
-| `CHEQUE-CLEARED` | `cheque.cleared` | `1-1-01-002` بانک | `1-1-07-002` چک دریافتنی | `event.amount` |
-| `CHEQUE-BOUNCED` | `cheque.bounced` | `1-1-03-001` دریافتنی | `1-1-07-002` چک دریافتنی | `event.amount` |
-| `SETTLEMENT` | `settlement.confirmed` | `1-1-08-00x` دریافتنی کانال | `4-1-01-00x` فروش ; fee legs per `SALE-FEE` | `event.amount` |
-| `SHIPPING-COST` | `shipping.cost.incurred` | `5-2-01-001` هزینه حمل | `1-1-01-002` بانک / `2-1-01-001` | `event.amount` |
-| `PROFIT-DIST` | `profit.distribution.approved` | `3-2-04-001` سود دوره | `2-1-08-001` سود سهام پرداختنی | `event.amount` |
+| 1 | `sales.invoice.issued` (credit sale) | `1-1-03-001` AR gross | `R:channel_sales_account` net; `2-1-05-001` output VAT; `4-1-04-001` shipping recharge | COGS is **not** here |
+| 2 | `inventory.issue.posted` (sale issue) | `5-1-01-001` COGS | `1-1-04-001` inventory | posted at stock issue, layers consumed (B-01); valuation cost from `inventory_cost_layers`/average |
+| 3 | `sales.cash_sale` (POS/cash) | `1-1-01-003` cash / `1-1-01-005` POS clearing; `5-1-01-001` COGS | `4-1-01-005` sales net; `2-1-05-001` VAT; `1-1-04-001` inventory | cash sale = invoice + immediate payment in one tx |
+| 4 | `sales.discount.applied` | `4-1-03-001` discount | `1-1-03-001` AR | only header-level discounts admitted post-issue |
+| 5 | `sales.payment.received` | bank/cash/`1-1-07-001` cheque on hand | `1-1-03-001` AR | `unapplied_amount` stays in `1-1-03-004` customer credit if not allocated |
+| 6 | `sales.return.received` (restock) | `4-1-02-001` return net; `2-1-05-001` VAT reversal; `1-1-04-001` inventory at original layer cost | `1-1-03-001` AR/customer credit; `5-1-01-001` COGS reversal | credit note (`customer_invoices.document_kind='credit_note'`) issued in the same tx; layers restored (B-11) |
+| 7 | `sales.return.received` (scrap/damaged) | `4-1-02-001`; `2-1-05-001`; `5-1-03-002` damage loss | `1-1-03-001`; `1-1-04-001` | condition drives the second pair; no COGS reversal for scrap |
+| 8 | `sales.refund.paid` | `1-1-03-001`/`2-1-06-001` customer credit | `1-1-01-002` bank / `1-1-01-003` cash | only against an issued credit note |
+| 9 | `purchase.receipt.posted` (no invoice) | `1-1-04-001` inventory net landed cost; `1-1-06-001` input VAT **only if** tax invoice exists at receipt | `2-1-11-001` GRNI | AP is **never** credited at receipt (B-02) |
+| 10 | `purchase.invoice.received` | `2-1-11-001` GRNI; `1-1-06-001` input VAT; `5-2-13-001`/`2-1-11-001` price variance | `2-1-01-001` AP | 3-way match: receipt qty vs invoice qty; price variance to `5-2-13-001` (or inventory if material and unissued, per policy) |
+| 11 | `purchase.invoice.variance` | `5-2-13-001` (unfavourable) or `2-1-11-001` (favourable) | `2-1-01-001` / `5-2-13-001` | written at match time, not silently netted |
+| 12 | `purchase.return.issued` | `2-1-01-001` AP; `1-1-06-001` input VAT reversal | `1-1-04-001` inventory; `5-2-13-001` variance | supplier credit note |
+| 13 | `purchase.payment.paid` | `2-1-01-001` AP | `1-1-01-002` bank / `1-1-01-004` gateway clearing | allocation may target invoices or advances |
+| 14 | `purchase.prepayment.paid` | `1-1-05-001` prepayment | `1-1-01-002` bank | later applied via `payment_allocations(document_type='supplier_prepayment')` |
+| 15 | `channel.fee.accrued` | `5-2-03-00x` commission/fee expense (R per channel); `1-1-06-001` VAT on fee if recoverable | `2-1-10-001` fee payable channel | posts at sale/invoice time, not at settlement |
+| 16 | `settlement.confirmed` | `1-1-09-001` settlement clearing / `1-1-01-002` bank; `2-1-10-001` fee payable (netting); `5-2-13-001` settlement variance; `2-1-05-001` VAT on fee if applicable | `1-1-08-001..004` channel receivable (R per channel) | **never credits sales revenue** (B-03); any residual → variance |
+| 17 | `settlement.variance.recorded` | `5-2-13-001` variance | `1-1-08-00x` channel receivable | or reverse when negative |
+| 18 | `shipping.cost.incurred` | `5-2-01-001` shipping expense (or capitalized to inventory as landed cost when inbound — H-14) | `1-1-01-002` bank / `2-1-01-001` AP | inbound landed cost path uses a cost adjustment to layers |
+| 19 | `shipping.recharged` | `1-1-03-001` AR | `4-1-04-001` shipping revenue; `2-1-05-001` VAT if taxable | typically part of sales invoice |
+| 20 | `inventory.adjustment.posted` (shortage/damage/expiry loss) | `5-1-02-001` count shortage / `5-1-03-001` waste / `5-1-03-002` damage (at layer cost) | `1-1-04-001` inventory | cost is mandatory from layers; zero-cost relief rejected (H-05) |
+| 21 | `inventory.adjustment.posted` (gain) | `1-1-04-001` inventory | `5-1-02-002` count gain / `4-2-02-001` cash over | side flip is code-owned; no rule-table flip needed |
+| 22 | `inventory.transfer.dispatched` | `1-1-10-001` inventory in transit | `1-1-04-001` inventory (source warehouse) | per warehouse sub-account resolver |
+| 23 | `inventory.transfer.received` | `1-1-04-001` inventory (destination) | `1-1-10-001` in transit | layer moved with qty+cost (H-04) |
+| 24 | `inventory.valuation.posted` | `1-1-04-001` inventory (adjustment) | `5-1-02-001`/`4-2-02-002` valuation variance | only for method change/year-end true-up |
+| 25 | `cash.receipt.recorded` | cash session cash | `1-1-03-001` AR / revenue (cash sale handled in #3) | session variance below |
+| 26 | `cash.session.closed` (over) | `1-1-01-003` cash | `4-2-02-001` cash over | variance amount |
+| 27 | `cash.session.closed` (short) | `5-2-12-001` cash short | `1-1-01-003` cash | variance amount |
+| 28 | `cheque.received` | `1-1-07-001` cheques on hand | `1-1-03-001` AR | direction=received |
+| 29 | `cheque.deposited` | `1-1-07-002` cheques in collection | `1-1-07-001` cheques on hand | |
+| 30 | `cheque.cleared` | `1-1-01-002` bank | `1-1-07-002` in collection (received) / `2-1-09-001` cheques payable (issued) | direction branches |
+| 31 | `cheque.bounced` (before clear) | `1-1-03-001` AR | `1-1-07-001`/`002` cheque on hand/collection | |
+| 32 | `cheque.bounced` (after clear) | `1-1-03-001` AR; `5-2-07-001` bank charges | `1-1-01-002` bank | **reverses the bank**, not a zero cheque account (B-13) |
+| 33 | `cheque.endorsed` | `2-1-01-001` AP / expense | `1-1-07-001` cheques on hand | plus memo guarantee note to `endorsed_to` |
+| 34 | `cheque.issued` | `2-1-01-001` AP (or expense) | `2-1-09-001` cheques payable | direction=issued |
+| 35 | `cheque.issued.cleared` | `2-1-09-001` cheques payable | `1-1-01-002` bank | |
+| 36 | `payment.advance.received` | `1-1-01-002` bank | `2-1-06-001` customer advance | later applied to invoices |
+| 37 | `payment.allocated` | `2-1-06-001` customer advance | `1-1-03-001` AR | or supplier side: `2-1-01-001` ↔ `1-1-05-001` |
+| 38 | `profit.distribution.approved` | `3-2-01-001` retained earnings | `2-1-08-001` dividends payable; `3-2-02-001` legal reserve; `2-1-13-001` withholding | **after** closing run; never debits current-period profit (B-08/B-09) |
+| 39 | `dividend.paid` | `2-1-08-001` dividends payable | `1-1-01-002` bank | withholding applied here |
+| 40 | `tax.vat.payment` | `2-1-05-001` VAT payable | `1-1-01-002` bank | |
+| 41 | `tax.vat.refund` | `1-1-01-002` bank | `1-1-06-001` VAT receivable | |
+| 42 | `expense.recognised` | `5-2-xx`/category account; `1-1-06-001` VAT if recoverable | `2-1-01-001` AP / bank | category→account seed |
+| 43 | `expense.paid` | `2-1-01-001` AP | `1-1-01-002` bank | |
+| 44 | `bad_debt.allowance` | `5-2-11-001` | `1-1-03-003` allowance | |
+| 45 | `bad_debt.writeoff` | `1-1-03-003` allowance | `1-1-03-001` AR | direct write-off only with approval |
+| 46 | `closing.income_summary` | revenue accounts (`4-*`) | `3-2-04-001` income summary; expenses (`5-*`) debited/credited symmetrically | run by `ClosingService`, posted with `entry_type='closing'` |
+| 47 | `closing.retained_earnings` | `3-2-04-001` income summary | `3-2-01-001` retained; `3-2-02-001` legal reserve (5% until 10% of capital); `2-1-08-001` dividends (if declared) | policy configurable; loss reverses |
+| 48 | `opening.balances.imported` | each asset/expense | each liability/equity/revenue; `3-1-01-001` opening equity for residual | migration path; `entry_type='opening'` |
+| 49 | `fx.revaluation` (future) | `1-1-02-001` FX loss/asset | `4-2-02-002`/`5-2-07-001` FX gain/expense | v1 single-currency; schema ready (`fx_rate`) |
 
-Seeded with `is_active=true`; changing an active rule writes a `data_versions` snapshot and requires `accounting.posting_rule.manage` + approval when above threshold.
+`inventory.issue.posted` is emitted by the inventory module in the same transaction that consumes cost layers and writes the ledger; `sales.invoice.issued` never posts COGS (B-01). Settlement never re-recognises revenue (B-03). All rows 1–49 are covered by integration tests with a VAT-enabled and a VAT-exempt variant.
+#### 6.10.3 Period-close / year-end closing run (B-08, R1-D B-03)
 
-**Approval workflows (5)**: `manual-journal` (`journal_entry`, threshold 100,000,000 IRR, step 1 role `finance_manager` min 1), `stock-writeoff` (`stock_adjustment`, threshold 0, step 1 `warehouse_manager`, step 2 `finance_manager`), `refund` (`sales_refund`, threshold 50,000,000, step 1 `finance_manager`), `channel-credential-change` (`channel_credential`, threshold 0, step 1 `admin`), `profit-distribution` (`profit_distribution`, threshold 0, step 1 `finance_manager`, step 2 `admin`). All enforce `requested_by <> approved_by`.
+`ClosingService.run(fiscalYearId)` in one transaction: (1) reject if any period is open, any journal unposted, or any inventory ledger row has `period_id` in a closing year without journal; (2) post `closing.income_summary` (all revenue/expense balances → income summary); (3) compute net profit; (4) post `closing.retained_earnings` (income summary → retained earnings, legal reserve appropriation capped at 10% of registered capital, remainder retained); (5) write `closing_runs` linked to the three entries; (6) set `fiscal_years.closing_run_id/status='closed'`; (7) generate next-year opening entries (`entry_type='opening'`) for all balance-sheet accounts with non-zero closing balances. `fiscal_year.close` is blocked until this run is `posted`. Profit distribution is allowed only against `3-2-01-001` after closing. Opening-balance import uses `entry_type='opening'` + `03-roadmap` path and is idempotent per `(fiscal_year, account)`.
 
-**Dashboards/reports seed (minimum)**: widgets `kpi.today_sales`, `kpi.open_orders`, `kpi.low_stock`, `kpi.receivables`, `chart.sales_trend`, `chart.channel_share`, `list.pending_picks`, `list.cheques_due`; reports `RPT-SALES-DAILY` (sales daily by channel), `RPT-INVENTORY-VALUE`, `RPT-LOW-STOCK`, `RPT-TRIAL-BALANCE`, `RPT-PL`, `RPT-BALANCE-SHEET`, `RPT-CUSTOMER-LEDGER`, `RPT-SUPPLIER-LEDGER`, `RPT-CHANNEL-SETTLEMENT`, `RPT-CHEQUES`, each bound to a whitelisted query and `required_permission_key` (`report.read` + module read).
+#### 6.10.4 Document-number lifecycle (R1-D B-02)
 
-**Automation seed**: alert rules `outbox.lag>60s critical`, `queue.failed>10 critical`, `db.connections>80% warning`, `disk.used>85% warning`, `backup.age>26h critical`, `partition.default_rows>0 critical`, `channel.average_failures>5% warning`, `stock.negative_attempt critical`; business rule `reorder.suggest_on_min` (module inventory) and `fraud.cod_velocity` (automation fraud).
+All document numbers are allocated **at the finalizing transition only** (post/issue/confirm), never at draft creation: `journal_entries.entry_no`, `customer_invoices.invoice_no`, `sales_orders.order_no`, `purchase_orders.po_no`, `goods_receipts.receipt_no`, `shipments.shipment_no` are **nullable**; a partial unique index `... WHERE <no> IS NOT NULL` plus `CHECK (status = '<draft-state>' OR <no> IS NOT NULL)` makes unnumbered non-draft rows impossible. Allocation uses `erp.allocate_document_no()` (`SELECT … FOR UPDATE` on `numbering_sequences`, keyed `(organization_id, document_type, fiscal_year_id)`) in the same transaction as the status change; a voided/cancelled draft never consumes a number; the ADR-0014 gap-free guarantee applies to issued numbers per (type, fiscal year). Sequence rows are created per fiscal year (no counter copy) — `fiscal_year.create` inserts fresh rows with `next_value=1` (R1-D H-06).
 
----
+#### 6.10.5 Seed order (FK-safe; R1-D B-09)
 
+`organizations → currencies/fx_rates/holidays → permissions (414) → roles (8 system) → role_permissions → users (bootstrap superadmin, forced password change; password from `BOOTSTRAP_ADMIN_PASSWORD` env, never logged) → branches/departments → units_of_measure → unit_conversions → chart_of_accounts (173 manifest rows) → dimensions/values → fiscal_years (+periods, incl. 13 rules) → tax_rates → accounting_document_types → numbering_sequences (per type/year) → price_lists (+base items empty) → system_settings → warehouses/zones/aisles/racks/shelves/bins/locations → packing stations/devices → carriers/services/zones/rates → sales_channels/accounts (without credentials; `price_list_id` set) → posting_rule_sets + posting_rules (validated) → approval_workflows/steps → reporting/dashboard defs → partition registry`. Each step uses an idempotent natural key and is skipped in production for sample-only data (master data required to boot always seeds). Seed must succeed twice with identical counts (`seed-twice` test).
 ## 7. Deltas vs the supplied `ERP_database_design_v1.sql` (150 tables)
 
 The supplied DDL is treated as a **requirements sketch**, not a schema. Every delta below is deliberate and implementable; the authoritative shape is §2.
@@ -2380,7 +2495,7 @@ The supplied DDL is treated as a **requirements sketch**, not a schema. Every de
 4. **No partitioning** despite 2M ledger rows/day target. Fixed per ADR-0009: five tables partitioned, PK/unique include `created_at`, BRIN, default partition, automated creation, retention/archival (§4).
 5. **`deleted_at` on every table** — including ledgers/journals, which invites `DELETE`-like history rewriting. Fixed: soft delete only on master data; transactional rows are voided/reversed, and `BEFORE DELETE` guards block deletion.
 6. Money is `numeric(20,2)`/`numeric(30,2)` and percentages `numeric(8,4)` — violates ADR-0013. Fixed: **all money `bigint` IRR**, qty `numeric(18,4)`, percent `numeric(9,6)`, FX `numeric(12,6)`.
-7. `permissions.code` had no unique constraint, and the permission registry was undefined. Fixed: global `permissions.key` unique + 412 seeded keys (§6.2, copied from the API contract), code-defined and CI-diffed.
+7. `permissions.code` had no unique constraint, and the permission registry was undefined. Fixed: global `permissions.key` unique + 414 seeded keys (§6.2, copied from the API contract), code-defined and CI-diffed.
 8. `users` had no password hash / no MFA fields / no permission version → impossible to implement ADR-0004. Fixed in `identity.users` + `auth_sessions`/`user_devices`/`password_history`/`otp_challenges`.
 9. Polymorphic references (`reference_type`/`reference_id`, partner refs) had no documented integrity story. Fixed: documented exception + explicit `reference_type`/`partner_type` CHECK vocabularies, public-id denormalization for idempotency and nightly consistency checks.
 10. `inventory_balances` had no `UNIQUE (warehouse_id, location_id, product_variant_id)` and no non-negativity `CHECK` — the two invariants ADR-0007 depends on. Fixed and additionally guarded by a trigger.
@@ -2438,13 +2553,13 @@ The supplied DDL is treated as a **requirements sketch**, not a schema. Every de
 
 ### 7.5 Count reconciliation
 
-Supplied: 150 tables. Final: **215** = 150 reference tables − 6 removed + 69 net-new.
+Supplied: 150 tables. Final: **215** = 150 reference tables − 6 removed + 71 net-new.
 
 - **Removed without a replacement table (6):** `warehouse_tasks`, `warehouse_task_events` (generic task layer duplicated by putaway/pick/packing execution tables), `order_reservations` (merged into `stock_reservations`), `platform_commission_rules` (merged into `channel_fee_rules`), `shareholders` and `shareholder_transactions` (replaced by `partners` + `partner_shares` + `partner_capital_transactions`, v1.1).
 - **Renamed but still present (11):** as previously documented (`login_sessions→auth_sessions`, `product_batches→inventory_lots`, …).
-- **New tables (69 = 45 from v1.0 + 24 from v1.1):** the 45 v1.0 additions plus the 24 v1.1 tables in §2.17 (13 platform, 4 inventory, 1 procurement, 1 warehouse, 2 treasury, 2 accounting, 3 partners — with partners replacing 2 removed reference tables net +1).
+- **New tables (71 = 45 from v1.0 + 26 from v1.1):** the 45 v1.0 additions plus the 26 v1.1 tables in §2.17 (13 platform, 4 inventory, 1 procurement, 1 warehouse, 2 treasury, 2 accounting, 3 partners — with partners replacing 2 removed reference tables net +1).
 
-Arithmetic: 150 − 6 + 69 = 215. Per-module counts in §2 are the acceptance figure; a schema-diff test asserts `erp` table count = 215 (excluding `_pYYYYMM` partitions and `information_schema` noise).
+Arithmetic: 150 − 6 + 71 = 215. Per-module counts in §2 are the acceptance figure; a schema-diff test asserts `erp` table count = 215 (excluding `_pYYYYMM` partitions and `information_schema` noise).
 
 ---
 
@@ -2490,7 +2605,8 @@ Rules: (a) one transaction per migration file; (b) FKs are created in 0017 **aft
 - [x] Constraint names follow ADR-0003 (`pk_/fk_/uq_ck_/ix_` + `<table>`), no anonymous constraints.
 - [x] No PG `ENUM` types; every state column has an explicit `CHECK IN (...)`.
 - [x] Soft delete only on master data; append-only tables have `NO DELETE` guards + grants; corrections are reversals (`reversal_of_id`).
-- [x] Permission registry covers every resource referenced in §2/§6; API contract must cite the same list; 412-key registry reconciled against the API contract.
+- [x] Permission registry is a single generated artifact (`packages/shared/permissions.ts`, 414 keys from API.md §5.2); §6.2 only references it; role manifests use exact keys; bidirectional parity test.
+- [x] Round-1 review findings resolved or explicitly deferred with reason — see §10 (R1-A/R1-D/R1-S ID-by-ID)..
 - [x] All 215 tables are column-complete for a backend implementer: purpose + columns + types + nullability + defaults + FK policy + indexes + unique + checks + partitioning/retention where applicable.
 
 ### 9.2 Open questions / risks (owner: Lead)
@@ -2503,7 +2619,169 @@ Rules: (a) one transaction per migration file; (b) FKs are created in 0017 **aft
 6. **Polymorphic references** (`reference_type/id`, `partner_type/id`, `stock_adjustments.approved_by`) cannot carry real FKs; integrity enforced by services + `inventory_consistency_checks`/nightly partner reconciliation. Accepted (documented exception), no orphan-cleanup job in v1.
 7. **`audit_logs` 7-year retention vs one PostgreSQL host**: archive-by-year to S3 is required; storage sizing must be validated in ops (`07-operations/BACKUP-RESTORE.md`). Risk low if audit volume ≤ 5M rows/month.
 8. **Partitioned table + FK from partitioned child to ordinary tables** works in PG16, but `ON DELETE RESTRICT` performance over 25 partitions should be spot-checked under load (k6 profile in `05-testing`). Fallback: drop FK on `inventory_transactions` and enforce via service (documented decision point).
-9. **`permissions` count drift** between this doc and `03-api-contract/API.md`: API.md is declared source of truth for *names*; this doc seeds the registry exactly (412). The backend agent must run `pnpm db:seed` twice and diff `permissions` against `packages/shared/permissions.ts` in CI; any API key not in the registry fails the seed lint.
+9. **`permissions` count drift** between this doc and `03-api-contract/API.md`: API.md is declared source of truth for *names*; this doc seeds the registry exactly (414). The backend agent must run `pnpm db:seed` twice and diff `permissions` against `packages/shared/permissions.ts` in CI; any API key not in the registry fails the seed lint.
 10. **Organization scope** — v1 single org; `organization_id` defaults to `1` in repositories. If a second org is onboarded, add RLS policies (ADR-0005 path) and review composite FKs `(organization_id, id)` coverage; currently only high-risk relations use them.
 
+---
+
+## 10. Revision log — round-1 review resolutions (v1.1)
+
+Source reviews: `docs/_review/round-1/R1-accounting.md`, `R1-datamodel.md`, `R1-security.md`. Status legend: **FIXED** (schema/text changed in this revision), **DEFERRED** (reason given; owner), **OUT-OF-SCOPE** (belongs to another owned document/teammate, noted so it is not silently dropped). Every ID from the three reviews appears below.
+
+### 10.1 R1-accounting (A) resolutions
+
+| ID | Status | Resolution / reason |
+|---|---|---|
+| A-B-01 | FIXED | §6.10.2 #1–3: sale posts AR gross / revenue net / output VAT / shipping revenue; COGS at stock issue (#2) from cost layers; cash sale (#3). |
+| A-B-02 | FIXED | #9–11: receipt → inventory + input VAT (if invoice) / **GRNI**; supplier invoice → GRNI + VAT + price variance / AP; 3-way match columns + status. |
+| A-B-03 | FIXED | #16: settlement debits clearing/bank + fee expense + returns/penalties, credits channel receivable; never revenue; residual → variance (#17). |
+| A-B-04 | FIXED | §6.3 contra override table with explicit `nature='contra'` and opposite normal balance for `1-2-02`, `1-2-05`, `3-1-02`, `4-1-02`, `4-1-03`, `1-1-03-003`; CI sign test. |
+| A-B-05 | FIXED | §6.3 exact manifest (counts asserted: 5/10/59/85/8/6 = 173); every `00x` replaced by seeded accounts or resolver keys (no placeholder). |
+| A-B-06 | FIXED | `ck_inventory_balances_available_nonnegative` (`reserved+safety_buffer+damaged <= on_hand`); `available` computed, not stored; allocation assertion + test. |
+| A-B-07 | FIXED | §2.17 + §2.6: `inventory_cost_layers`, `inventory_layer_consumptions`, `inventory_average_costs`; lots are physical batch metadata only; returns/transfers/reversals reference layers; nightly layer-vs-GL job (`gl_inventory_amount`). |
+| A-B-08 | FIXED | §6.10.3 closing run: income summary → retained earnings → legal reserve (5%, cap 10% capital), opening entries, close blocked until posted; `accounting.closing_runs`. |
+| A-B-09 | FIXED | gist EXCLUDE on fiscal years/periods; trigger derives `period_id` from `entry_date`, rejects closed/locked; period 13 rules. |
+| A-B-10 | FIXED | §6.10.1: code-owned posting services for complex events; `posting_rule_sets` versioned; `posting_rules` only simple two-leg with resolver keys; journals store `posting_rule_set_id`; 49-event matrix. |
+| A-B-11 | FIXED | `return_lines` net/tax/gross + tax snapshot + original invoice line; `customer_invoices.document_kind='credit_note'` + `original_invoice_id`; matrix #6–8; `tax_documents.document_type` credit-note variants. |
+| A-B-12 | FIXED | Per-line stored `net_amount`/`tax_amount`/`gross_amount` (bigint) + arithmetic CHECK `gross=net+tax`; header totals are sums; header discount/rounding by largest remainder to `5-2-14-001`; exact multiplication CHECK removed (R1-D H-08). |
+| A-B-13 | FIXED | Cheque FSM incl. `issued`; `endorsed_to`, `endorsement_date`, `bank_account_id`, `cleared_bank_transaction_id`; transition trigger; matrix #28–35 incl. post-clear bounce via bank. |
+| A-B-14 | FIXED | `payments.unapplied_amount` + `clearing_account_id`; allocations to orders/advances; deferred allocation-sum trigger; `payment_methods.gl_account_id`/clearing; `cash_sessions` + `cash_transactions.cash_session_id`. |
+| A-B-15 | FIXED | `treasury.cash_sessions` (v1.0), `treasury.bank_statements` + `bank_statement_lines` (§2.17), `partners.partners` + `partner_shares` + `partner_capital_transactions` (§2.17). |
+| A-B-16 | FIXED | `inventory_transactions.period_id` (trigger-derived, `FOR SHARE` locked before write) + `journal_entry_id`; one transaction writes ledger/balance/journal/outbox; closed period rejects whole op. |
+| A-H-01 | DEFERRED | Party detail accounts: modeled through `partner_accounts`/`dimension_values` (level 5) plus `partners.gl_account_id`; separate per-party CoA rows are not seeded (thousands of rows); reason documented, revisit if statutorily required. |
+| A-H-02 | FIXED | `valuation_method` only on org (single policy) with per-variant `cost_method` as override; valuation run unique `(org,warehouse,method,date)`; method change requires valuation run + approval. |
+| A-H-03 | DEFERRED | Backdated receipt/issue cutoff: service rejects `business_date` in a closed/locked period (B-16) but explicit restatement/cutoff workflow is deferred to P4 hardening (owner: finance-lead). |
+| A-H-04 | FIXED | Transfers: matrix #22–23 with in-transit account + layer move (`1-1-10-001`); `inventory_transfers` dispatch/receive states already exist. |
+| A-H-05 | FIXED | Write-off at layer cost (matrix #20–21), separate waste/damage/count-gain accounts (`5-1-02`, `5-1-03`, `5-1-02-002`). |
+| A-H-06 | FIXED | Supplier invoice 3-way match: `match_status`, `price_variance_amount`, `quantity_variance_amount`, line-level variance; duplicate control `supplier_id+invoice_no`. |
+| A-H-07 | FIXED | `tax_rates.gl_account_id` + `is_recoverable`; fee VAT and withholding accounts in CoA (`2-1-05-001`, `1-1-06-001`, `2-1-13-001`). |
+| A-H-08 | FIXED | Customer invoice legal seller/buyer snapshot fields (seller/buyer name, national id, economic code, address); credit-note structure. |
+| A-H-09 | FIXED | `partner_shares` effective-dated ownership; profit distribution after closing with legal reserve + withholding (matrix #38); rounding via 5-2-14-001. |
+| A-H-10 | FIXED | Partners + capital transactions separate; customer credit `1-1-03-004`; supplier prepayment `1-1-05-001`; partner current accounts. |
+| A-H-11 | DEFERRED | Void-vs-reverse enforcement for *all* posted docs: triggers prevent DELETE; reversal entry fields exist; a per-module service check + tests lands with P3/P4 implementation (owner: backend-core). |
+| A-H-12 | FIXED | Deferred constraint trigger on `journal_entries` validates lines, sums and header totals at COMMIT; zero/zero lines rejected. |
+| A-H-13 | FIXED | `account_balances` is one row per account×period (no single dimension column); per-dimension reports aggregate `journal_line_dimensions` joined to `journal_lines` (no double counting). |
+| A-H-14 | DEFERRED | Landed cost/customs: v1 capitalizes inbound freight by adjusting the receipt cost layer before inventory issue (service path); dedicated landed-cost document table deferred (owner: finance-lead). |
+| A-M-01 | FIXED | Period 13 rules; gist exclusions; fiscal-year/period derivation trigger. |
+| A-M-02 | FIXED | Tax rate windows: `effective_from/to` per rate; default constrained to one per org via partial unique; `ck_tax_rates_window`; default must be `tax_type='vat'` (added constraint note in seed validation). |
+| A-M-03 | FIXED | CoA integrity: `account_level` 1–6, code-depth CHECK, parent-level CHECK, seed validator `erp.validate_coa_seed()`. |
+| A-M-04 | DEFERRED | AR/AP/inventory control-account reconciliation reports: schema supports (partner_accounts, layers, GL); report implementations land in P4 (owner: finance-lead). |
+| A-M-05 | FIXED | FIFO ordering now on `inventory_cost_layers(received_at, id)` with FEFO tie-break by lot expiry in service; nonexistent-column reference removed. |
+| A-M-06 | FIXED | Layer residual constraints `qty_remaining <= original_qty`, cost bound, closed flag. |
+| A-M-07 | FIXED | Ledger cost fields: `unit_cost_amount`/`total_cost_amount` required on cost-bearing types (service) + `cost_state`; zero-cost relief rejected. |
+| A-M-08 | FIXED | Reservation consumption: `stock_reservations` gains `consumed_qty`/`released_qty`/`consumed_transaction_id` (partial consumption). |
+| A-M-09 | FIXED | Bank statement import has header (`bank_statements`) + lines; `bank_transactions` direction CHECK de-tautologised. |
+| A-M-10 | FIXED | Statement line ↔ book transaction is 1:1 via partial unique; outstanding-items model via unmatched lines + `bank_reconciliation_lines`. |
+| A-M-11 | FIXED | Allocation `Σ ≤ amount` via deferred trigger; org column added; refund ≤ return enforced by service + refund/return link. |
+| A-M-12 | FIXED | Settlement net formula documented in §6.10.2 #16–17; `net_payable_amount` CHECK (header) added in seed validation. |
+| A-M-13 | FIXED | One original tax document per invoice via partial unique; `taxable_amount` header; credit-note links. |
+| A-M-14 | FIXED | `entry_date = business_date` rule (v1) + inventory `period_id`; both trigger-derived. |
+| A-M-15 | FIXED | Line/header discount separation (`allocated_header_discount_amount`); header discount distributed, never double-counted. |
+| A-M-16 | FIXED | Cash variance accounts (`5-2-12-001`, `4-2-02-001`) + `cash_sessions` variance columns. |
+| A-M-17 | DEFERRED | Reopen/close audit trail: covered by `audit_logs` + `closing_runs`; a dedicated period-action log table deferred (owner: finance-lead). |
+| A-M-18 | FIXED | `partner_shares` effective-dated ownership + CI sum check (validate sum of active ownership = 100% per org). |
+| A-M-19 | FIXED | Loss distribution: `closing_runs` handles negative profit; distribution blocked when retained earnings ≤ 0 (service rule, matrix #38). |
+| A-M-20 | DEFERRED | Purchase returns/allowances and bad-debt rules: accounts exist (`2-1-01-001`, `5-2-11-001`, matrix #12/#44/#45); purchase-return document table deferred (owner: procurement implementation). |
+| A-M-21 | FIXED | Rounding/remainder account `5-2-14-001` + largest-remainder distribution policy setting. |
+| A-L-01 | FIXED | CoA code widened to `varchar(60)` for L5/L6 codes. |
+| A-L-02 | FIXED | API `rate` vs `rate_percent` documented in `enums.ts` (`rate_percent` stores fraction; API converts ×100 at DTO edge). |
+| A-L-03 | FIXED | `cheque_events.amount` required for amount-bearing events (service) + `ck_cheque_events_amount` note. |
+| A-L-04 | FIXED | `standard` added to `valuation_method`; `product_cost_history.cost_method` aligned. |
+| A-L-05 | FIXED | Tax document status uses `document_status` vocabulary (default `issued` is a valid token). |
+| A-L-06 | FIXED | `fiscal_years.retained_earnings_entry_id` replaced by `closing_runs` links (multiple entries). |
+
+### 10.2 R1-datamodel (D) resolutions
+
+| ID | Status | Resolution / reason |
+|---|---|---|
+| D-B-01 | FIXED | §2.17 adds notification templates/preferences, file links, job runs/steps, feature flags/overrides, webhook subscriptions/deliveries, channel webhook secrets, bank statements/lines, goods-receipt scans, putaway scans, generic partners; §6.2 false table-less mappings removed. |
+| D-B-02 | FIXED | §6.10.4 numbering lifecycle: nullable numbers + partial unique + `status<>draft OR number IS NOT NULL` CHECK on orders, invoices, journals, POs, receipts, shipments. |
+| D-B-03 | FIXED | Deferred constraint trigger on `journal_entries` at COMMIT; zero/zero lines rejected; draft deletion replaced by `cancelled`/`voided` (no DELETE endpoint; `BEFORE DELETE` guards exempt only drafts by policy = delete endpoint removed). |
+| D-B-04 | FIXED | §6.3 exact manifest with all mandatory columns, postable L4s, contra rows, L6 parent = L5, asserted counts. |
+| D-B-05 | FIXED | No `00x`; concrete accounts/resolvers; VAT legs added; rule count = 49 events (matrix). |
+| D-B-06 | FIXED | Non-partitioned `outbox_event_keys` global dedupe; `event_uuid`; `locked_until` + reclaim index; retention refuses to drop partitions with pending/processing rows. |
+| D-B-07 | FIXED | Non-partitioned `inventory_ledger_keys` global dedupe; balance combined CHECK; explicit test combination. |
+| D-B-08 | FIXED | §4.4 SECURITY DEFINER functions, identifier validation, `format('%I.%I')`, advisory lock, registry `is_enabled`, privileged drain, grants to worker only. |
+| D-B-09 | FIXED | §6.10.5 FK-safe seed order incl. users/bootstrap superadmin, price lists, accounting_document_types; seed-twice test. |
+| D-B-10 | FIXED | §1.6 single shared vocabulary (submitted/on_hold/closed, document `submitted`, `inbound|outbound` direction, `weighted_average→moving_average`, cheque `issued`). |
+| D-H-01 | FIXED | Soft-delete: all natural unique keys on master data are partial `WHERE deleted_at IS NULL` (rule in §1.3; enforced when implementing unique indexes). |
+| D-H-02 | DEFERRED | Composite `(organization_id, id)` FKs on all high-risk relations: policy restated in §1.5 and applied to inventory/orders/journals during migration 0017; full audit matrix deferred to implementation PR (owner: backend-core). |
+| D-H-03 | DEFERRED | Child FK to partitioned ledger: children store `(transaction_id, transaction_created_at)` for composite reference; real FK from children to partitioned parent is validated in migration dry-run (owner: backend-core). |
+| D-H-04 | FIXED | `stock_reservations` partial consumption columns (`consumed_qty`, `released_qty`, `consumed_transaction_id`) + CHECK `consumed+released <= quantity`; order dedupe via `idempotency_key`. |
+| D-H-05 | FIXED | Retention/prune jobs: worker has DELETE only on `outbox_event_keys`, `inventory_ledger_keys`, `idempotency_keys`, expired sessions/OTP through SECURITY DEFINER functions; append-only tables never DELETEd (partition DETACH for retention). |
+| D-H-06 | FIXED | Fiscal-year numbering: fresh `numbering_sequences` rows per fiscal year (`next_value=1`), no counter copy; §6.10.4. |
+| D-H-07 | FIXED | Money/weight policy violations fixed: `capacity_weight_kg` → `capacity_weight_grams integer`; width/dimension numerics only for non-money; all weights integer grams. |
+| D-H-08 | FIXED | Exact multiplication CHECK removed; stored net/tax/gross + arithmetic CHECK only. |
+| D-H-09 | FIXED | `product_media` CHECK allows either owner (product or variant) and service sets product_id; no contradictory rule. |
+| D-H-10 | FIXED | Period 13 allowed (`period_no BETWEEN 1 AND 13`) with rules. |
+| D-H-11 | FIXED | `tax_documents.status` uses `document_status` tokens; default `issued` valid. |
+| D-H-12 | FIXED | Cheque `issued` state + direction-dependent initial status + FSM trigger. |
+| D-H-13 | FIXED | Payment direction vocabulary + clearing account satisfies account-presence CHECK for gateway/COD. |
+| D-H-14 | FIXED | WMS: location tree columns exist; `user_devices.device_secret_hash`; device secret; `goods_receipt_scans`, `putaway_scans` add scan events. |
+| D-H-15 | FIXED | Procurement/pricing/channel fields: 3-way match columns, supplier line net/tax/gross, fee VAT fields, channel webhook secrets/subs; remaining API-only fields mapped in the implementation PR. |
+| D-H-16 | FIXED | Returns/invoices/refunds link documents (`original_invoice_id`, `credit_note_id`, `original_invoice_line_id`, `cost_layer_id`). |
+| D-H-17 | FIXED | `bank_statements` + `bank_statement_lines`; reconciliation references statement lines. |
+| D-H-18 | FIXED | Valuation run unique per `(org,warehouse,method,date)`; method vocabulary includes API `weighted_average` mapping. |
+| D-H-19 | FIXED | Retention feasibility rewritten (§4.4): 6-month hot + warm archive + S3 cold with explicit sizing; pending rows protected. |
+| D-M-01 | FIXED | `uq_idempotency_keys_org_scope_key` → `(organization_id, actor_user_id, scope, key)`; order idempotency key TTL documented (24 h + 400-day keys GC). |
+| D-M-02 | DEFERRED | `products.attributes_json` stays for search/display; filterable attributes must be promoted to `product_variant_attributes` (filter API uses the normalized tables); migration rule documented, promotion job deferred to P2. |
+| D-M-03 | FIXED | Alert lifecycle: `alert_events` gains `assigned_to`, `note`, `acknowledged_at` (event lifecycle). |
+| D-M-04 | FIXED | API client rotation fields exist; `file_assets` gains `scan_status`, `quarantine_path`, `uploaded_by`, `ready_at`; `api_clients.rotated_at`. |
+| D-M-05 | FIXED | `integration_dead_letters.integration` becomes open `varchar` validated against `enum_values` domain (accepts `partition_maintenance` and future integrations). |
+| D-M-06 | FIXED | Secondary vocabularies moved to `platform.enum_values` seeded lookup (OTP purpose, security event, dead-letter integration, audit action, channel event). |
+| D-M-07 | FIXED | Sample channel accounts have idempotent natural key `(channel_id, external_account_id)`/`(channel_id, name)` — seed uses code. |
+| D-M-08 | FIXED | Holidays unique key includes `organization_id`. |
+| D-M-09 | DEFERRED | `allow_negative_stock` removed from settings; negative stock is structurally impossible (DB CHECK), so no flag is offered in v1 (owner: docs). |
+| D-M-10 | FIXED | `account_balances` update lock order documented: fiscal_year→period→account_id ascending `FOR UPDATE`, journal lines aggregate before update (no deadlock). |
+| D-M-11 | FIXED | Ledger sign rule documented: `quantity` sign is derived from `transaction_type` (negative for out types); service validates + CHECK on type/sign matrix in the posting service; note added in §2.6. |
+| D-M-12 | FIXED | FIFO ordering column exists (`inventory_cost_layers.received_at`). |
+| D-M-13 | FIXED | `bank_transactions.direction` CHECK simplified to `(debit|credit)`; statement side lives in `bank_statement_lines`. |
+| D-M-14 | FIXED | Weight policy: capacity weights in integer grams. |
+| D-L-01 | FIXED | Location code format unified on `A-12-R3-2-07` throughout; `full_code` CHECK documented. |
+| D-L-02 | FIXED | Registry DDL includes `is_enabled` (referenced from §2.1; §4.4 filters it). |
+| D-L-03 | FIXED | `ck_currencies_single_base` renamed/described as partial unique index `uq_currencies_one_base`. |
+| D-L-04 | FIXED | `saved_filters` is platform-owned; reporting endpoints read it via platform service (ownership note added). |
+| D-L-05 | FIXED | Self-review claims in §9.1 rewritten to reference this log and the actual assertions (no stronger claims than evidence). |
+
+### 10.3 R1-security (S) resolutions
+
+| ID | Status | Resolution / reason |
+|---|---|---|
+| S-B-01 | OUT-OF-SCOPE | Delivery-phase status/evidence ledger is an ARCHITECTURE/SECURITY document fix (owner: security-lead/lead). No schema impact. |
+| S-B-02 | FIXED | `user_devices.device_secret_hash` (server-issued 32-byte secret, hashed), `secret_issued_at`, `secret_rotated_at`; trust bypass requires the secret cookie; fingerprint demoted to display label. |
+| S-B-03 | OUT-OF-SCOPE | Password-reset policy is API/SECURITY (owner: api-architect/security-lead). Schema: `otp_challenges` purpose vocabulary extended via `enum_values` (`password_reset`, `step_up`, `mfa`, `breakglass`). |
+| S-B-04 | DEFERRED | Approval thresholds/workflow edits must be approval-governed (new `approval.config.manage` key + 2-person approval); pipeline belongs to identity/accounting implementation; `journal_entries.approval_request_id` + DB trigger validating above-threshold post is specified in §6.10.3 and lands in P4 (owner: accounting implementation). |
+| S-B-05 | FIXED | `audit_logs` gains `prev_hash`, `entry_hash`, `hash_seq`, `actor_label`; `platform.audit_chain_heads`; `erp.chain_audit(batch)` SECURITY DEFINER owned by migrator, EXECUTE to worker, no UPDATE grant; verifier job with independent read path; `event_type`/`actor_type` vocabularies extended via enum_values; hourly `audit_mismatch` event. |
+| S-B-06 | FIXED | Single permission registry: `packages/shared/permissions.ts` generated from API.md §5.2 (414 keys); §6.2 is now a reference + verbatim copy, role manifests rewritten to exact keys; no prefix matching; bidirectional CI parity. |
+| S-H-01 | OUT-OF-SCOPE | Privilege-escalation guard/step-up endpoints (owner: api-architect/backend-core). |
+| S-H-02 | OUT-OF-SCOPE | Export entity→permission mapping is API contract (owner: api-architect). |
+| S-H-03 | FIXED | Webhook signature parameters removed from mutable settings: header/algorithm are adapter constants; only `channel_webhook_secrets` (encrypted, rotated) is configurable, gated by `channel.credential.write` + approval; settings override rejected. |
+| S-H-04 | FIXED | Outbound webhook destinations restricted to a seeded allowlist table (in `webhook_subscriptions` validated by service against `enum_values`/config); cost fields excluded from outbound payload schema; subscription changes require step-up + audit. |
+| S-H-05 | DEFERRED | Presigned-upload hardening (S3 POST policy, pending-object lifecycle, mandatory scan, per-user in-flight cap) is API/storage implementation (owner: api-architect/devops); schema columns `scan_status`, `quarantine_path`, `ready_at` added now. |
+| S-H-06 | DEFERRED | File-download entity-scope check is API behavior (owner: api-architect); `file_links` provides the relation needed. |
+| S-H-07 | OUT-OF-SCOPE | Rate-limit tiers are API contract (owner: api-architect). |
+| S-H-08 | OUT-OF-SCOPE | Voice-OTP/sms budget is API/provider policy (owner: api-architect). |
+| S-H-09 | FIXED | Per-report permissions: `report_definitions.required_permissions text[]` (array of registry keys) + dashboards inherit strictest widget permission; widget `query_definition` is a closed template enum (no free SQL). |
+| S-H-10 | FIXED | Channel payload archives: `channel_webhook_events`/`channel_api_calls` store only allowlisted fields (no headers at all, no customer PII; IDs/hashes only); `raw_body` nullable and disabled in production (`files.persist_http_bodies_in_prod=false`); raw view requires step-up. |
+| S-H-11 | OUT-OF-SCOPE | Docker secrets/keyring handling is deployment (owner: devops-lead). |
+| S-H-12 | FIXED | §5.5 grants manifest rewritten: `saman_readonly` gets **views/matviews only** (no base tables); `saman_app` gets no DELETE except via SECURITY DEFINER prune functions; credential/hash/PII tables revoked; CI diffs `\dp` against manifest. |
+| S-M-01 | FIXED | OTP purpose/security event vocabularies are seeded `platform.enum_values` lookup rows with full lists; FK-validated where feasible; insert test per endpoint purpose/event. |
+| S-M-02 | FIXED | Idempotency unique includes `actor_user_id`; replay lookup includes actor; cross-actor test specified. |
+| S-M-03 | FIXED | Inbound webhook replay: `channel_webhook_events` unique `(account, external_event_id)` (already); event id included in MAC input per API contract; timestamp mandatory (no flag) — contract fix noted for API owner, schema unchanged. |
+| S-M-04 | OUT-OF-SCOPE | XLSX decompression caps and PDF renderer sandbox (owner: workers/api). |
+| S-M-05 | OUT-OF-SCOPE | Egress allowlist hard-coding (owner: channels implementation/devops). |
+| S-M-06 | OUT-OF-SCOPE | API-client auth scheme (owner: api-architect); schema fields already present. |
+| S-M-07 | OUT-OF-SCOPE | Break-glass workflow (owner: security-lead); `identity.break_glass` key exists. |
+| S-M-08 | OUT-OF-SCOPE | Rate tiers (owner: api-architect). |
+| S-M-09 | OUT-OF-SCOPE | Scope-denial 403/404 rule (owner: api-architect). |
+| S-M-10 | OUT-OF-SCOPE | Scope-change token invalidation (owner: api-architect/identity impl). |
+| S-L-01 | OUT-OF-SCOPE | Log redaction rules (owner: security-lead). |
+| S-L-02 | OUT-OF-SCOPE | Header hygiene/CSP (owner: security-lead). |
+| S-L-03 | OUT-OF-SCOPE | Dependency pinning (owner: devops). |
+| S-L-04 | OUT-OF-SCOPE | Backup encryption key custody (owner: devops). |
+| S-L-05 | OUT-OF-SCOPE | Pen-test scope (owner: qa-lead). |
+
+### 10.4 Verification added to the migration/seed test suite
+
+`pnpm --filter @saman/db test` (implementation phase) must assert: table count 215; CoA manifest counts (5/10/59/85/8/6) and every posting-rule account postable; every `event_type` in §6.10.2 has a posting handler test; outbox/ledger dedupe tables exist and are non-partitioned; balance CHECK rejects `on_hand=10,reserved=10,safety_buffer=1`; deferred journal trigger rejects empty/unbalanced entries; gist exclusions reject overlapping periods; grants manifest (`\dp`) matches §5.5; seed-twice idempotency; permission registry parity (414/414) with `packages/shared/permissions.ts`.
 

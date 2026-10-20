@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global process, console */
 /**
  * Deterministically extracts the permission-key registry from
  * `docs/03-api-contract/API.md` (§5.2 authoritative registry + §5.3.1 delta keys

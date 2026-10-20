@@ -223,7 +223,7 @@ function buildHeaders(init: RequestInitEx, requestId: string): Record<string, st
 
 const HARD_AUTH_FAILURES = new Set(['SESSION_REVOKED', 'REFRESH_TOKEN_REUSED']);
 
-async function executeFetch(init: RequestInitEx, requestId: string): Promise<Response> {
+function executeFetch(init: RequestInitEx, requestId: string): Promise<Response> {
   const url = `${API_BASE}${init.path}${buildQueryString(init.params)}`;
   return fetch(url, {
     method: init.method,

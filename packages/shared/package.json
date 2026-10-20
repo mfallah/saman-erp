@@ -12,7 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node scripts/run-tests.mjs",
+    "test": "tsc -p tsconfig.test.json && node dist-test/test/run.js",
+    "test:vitest": "vitest run",
     "gen:permissions": "node scripts/extract-permissions.mjs"
   },
   "dependencies": {

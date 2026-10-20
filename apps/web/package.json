@@ -5,12 +5,12 @@
   "description": "Saman ERP admin SPA — Persian RTL (React 19 + Vite + TanStack)",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "vite --configLoader native",
+    "build": "tsc --noEmit && vite build --configLoader native",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --configLoader native",
+    "test:watch": "vitest --configLoader native"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -30,6 +30,7 @@
     "@testing-library/react": "^16.2.0",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
+    "@types/node": "^22.13.0",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^26.0.0",
     "tailwindcss": "^4.0.6",

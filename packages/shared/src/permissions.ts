@@ -95,10 +95,6 @@ function byResource(...resources: readonly string[]): PermissionKey[] {
   return select((key) => resources.includes(keyResource(key)));
 }
 
-function byAction(...actions: readonly string[]): PermissionKey[] {
-  return select((key) => actions.includes(keyAction(key)));
-}
-
 function unique(keys: readonly PermissionKey[]): PermissionKey[] {
   return [...new Set(keys)];
 }

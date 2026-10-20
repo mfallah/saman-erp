@@ -1,0 +1,29 @@
+{
+  "name": "@saman/db",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Saman ERP database: typed schema manifest, generated SQL migrations, migration runner and seed",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "generate": "node --experimental-strip-types scripts/generate.mjs",
+    "validate:sql": "node scripts/validate-sql.mjs",
+    "deferred": "node --experimental-strip-types scripts/deferred.mjs",
+    "migrate": "node dist/migrate.js",
+    "seed": "node dist/seed.js",
+    "reset": "node dist/cli/reset.js",
+    "create-admin": "node dist/cli/create-admin.js"
+  },
+  "dependencies": {
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=22.11.0"
+  }
+}

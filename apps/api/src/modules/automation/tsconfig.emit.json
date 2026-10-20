@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.check.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-check",
+    "declaration": false,
+    "sourceMap": false,
+    "incremental": false
+  }
+}

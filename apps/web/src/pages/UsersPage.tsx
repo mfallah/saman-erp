@@ -11,7 +11,6 @@ import type { Role, UserSummary } from '../types/api';
 import { Can, PermissionNotice } from '../components/auth/Can';
 import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
-import { Card } from '../components/ui/Card';
 import { Checkbox } from '../components/ui/Checkbox';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { DataTableToolbar } from '../components/ui/DataTableToolbar';
@@ -36,7 +35,6 @@ export function UsersPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const canRead = useHasPermission(PERM.userRead);
-  const canCreate = useHasPermission(PERM.userCreate);
   const canUpdate = useHasPermission(PERM.userUpdate);
   const canAssignRoles = useHasPermission(PERM.roleAssign);
   const [search, setSearch] = useState('');

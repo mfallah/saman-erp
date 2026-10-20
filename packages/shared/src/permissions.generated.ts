@@ -42,6 +42,7 @@ export const PERMISSION_KEYS = [
   'accounting.journal.create',
   'accounting.journal.delete',
   'accounting.journal.post',
+  'accounting.journal.post_high_value',
   'accounting.journal.read',
   'accounting.journal.reverse',
   'accounting.journal.update',
@@ -68,6 +69,7 @@ export const PERMISSION_KEYS = [
   'api_client.update',
   'api_request_log.read',
   'approval.act',
+  'approval.config.manage',
   'approval.request',
   'approval.request.read',
   'approval.workflow.manage',
@@ -179,9 +181,9 @@ export const PERMISSION_KEYS = [
   'department.update',
   'device.read',
   'device.revoke',
-  'export.create',
   'export.delete',
   'export.read',
+  'export.read_all',
   'file.create',
   'file.delete',
   'file.link.create',
@@ -391,6 +393,7 @@ export const PERMISSION_KEYS = [
   'user.create',
   'user.delete',
   'user.read',
+  'user.reset_password',
   'user.scope.assign',
   'user.update',
   'variant.create',
@@ -422,9 +425,9 @@ export const PERMISSION_KEYS = [
 
 /** Provenance counts, useful for seed/CI assertions. */
 export const PERMISSION_REGISTRY_STATS = {
-  registry: 412,
+  registry: 414,
   delta: 183,
-  total: 412,
+  total: 415,
 } as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];

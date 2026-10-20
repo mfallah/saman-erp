@@ -16,7 +16,7 @@ Status: Accepted v1.0 · Owner: Database Architect · Last updated: 1405-07-27
 | 4 | No partitioning, no retention | five monthly partitioned tables, PK/unique include `created_at`, BRIN, default partition, auto-create + retention jobs | §4 |
 | 5 | `deleted_at` on every table including ledgers/journals | soft delete only on master data; transactional rows voided/reversed; `BEFORE DELETE` guards | §1.3, §5.1 |
 | 6 | Money `numeric(20,2)`, `numeric(30,2)`; percentages `numeric(8,4)`; `float` risk | money `bigint` IRR; qty `numeric(18,4)`; % `numeric(9,6)`; FX `numeric(12,6)`; no `float/real/money` | §1.4 |
-| 7 | Permission registry undefined, no unique on `permissions.code` | `permissions.key` global unique, `resource`/`action` derived, 412 seeded keys | §2.2, §6.2 |
+| 7 | Permission registry undefined, no unique on `permissions.code` | `permissions.key` global unique, `resource`/`action` derived, 414 seeded keys | §2.2, §6.2 |
 | 8 | `users` missing password hash, MFA, permission version | `identity.users` + `auth_sessions`, `user_devices`, `password_history`, `otp_challenges`, `login_attempts` | §2.2 |
 | 9 | `inventory_balances` without unique tuple or non-negative CHECKS | `uq_inventory_balances_wh_loc_variant` + `ck_inventory_balances_nonnegative` (+ trigger) | §2.6 |
 | 10 | Journal balance not enforced anywhere | header totals + deferred constraint trigger `trg_journal_lines_assert_balanced` | §2.12, §5.1 |
@@ -51,7 +51,7 @@ numbering_sequences.current_value → next_value
 sms_messages.cost           → sms_messages.cost_amount (bigint IRR)
 ```
 
-45 net-new tables were added (see DATA-MODEL §7.3) after removing 4 reference tables and renaming 11: identity devices/scope/history/attempts, org currency+holidays, category attributes, inventory transfers(+lines)/consistency, wave↔order join, invoice/receipt lines, carrier services/zones/package contents, price list items, channel cursors/health/rate-limit, journal dimensions/posting rules/tax lines, bank/cash/sessions/reconciliation/allocation, partner ledger/profit/settlements, KPI snapshots, alerting, partition maintenance. Arithmetic: 150 − 4 + 45 = **191 tables** (DATA-MODEL §2 counts are normative). One documented exception to the standard block: `platform.partitioned_tables_registry` is a maintenance registry keyed by `parent_table text`, not a business aggregate (no `id`/`public_id`/`version`; rejected as a business table by review).
+71 net-new tables were added (see DATA-MODEL §7.3) after removing 6 reference tables (incl. `shareholders`/`shareholder_transactions` → `partners*`) and renaming 11: identity devices/scope/history/attempts, org currency+holidays, category attributes, inventory transfers(+lines)/consistency, wave↔order join, invoice/receipt lines, carrier services/zones/package contents, price list items, channel cursors/health/rate-limit, journal dimensions/posting rules/tax lines, bank/cash/sessions/reconciliation/allocation, partner ledger/profit/settlements, KPI snapshots, alerting, partition maintenance. Arithmetic: 150 − 6 + 71 = **215 tables (v1.1)** (DATA-MODEL §2 counts are normative). One documented exception to the standard block: `platform.partitioned_tables_registry` is a maintenance registry keyed by `parent_table text`, not a business aggregate (reviewer finds it should carry `is_enabled`; it does).
 
 ## 3. Naming & type conventions actually used (frozen)
 
@@ -111,7 +111,7 @@ WHERE c.contype IN ('p','u') AND NOT EXISTS (
 
 -- 4.5 every table resolves to exactly one documented module/table name
 SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'erp' AND c.relkind IN ('r','p') AND c.relname NOT LIKE '%\_p%';  -- expect 191 (+ registry parents counted; partitions excluded by relname LIKE '%_p20%')
+WHERE n.nspname = 'erp' AND c.relkind IN ('r','p') AND c.relname NOT LIKE '%\_p%';  -- expect 215 (+ registry parents counted; partitions excluded by relname LIKE '%_p20%')
 
 -- 4.6 default partitions must stay empty (also exported as a metric/alert)
 SELECT 'inventory_transactions', count(*) FROM erp.inventory_transactions_default
@@ -122,7 +122,7 @@ UNION ALL SELECT 'outbox_events', count(*) FROM erp.outbox_events_default;
   -- all rows must be 0
 
 -- 4.7 permission registry parity: seed count must equal manifest count in packages/shared/permissions.ts
-SELECT count(*) FILTER (WHERE is_system) AS seeded FROM erp.permissions;  -- expected 412
+SELECT count(*) FILTER (WHERE is_system) AS seeded FROM erp.permissions;  -- expected 414
 
 -- 4.8 no table has a money column typed numeric, and every qty column is numeric(18,4)
 SELECT table_name, column_name, data_type, numeric_precision, numeric_scale
@@ -165,3 +165,20 @@ WHERE table_schema='erp'
 6. `product_barcodes.barcode` is globally unique (scan resolution) — duplicate manufacturer barcodes across variants are a data-quality error, reported by import validation instead of silently allowed.
 7. `permissions` is not org-scoped; tenants cannot fork permission semantics (ADR-0008).
 8. `account_balances` is a projection table, not a ledger: it can be rebuilt from `journal_lines` with `erp.rebuild_account_balances(period_id)` (worker-only); a rebuild is logged in `audit_logs`.
+
+## 8. v1.1 corrections after round-1 review (see DATA-MODEL §10)
+
+1. **Document numbers are nullable until finalization** (`order_no`, `invoice_no`, `entry_no`, `po_no`, `receipt_no`, `shipment_no`): partial unique index `WHERE <no> IS NOT NULL` + CHECK `status='draft' OR <no> IS NOT NULL`; allocation in the post/issue transaction (R1-D B-02).
+2. **Journal balance** is enforced by a `DEFERRABLE INITIALLY DEFERRED` constraint trigger on `journal_entries` at COMMIT (≥2 lines, sums equal header totals, >0); zero/zero lines rejected (R1-D B-03).
+3. **Global dedupe cannot live on a partitioned table**: `outbox_event_keys` (PK natural key + unique `event_uuid`) and `inventory_ledger_keys` (PK `idempotency_key`) are **non-partitioned** and written in the same transaction as the partitioned row (R1-D B-06/B-07).
+4. **Inventory costing**: FIFO layers (`inventory_cost_layers`), consumptions (`inventory_layer_consumptions`), moving average (`inventory_average_costs`); `inventory_lots` is physical batch metadata only (R1-A B-07).
+5. **Availability**: `CHECK (reserved + safety_buffer + damaged <= on_hand)` on balances; `available` never stored.
+6. **Partition maintenance** functions: `SECURITY DEFINER SET search_path=erp,pg_temp`, owned by migrator, EXECUTE to worker only, `format('%I.%I')` identifiers, advisory lock, registry `is_enabled`, privileged drain (R1-D B-08).
+7. **Periods**: `EXCLUDE USING gist` on fiscal years and periods (requires `btree_gist`), `period_no 1..13`, journal trigger derives `period_id` from `entry_date` and rejects closed periods (R1-A B-09).
+8. **Enum vocabularies** come from `packages/shared/enums.ts`; migrations generate CHECKs from it. Second-class vocabularies (OTP purpose, security event, dead-letter integration, audit action, channel event) are rows in `platform.enum_values` (R1-D B-10, R1-S M-01).
+9. **Grants**: readonly role sees views/matviews only; `saman_app` has no DELETE; prune/GC happens through SECURITY DEFINER functions; CI diffs `\dp` against the manifest (R1-S H-12).
+10. **Audit**: `audit_logs` carries `prev_hash/entry_hash/hash_seq/actor_label`; `platform.audit_chain_heads` + `erp.chain_audit()` (SECURITY DEFINER) maintain the chain; retention 10 years (R1-S B-05).
+11. **CoA seed** is the exact §6.3 manifest (asserted counts 5/10/59/85/8/6 = 173); contra rows explicit; every posting account postable; no `00x` codes (R1-A B-04/B-05).
+12. **Posting**: complex events are code-owned services seeded/validated through versioned `posting_rule_sets`; the complete 49-event Dr/Cr matrix is DATA-MODEL §6.10.2; journals store `posting_rule_set_id` (R1-A B-10).
+13. `btree_gist` extension is required by migration 0001 (`CREATE EXTENSION IF NOT EXISTS btree_gist`).
+14. **Retention** revised: 6-month hot ledger (not 25), warm archive to local archive tablespace, cold to S3 with manifest; partition detach refuses pending/processing outbox rows; storage sizing in DATA-MODEL §4.4 (R1-D H-19).

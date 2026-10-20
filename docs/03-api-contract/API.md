@@ -2,7 +2,7 @@
 
 **خلاصهٔ فارسی:** این سند قرارداد رسمی API نسخهٔ ۱ سامان ERP است: قراردادهای سراسری (پاکت پاسخ، خطا، صفحه‌بندی، فیلتر، هم‌زمانی خوش‌بینانه، Idempotency، نرخ محدودیت، پول و تاریخ)، جریان‌های احراز هویت و نشست، کاتالوگ کامل Endpointها به تفکیک ماژول همراه با کلید دسترسی هر Endpoint، رجیستری کلیدهای دسترسی، قرارداد دریافت/ارسال Webhook، جریان فایل، نگاشت آداپتورهای Carexy/Digikala/Limo SMS، و راهبرد تولید OpenAPI و نسخه‌گذاری. همهٔ شناسه‌های عمومی `uuid` هستند و شناسهٔ عددی داخلی (`bigint`) هرگز در API ظاهر نمی‌شود.
 
-Status: **Engineering baseline v1.0** · Owner: API Architect · Last updated: 1405-07-27
+Status: **v1.1-revised** (Round-1 security revision) · Owner: API Architect · Last updated: 1405-07-27 · Revision log in §14
 Sources of truth, in priority order: 1) this document for HTTP surface and permission keys, 2) `docs/02-data-model/DATA-MODEL.md` for persistence and seed, 3) ADRs for cross-cutting decisions, 4) real partner API documents (`carexy`, `digikala`, `limo-sms`). If this document and an adapter implementation disagree about a partner endpoint, the partner document wins and this document is patched.
 
 ---
@@ -115,8 +115,10 @@ Rules:
 | 401 | `PERMISSIONS_CHANGED` | JWT `pv` < `users.permissions_version` | Silent refresh, re-render menus |
 | 401 | `SESSION_REVOKED` | Session row revoked/expired | Force re-login |
 | 401 | `REFRESH_TOKEN_REUSED` | Rotated token presented again | Family revoked; force re-login + security event |
-| 401 | `STEP_UP_REQUIRED` | Sensitive action needs a fresh step-up token | Prompt password/OTP |
+| 403 | `STEP_UP_REQUIRED` | Sensitive action needs a fresh step-up token bound to session+action | Prompt password/OTP, retry with `X-Step-Up-Token` |
 | 403 | `FORBIDDEN` | Authenticated but missing permission key | Hide/disable action |
+| 403 | `CSRF_REJECTED` | Cookie-auth endpoint failed Origin/CSRF/double-submit checks | Reload SPA, retry |
+| 403 | `FORBIDDEN_PERMISSION_ESCALATION` | Actor attempted to grant/assume permissions, roles or scope beyond their own effective set | Blocked; audited as `access.denied` + `security_events` |
 | 403 | `SCOPE_DENIED` | Permission present but branch/warehouse scope excludes the target | Explain scope |
 | 403 | `IP_NOT_ALLOWED` | Source IP outside org allowlist (admin/API clients) | Contact admin |
 | 404 | `NOT_FOUND` | Resource absent, soft-deleted, or out of tenant scope (indistinguishable on purpose) | Show empty state |
@@ -139,16 +141,19 @@ Rules:
 | 422 | `PRICE_BELOW_MARGIN` | Margin guard blocks price | Override with approval |
 | 422 | `CURRENT_PASSWORD_INVALID` | Password change/reset step-up failed | Retry |
 | 422 | `PASSWORD_POLICY_VIOLATION` | zxcvbn/breach/reuse rule | Show policy |
+| 422 | `SYSTEM_ROLE_IMMUTABLE` | Attempt to edit/delete a seeded `is_system` role or its grants | Choose a custom role |
+| 422 | `INVALID_FILE_TYPE` | File content/extension/MIME rejected by upload policy | Re-upload an allowed type |
 | 422 | `OTP_INVALID` | Wrong OTP code | Retry |
 | 422 | `OTP_EXPIRED` | TTL elapsed | Request a new code |
 | 422 | `OTP_ATTEMPTS_EXCEEDED` | Max verify attempts | Request new code (rate-limited) |
 | 422 | `OTP_RESEND_TOO_SOON` | Resend window not elapsed; `details.retryAfter` | Wait |
-| 422 | `UPLOAD_UNSUPPORTED_TYPE` | Magic bytes ≠ declared type | Re-upload |
+| 422 | `UPLOAD_UNSUPPORTED_TYPE` | Legacy alias of `INVALID_FILE_TYPE` (kept for v1 compatibility; deprecated) | Re-upload |
 | 422 | `UPLOAD_CHECKSUM_MISMATCH` | `sha256` mismatch on file complete | Re-upload |
 | 422 | `IMPORT_VALIDATION_FAILED` | Import batch has row errors; see `/imports/{id}/errors` | Fix rows |
 | 423 | `RESOURCE_LOCKED` | Document locked by another process/user | Retry later |
 | 428 | `PRECONDITION_REQUIRED` | `If-Match` required by policy but absent | Fetch `ETag`, retry |
 | 429 | `RATE_LIMITED` | Limit exceeded | Honor `Retry-After` |
+| 429 | `SMS_BUDGET_EXHAUSTED` | Organization daily SMS/voice monetary budget exhausted (covers OTP + SMS + voice; 80% alert) | Stop sending; contact admin |
 | 501 | `NOT_IMPLEMENTED` | Adapter capability not available (e.g. Digikala endpoint `TBD-DIGIKALA`) | Hide feature |
 | 502 | `UPSTREAM_UNAVAILABLE` | Partner API error/timeout exhausted retries | Queue/notify |
 | 502 | `UPSTREAM_INVALID_RESPONSE` | Partner returned schema-invalid payload | Alert |
@@ -238,11 +243,11 @@ Response money fields always include a sibling `currency` where ambiguity exists
 |---|---|
 | Scope | **Required** on every `POST` that creates a financial/stock/business document or moves money/stock (see §4 rows marked `IK`). Recommended on all `POST`. Ignored on `GET`/`DELETE`. |
 | Format | 8–255 chars, `[A-Za-z0-9._:-]`; UUID recommended. Header name is exactly `Idempotency-Key`. |
-| Storage | `idempotency_keys` table: `key`, `user_id`, `route`, `request_hash` (SHA-256 of canonical body+path), `status` (`in_progress`/`completed`), `response_status`, `response_body`, `created_at`, `expires_at`. Unique on `(user_id, route, key)`. |
+| Storage | `idempotency_keys` table: `key`, `actor_type` (`user`/`api_client`/`break_glass`), `actor_id`, `org_id`, `scope` (route + client scope digest), `request_hash` (SHA-256 of canonical method+path+body), `status` (`in_progress`/`completed`), `response_status`, `response_body`, `created_at`, `expires_at`. **Unique on `(organization_id, actor_type, actor_id, scope, key)`** — a key captured from another actor can never collide, replay or leak a response. |
 | Retention | 24 h (`IDEMPOTENCY_TTL_HOURS`). Expired keys may be reused; expiry cleanup is a maintenance job. |
 | Replay | Completed key + same hash → original status/body replayed with `Idempotent-Replay: true`; **no side effects**. |
-| Conflict | Same key + different body hash → `409 IDEMPOTENCY_KEY_REUSED`. |
-| Concurrency | Second in-flight request with same key → `409 IDEMPOTENCY_IN_PROGRESS` + `Retry-After: 1`. |
+| Conflict | Same actor+scope key + different body hash → `409 IDEMPOTENCY_KEY_REUSED`. |
+| Concurrency | Second in-flight request with same actor+scope key → `409 IDEMPOTENCY_IN_PROGRESS` + `Retry-After: 1`. |
 | Failure caching | Only `2xx` responses are cached. A `4xx/5xx` releases the key so the client may retry (except after a commit — the domain idempotency key, e.g. `channel:order:123`, still guards). |
 | Webhook/jobs | Internal idempotency uses natural keys (`channel:order:{externalId}`, `webhook:{eventId}`) in addition to this header for external producers. |
 
@@ -259,27 +264,33 @@ SPA rule: generate the key at the moment the user clicks submit (not on render),
 
 ### 1.12 Rate limits
 
-Limits are enforced per authenticated user by default, sliding window in Redis, with per-IP fallback when Redis is down (`ARCHITECTURE.md` §13). Response headers on every request: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` (epoch seconds), `RateLimit-Policy` (e.g. `read;w=60`). `429` includes `Retry-After`.
+**Normative source: `docs/04-security/SECURITY.md` §7.1.** This section maps those limits to API enforcement; the numeric values live in one place (SECURITY.md) and are not duplicated here beyond the table below, which the security gate keeps in sync. Redis sliding window; per-IP fallback when Redis is down (`ARCHITECTURE.md` §13). Every response carries `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, `RateLimit-Policy`; `429` includes `Retry-After`.
 
-| Tier | Scope | Limit |
-|---|---|---|
-| `auth-login` | per `(IP, username)` | 10 / min; exponential delay after 5 |
-| `auth-otp-request` | per mobile | 3 / 10 min, 5 / hour |
-| `auth-otp-request-ip` | per IP | 10 / hour |
-| `auth-otp-verify` | per challenge | 5 attempts total; 10 / 10 min per IP |
-| `auth-refresh` | per session | 60 / hour |
-| `auth-step-up` | per user | 10 / 15 min |
-| `read` | per user | 600 / min |
-| `write` | per user | 120 / min |
-| `bulk` | per user | 12 / min (bulk create/update, imports) |
-| `report` | per user | 30 / min; async exports 10 / min |
-| `file-upload` | per user | 60 / hour; bytes cap per §7 |
-| `webhook-in` | per channel account | 600 / min burst 1200; `429` is retried by partner |
-| `metrics` | per scrape token/IP | 60 / min |
-| `public-health` | per IP | 120 / min |
+| Tier | Scope / key | Limit | Notes |
+|---|---|---|---|
+| `auth-login-ip` | source IP | 20 / 10 min | independent of username; catches credential stuffing |
+| `auth-login-user` | username (global) | 50 / hour | plus per `(IP, username)` 10 / min and lockout 10 failures / 15 min (`423 RESOURCE_LOCKED`) |
+| `auth-otp-request` | mobile + purpose | 3 / 10 min, 5 / hour | anti-enumeration response shape (§1.16) |
+| `auth-otp-request-ip` | source IP | 10 / hour | |
+| `auth-otp-verify` | challenge | 5 attempts total | counter shared with `mfa-verify` and `step-up` for the same challenge |
+| `auth-mfa-verify` | challenge / IP | 5 / challenge, 30 / hour / IP | |
+| `auth-otp-voice` | mobile / IP | 1 / 5 min, 5 / hour | **requires a valid `challengeId` from the password step**; paid provider call |
+| `auth-password-reset` | reset token / IP | 3 / token, 5 / hour / IP | admin-assisted delivery token only (no public reset flow) |
+| `auth-step-up` | user | 10 / 15 min | |
+| `auth-refresh` | session | 60 / hour | |
+| `sms-budget` | organization / day | monetary cap `SMS_DAILY_BUDGET_IRR` | covers **all** OTP + SMS + voice sends; `429 SMS_BUDGET_EXHAUSTED`; alert at 80% |
+| `captcha` | IP + mobile | after 3 OTP sends / hour | Turnstile/hCaptcha required (configurable provider, enforced server-side); failure → `429 RATE_LIMITED` |
+| `read` | user | 600 / min | |
+| `write` | user | 120 / min | |
+| `bulk` | user | 12 / min | bulk create/update, imports staging |
+| `report` | user | 10 / hour | sync runs and async report creation |
+| `export` | user | 10 / hour | |
+| `file-upload` | user | 60 / hour and 5 in-flight uploads | per-purpose byte caps in §7 |
+| `webhook-in` | channel account | 600 / min burst 1200 | partner retries a 429 |
+| `metrics` | scrape token / IP | 60 / min | |
+| `public-health` | source IP | 120 / min | |
 
-Special cases: login lockout after 10 failures/15 min (`423` while locked, Persian message); OTP abuse raises `security_events`; rate-limit hits are audited in aggregate (not per request) to avoid log storms.
-
+Special cases: login lockout (`423` with Persian message); CAPTCHA is required after 3 OTP sends per IP+mobile within an hour and is **not** roadmap; the SMS/voice monetary budget is enforced before any provider call; rate-limit hits raise aggregated `security_events` (never one row per request). A tier may be tightened by security review at any time without an API version bump; loosening requires security sign-off.
 ### 1.13 Caching, compression, conditional requests
 
 - `Cache-Control: no-store` on everything under `/auth/*`, `/webhooks/*`, and all authenticated business endpoints by default (sensitive). Public health/version: `public, max-age=10`.
@@ -313,26 +324,19 @@ Mutating responses include `ETag` (new version) and `X-Request-ID`. `Location` i
 ### 1.16 Persian messages, i18n, and anti-enumeration
 
 - `message` is Persian by default (`fa-IR`), written for end users; `messageKey` is stable English for localization. Engineering docs and field names stay English.
-- Anti-enumeration: `POST /auth/otp/request` always returns `202` with the same body whether or not the mobile exists (for `purpose=login`); `POST /auth/password/forgot` always `202`; resource lookups outside the caller's org return `404`, not `403`.
+- Anti-enumeration: `POST /auth/otp/request` and `POST /auth/login/otp` always return `202` with the same body whether or not the mobile exists; login failures and OTP errors are generic. Resource lookups outside the caller org return `404`, not `403`. There is **no public password-reset endpoint** in v1 (B-03); reset is admin-assisted (see the `/users/{id}/password/reset` row).
 - `422` validation messages may be Persian, but `details[].path` is machine-readable.
 - No stack traces, file paths, SQL, internal ids, partner payloads, tokens, or credential fingerprints beyond the last 4 characters in any error.
 
 ### 1.17 Browser security contract (CORS, CSRF, headers)
 
-- Production is same-origin; `CORS_ALLOWED_ORIGINS` is an env allowlist (dev/staging only). No `Access-Control-Allow-Credentials: true` for foreign origins.
+- Production is same-origin; `CORS_ORIGINS` is an env allowlist (dev/staging only). No `Access-Control-Allow-Credentials: true` for foreign origins.
 - Business endpoints authenticate **only** via `Authorization: Bearer` and are therefore not CSRF-able. The refresh cookie is `Path=/api/v1/auth`, `HttpOnly`, `Secure`, `SameSite=Lax` (`ADR-0004`).
-- Cookie-authenticated endpoints (`/auth/refresh`, `/auth/logout`, `/auth/logout-all`) additionally require: `Origin` matching the allowlist, `X-Requested-With: XMLHttpRequest`, and double-submit `X-CSRF-Token` matching the non-HttpOnly `csrf_token` cookie (SameSite=Lax). Failure → `403 FORBIDDEN` (code `CSRF_FAILED` is folded into `FORBIDDEN` with `details.rule = "csrf"`).
-- Edge/browser headers (set at nginx/Caddy and by Fastify `helmet`): `Strict-Transport-Security: max-age=31536000; includeSubDomains`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` (SPA needs `SAMEORIGIN` only if framed internally; default DENY), `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(self), microphone=(), geolocation=()` (camera needed for scanner PWA), `Content-Security-Policy` per security doc (`default-src 'self'; img-src 'self' data: blob:; connect-src 'self'`), no `Server`/`X-Powered-By` disclosure.
-- Request body caps: JSON `1 MiB` default, `10 MiB` for bulk/import JSON, `100 MiB` for presigned file uploads (out-of-band, §7); URL `8 KiB`; headers `16 KiB`; multipart only on the two upload endpoints documented in §7.
-
-### 1.18 Deprecation policy headers
-
-- Within v1 only **additive** changes (new fields, new endpoints, new optional params) are allowed. Removing/renaming a field, changing a type, tightening validation, or removing an enum value is breaking.
-- Breaking changes require `/api/v2`; v1 then serves `Deprecation: @<unix-seconds>` and `Sunset: <HTTP-date>` headers and continues for **at least two minor releases / 90 days** (whichever is longer).
-- Fields marked deprecated in OpenAPI carry `deprecated: true` and a `x-sunset` extension; the SPA build fails if it references a deprecated operation (ESLint rule in the generated client).
+- Cookie-authenticated endpoints (`/auth/refresh`, `/auth/logout`, `/auth/logout-all`) additionally require: `Origin` matching the allowlist, `X-Requested-With: XMLHttpRequest`, and double-submit `X-CSRF-Token` matching the non-HttpOnly `csrf_token` cookie. Failure → `403 CSRF_REJECTED` (`details.rule = "csrf"`).
+- **Headers and CSP are normative in `docs/04-security/SECURITY.md` §6.1/§6.5** (HSTS with preload, `default-src 'none'` CSP, `nosniff`, frame/referrer/permissions policies). This document deliberately does not duplicate the values; the API emits the edge/helmet configuration from that single source and a header-snapshot test asserts it.
+- Request body caps: JSON `1 MiB` default, `10 MiB` for bulk/import JSON, webhook bodies `2 MiB`, direct multipart `10 MiB`; presigned upload caps are enforced at the storage layer with an S3 POST policy (§7). URL `8 KiB`; headers `16 KiB`.
 
 ---
-
 ## 2. Authentication & session API (identity)
 
 Auth class legend used throughout §4:
@@ -342,53 +346,69 @@ Auth class legend used throughout §4:
 | `public` | No credentials. Rate-limited; only `/auth/*` entry points, health, webhooks. |
 | `self` | Requires a valid access JWT; acts on the caller's own account. No RBAC permission key (still default-deny by route guard). |
 | `cookie+csrf` | Refresh/logout family; refresh token cookie + CSRF checks. |
+| `client` | Machine client bearer (`actor_type=api_client`), issued by `POST /api-clients/token`; scoped and CIDR-checked (§2.3). |
 | `hmac` | Inbound webhook; signature verification per §6, no user JWT. |
 | `scrape` | Static bearer token from env (`METRICS_TOKEN`), not a user JWT; loopback/allowlist only. |
 | `perm:<key>` | Requires the named permission key from the registry (§5). Scope narrowing applies automatically. |
 
 ### 2.1 Token and session model (summary of `ADR-0004`)
 
-- **Access token**: JWT, 10 min, `Authorization: Bearer`. Claims: `sub` (user public_id), `sid` (session public_id), `org` (org public_id), `pv` (permissions version), `scope` (`branchIds[]`, `warehouseIds[]` when scoped), `mfa` (bool), `amr` (password/otp), `jti`, `iat`, `exp`, `iss`, `aud`.
-- **Refresh token**: 256-bit random opaque value, `HttpOnly` cookie `Path=/api/v1/auth`, 7 days, rotated on every use, stored SHA-256 hashed in `auth_sessions.refresh_token_hash`. Reuse of an old token revokes the whole session family and emits `security_events.SESSION_REUSED`.
-- **Sessions vs devices**: one session per login (browser/device). A trusted device survives logout for 30 days and skips OTP on new sessions. Devices are keyed by a client-generated `deviceFingerprint` (stable hash of UA/platform/screen-timezone; no invasive fingerprinting) + server-issued `deviceId` cookie (not auth).
-- **Permission versioning**: role/permission edits bump `users.permissions_version` in the same transaction. Tokens with stale `pv` get `401 PERMISSIONS_CHANGED`; SPA calls `/auth/refresh` (refresh token carries no `pv`, so the new access token is fresh) and retries the failed request **once**.
-- **2FA / step-up**: untrusted device login returns a challenge instead of tokens. Sensitive actions (`journal.post`, `fiscal-year.close`, `channel-credential.write`, `payment.execute`, `password.change`, `role.permission.assign`, `api-client.secret.rotate`) require a step-up token (5 min, single action, `X-Step-Up-Token` header) obtained via `POST /auth/step-up`.
-- **Break-glass**: emergency elevated session, permission `identity.break_glass.use`, max 60 min, loud audit + notification to superadmins, requires reason ≥ 20 chars.
+- **Access token**: JWT, 10 min, `Authorization: Bearer`. Claims: `sub` (user public_id), `sid` (session public_id), `org` (org public_id), `pv` (permissions version), `scope` (`branchIds[]`, `warehouseIds[]` when scoped), `mfa` (bool), `amr` (password/otp), `actor_type` (`user`/`api_client`/`break_glass`), `jti`, `iat`, `exp`, `iss=saman-erp`, `aud=api`.
+- **JWT verification hardening (L-04)**: the verifier pins the algorithm from the configured key type (never from the token header), rejects `alg:none` and unknown `kid`, validates `iss`/`aud`/`exp`, and checks `jti` against the revocation set on sensitive routes (journal post, approval act, credential write, user/role/scope changes). Signing keys are a versioned keyring with `kid`; rotation is overlap-windowed. (`SECURITY.md` §2.2 is normative.)
+- **Refresh token**: 256-bit random opaque value, `__Secure-` `HttpOnly` cookie `Path=/api/v1/auth`, 7 days, rotated on every use, stored SHA-256 hashed in `auth_sessions.refresh_token_hash`. Reuse of an old token revokes the whole session family and emits `security_events.session.reuse_detected`.
+- **Sessions vs devices — device trust (B-02)**: one session per login (browser/device). `deviceFingerprint` is a **display label only** (hash of UA/platform/screen; observable and low-entropy, therefore never an authenticator). Trust is keyed on a **server-issued 256-bit `deviceSecret`**, delivered once as an `HttpOnly; Secure; SameSite=Lax` cookie scoped `Path=/api/v1/auth`, stored only as `user_devices.device_secret_hash`; the client never sends it in a JSON body. A device is trusted **only** when the presented cookie's secret matches the stored hash for that user/device and its `trusted_until` is in the future. Missing/mismatched secret at `POST /auth/login` ⇒ `202` MFA challenge (never tokens), regardless of the fingerprint. Trust is bound to `auth_sessions.device_id`; trusting a device requires a completed OTP. Device secrets are rotated on trust and invalidated for all devices on password change/reset.
+- **Permission versioning & scope revocation (M-10)**: role/permission edits **and scope changes** bump `users.permissions_version` in the same transaction. Tokens with stale `pv` get `401 PERMISSIONS_CHANGED`; the SPA calls `/auth/refresh` and retries once. Scoped mutations re-check the current scope revision from the session row (`ScopeGuard`), so a narrowed warehouse scope cannot survive in a still-valid access token beyond the next request.
+- **2FA / step-up (D-2)**: an untrusted device login returns a challenge instead of tokens. **Step-up** (`POST /auth/step-up`) returns a 5-minute, single-use `X-Step-Up-Token` bound to `(session, action)`; it is required for: role create/update/delete and permission grants (`role.assign`), user role/scope changes (`role.assign`, `user.scope.assign`), user password reset (`user.reset_password`), channel account settings and credential write/rotate/delete, approval configuration (`approval.config.manage`), break-glass start/kill, raw audit/financial export, and raw channel-payload view. Missing/expired/wrong-action token ⇒ `403 STEP_UP_REQUIRED`; a step-up token for one action never authorizes another.
+- **Break-glass (M-07)**: an **offline sealed `superadmin` account** (credentials offline, never routine work) must be started by **two custodians** (second-custodian approval via `POST /approval-requests`, workflow `break_glass`). Tokens carry `actor_type=break_glass`, a distinct `sid`, max 60 min, and **every request re-checks the session row** (no JWT-only window). An explicit denylist forbids: creating users/roles, changing approval config, exporting credentials, deleting data, disabling audit. All actions raise critical `security_events`, page superadmins, and require a post-incident review ticket within 72 h. A hard kill switch (`POST /auth/break-glass/kill`) revokes all break-glass sessions immediately and is available to any superadmin without step-up.
+- **Password policy (B-03)**: Argon2id; self-service change requires current password + step-up OTP; admin-assisted reset is the only recovery path in v1 (no public forgot/reset) — see §2.2 and §4.1.
 
 ### 2.2 Auth endpoints
 
 | Method · Path | Auth | Permission | Purpose | Request (key fields) | Response | Important errors |
 |---|---|---|---|---|---|---|
-| `GET /auth/config` | public | — | Login-page bootstrap: OTP enabled?, password enabled?, 2FA policy, org name/logo, password policy hints, `smsMode: real\|mock`. | — | `{ passwordLogin, otpLogin, mfaPolicy, orgName, logoUrl?, policy: { minLength, zxcvbnMin } }` | `RATE_LIMITED` |
-| `POST /auth/login` | public | — | Password login. Starts a session; may return a 2FA challenge. | `username` (mobile/email/username), `password`, `deviceFingerprint`, `deviceName?`, `rememberDevice?` | `200` tokens + user; or `202 { mfaRequired: true, challengeId, methods:["otp_sms"], expiresIn }` (no tokens) | `VALIDATION_ERROR`, `UNAUTHENTICATED`, `MFA_REQUIRED`, `RATE_LIMITED`, `RESOURCE_LOCKED` |
-| `POST /auth/login/otp` | public | — | Passwordless login step 1: request OTP for a mobile. | `mobile`, `deviceFingerprint`, `deviceName?` | `202 { challengeId, expiresIn, resendAfter }` (same shape for existing/unknown mobile) | `RATE_LIMITED`, `OTP_RESEND_TOO_SOON` |
-| `POST /auth/otp/request` | public/self | — | Request OTP for any purpose (`login`, `mfa`, `password_reset`, `sensitive_action`, `device_trust`). | `purpose`, `mobile?` (required for public purposes), `challengeId?` | `202 { challengeId, expiresIn, resendAfter, maskMobile }` | `OTP_RESEND_TOO_SOON`, `RATE_LIMITED`, `VALIDATION_ERROR` |
-| `POST /auth/otp/verify` | public | — | Verify OTP for login/mfa/passwordless; issues tokens on success. | `challengeId`, `code` (6 digits), `deviceFingerprint`, `trustDevice?` | `200` tokens + `user` + `permissionsVersion`; `204` if purpose was `password_reset` (returns resetToken separately) | `OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `MFA_REQUIRED` |
-| `POST /auth/otp/voice` | public | — | Voice OTP fallback via Limo `SendOTPVoice` (rate-limited, `smsMode` must be real). | `mobile`, `challengeId?` | `202 { challengeId, expiresIn }` | `NOT_IMPLEMENTED` (`SMS_MODE=mock`), `RATE_LIMITED`, `UPSTREAM_UNAVAILABLE` |
-| `POST /auth/mfa/verify` | public | — | Complete a pending login challenge; marks the session `mfa_verified`. | `challengeId`, `code`, `trustDevice?` | `200` tokens + user | `OTP_INVALID`, `OTP_EXPIRED`, `MFA_REQUIRED`, `UNAUTHENTICATED` |
-| `POST /auth/mfa/resend` | public | — | Resend the login challenge OTP. | `challengeId` | `202 { resendAfter }` | `OTP_RESEND_TOO_SOON`, `NOT_FOUND` |
-| `POST /auth/refresh` | cookie+csrf | — | Rotate refresh token, issue a new access token; refreshes `pv`. | (cookie; body empty) | `200` tokens + `permissionsVersion`; rotated `Set-Cookie` | `UNAUTHENTICATED`, `SESSION_REVOKED`, `REFRESH_TOKEN_REUSED` |
-| `POST /auth/logout` | self | — | Revoke current session and clear cookie. | `allDevices?` | `204` | `UNAUTHENTICATED` |
-| `POST /auth/logout-all` | self | — | Revoke every session of the caller (all devices). | — | `204` | `UNAUTHENTICATED` |
-| `GET /auth/me` | self | — | Current user profile + effective roles + permission keys + scopes + `permissionsVersion`. | — | `{ id, fullName, mobile, email?, roles[], permissions[] (keys), scope, mfa, lastLoginAt, org }` | `UNAUTHENTICATED` |
+| `GET /auth/config` | public | — | Login-page bootstrap: auth methods enabled, mandatory-MFA policy, org name/logo, policy hints, `smsMode: real\|mock`, CAPTCHA provider/required. | — | `{ passwordLogin, otpLogin, mfaPolicy, orgName, logoUrl?, policy: { minLength, zxcvbnMin }, captcha?: { provider, siteKey } }` | `RATE_LIMITED` |
+| `POST /auth/login` | public | — | Password login. Trust is decided **only** by the server-issued `deviceSecret` cookie (B-02). | `username`, `password`, `deviceFingerprint?` (display label only), `deviceName?` | `200` tokens + user when device secret matches and trust valid; **else `202 { mfaRequired: true, challengeId, methods:["otp_sms","otp_voice"], expiresIn }`** (no tokens) | `VALIDATION_ERROR`, `UNAUTHENTICATED`, `MFA_REQUIRED`, `RATE_LIMITED`, `RESOURCE_LOCKED` |
+| `POST /auth/login/otp` | public | — | Passwordless login step 1: request OTP for a mobile. | `mobile`, `deviceName?` | `202 { challengeId, expiresIn, resendAfter, captchaRequired? }` (same shape for known/unknown mobile) | `RATE_LIMITED`, `OTP_RESEND_TOO_SOON`, `SMS_BUDGET_EXHAUSTED` |
+| `POST /auth/otp/request` | public/self | — | Request OTP for a purpose. Purposes: `login`, `mfa`, `step_up`, `password_change`, `device_trust`, `channel_credential`, `password_reset` (admin-initiated only). | `purpose`, `mobile?` (required for public purposes), `challengeId?`, `captchaToken?` (required after 3 sends) | `202 { challengeId, expiresIn, resendAfter, maskMobile }` | `OTP_RESEND_TOO_SOON`, `RATE_LIMITED`, `SMS_BUDGET_EXHAUSTED`, `VALIDATION_ERROR` |
+| `POST /auth/otp/verify` | public | — | Verify OTP for login/mfa/passwordless; on success issues tokens **and the `deviceSecret` cookie** for a trusted device. | `challengeId`, `code` (6 digits), `trustDevice?`, `deviceName?` | `200` tokens + `user` + `permissionsVersion` + `Set-Cookie: device_secret` | `OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `MFA_REQUIRED`, `SMS_BUDGET_EXHAUSTED` |
+| `POST /auth/otp/voice` | public | — | Voice OTP via Limo `SendOTPVoice` — **only** as fallback for a login/MFA challenge that already exists (challengeId from the password step). | `challengeId`, `mobile` (must equal challenge mobile) | `202 { challengeId, expiresIn }` | `NOT_IMPLEMENTED` (`SMS_MODE=mock`), `RATE_LIMITED`, `SMS_BUDGET_EXHAUSTED`, `UPSTREAM_UNAVAILABLE` |
+| `POST /auth/mfa/verify` | public | — | Complete a pending login challenge; marks the session `mfa_verified` and may issue `deviceSecret`. | `challengeId`, `code`, `trustDevice?`, `deviceName?` | `200` tokens + user + optional `Set-Cookie: device_secret` | `OTP_INVALID`, `OTP_EXPIRED`, `OTP_ATTEMPTS_EXCEEDED`, `MFA_REQUIRED`, `RATE_LIMITED` |
+| `POST /auth/mfa/resend` | public | — | Resend the login challenge OTP (same challenge, shared attempt counter). | `challengeId` | `202 { resendAfter, captchaRequired? }` | `OTP_RESEND_TOO_SOON`, `RATE_LIMITED`, `NOT_FOUND` |
+| `POST /auth/refresh` | cookie+csrf | — | Rotate refresh token, issue a new access token; refreshes `pv`. | (cookie; body empty) | `200` tokens + `permissionsVersion`; rotated `Set-Cookie` | `UNAUTHENTICATED`, `SESSION_REVOKED`, `REFRESH_TOKEN_REUSED`, `CSRF_REJECTED` |
+| `POST /auth/logout` | self | — | Revoke current session and clear cookies. | `allDevices?` | `204` | `UNAUTHENTICATED` |
+| `POST /auth/logout-all` | self | — | Revoke every session of the caller and invalidate all device secrets. | — | `204` | `UNAUTHENTICATED` |
+| `GET /auth/me` | self | — | Current user profile + effective roles + permission keys + scopes + `permissionsVersion`. | — | `{ id, fullName, mobile, email?, roles[], permissions[] (keys), scope, mfa, lastLoginAt, org, actorType }` | `UNAUTHENTICATED` |
 | `GET /auth/permissions` | self | — | Permission registry digest for client-side menu rendering (only the caller's keys + registry version). | — | `{ version, keys[] }` | `UNAUTHENTICATED` |
 | `PATCH /auth/me` | self | — | Update own profile (name, email, language, avatar file id). | `fullName?`, `email?`, `language?`, `avatarFileId?` | `200` user | `VALIDATION_ERROR`, `VERSION_CONFLICT` |
-| `POST /auth/password/change` | self | — | Change own password (step-up required). | `currentPassword`, `newPassword`, `stepUpToken` | `204`; all other sessions revoked | `CURRENT_PASSWORD_INVALID`, `PASSWORD_POLICY_VIOLATION`, `STEP_UP_REQUIRED` |
-| `POST /auth/password/forgot` | public | — | Start password reset (always `202` to avoid enumeration). | `mobile` | `202 { challengeId, expiresIn }` | `RATE_LIMITED` |
-| `POST /auth/password/reset` | public | — | Complete reset with OTP-verified `resetToken`. | `resetToken`, `newPassword` | `204`; all sessions revoked | `OTP_INVALID`, `OTP_EXPIRED`, `PASSWORD_POLICY_VIOLATION` |
-| `POST /auth/step-up` | self | — | Obtain a short-lived step-up token for a sensitive action. | `password` **or** `otpChallengeId`+`code`, `action` (expected permission key) | `200 { stepUpToken, expiresIn, action }` | `CURRENT_PASSWORD_INVALID`, `OTP_INVALID`, `RATE_LIMITED` |
-| `POST /auth/break-glass` | self | `identity.break_glass.use` | Emergency elevation; expires automatically. | `reason` (≥20 chars), `durationMinutes` (≤60), `password`, `otpCode` | `200` tokens (elevated `scope`, `amr:["break_glass"]`) + notifies superadmins | `FORBIDDEN`, `VALIDATION_ERROR` |
+| `POST /auth/password/change` | self | — | Change own password: current password **+ step-up OTP**. Revokes all other sessions and all device secrets; current session stays. | `currentPassword`, `newPassword`, `stepUpToken` | `204` | `CURRENT_PASSWORD_INVALID`, `PASSWORD_POLICY_VIOLATION`, `STEP_UP_REQUIRED`, `RATE_LIMITED` |
+| `POST /auth/step-up` | self | — | Obtain a 5-min single-use step-up token bound to one action and the current session. | `action` (exact permission key being exercised), `sessionId`, **either** `password` **or** `{challengeId, code}` (purpose `step_up`) | `200 { stepUpToken, expiresIn:300, action, sessionId }` | `CURRENT_PASSWORD_INVALID`, `OTP_INVALID`, `OTP_EXPIRED`, `RATE_LIMITED`, `STEP_UP_REQUIRED` |
+| `POST /auth/break-glass` | self | `identity.break_glass.use` | Start an emergency session from the offline sealed account, with second-custodian approval. | `approvalRequestId` (approved workflow `break_glass`), `reason` (≥30 chars), `custodianUserId`, `password`, `otpCode` | `200` tokens (`actor_type=break_glass`, max 60 min) + critical notifications | `FORBIDDEN`, `APPROVAL_REQUIRED`, `STEP_UP_REQUIRED`, `VALIDATION_ERROR` |
+| `POST /auth/break-glass/kill` | self | `identity.break_glass.use` | Hard kill switch: revoke every active break-glass session immediately (no step-up needed; restrictive action). | `reason` | `204 { revokedCount }` | `FORBIDDEN` |
 | `GET /auth/sessions` | self | — | List the caller's active sessions (device label, IP /24, last used, current flag). | `?include=revoked` | cursor list of sessions | `UNAUTHENTICATED` |
 | `DELETE /auth/sessions/{id}` | self | — | Revoke one own session by public id. | — | `204` | `NOT_FOUND`, `UNAUTHENTICATED` |
 | `POST /auth/sessions/revoke-others` | self | — | Revoke all sessions except the current one. | — | `204 { revokedCount }` | `UNAUTHENTICATED` |
-| `GET /auth/devices` | self | — | List known devices (trusted flag, last seen, platform). | — | list of devices | `UNAUTHENTICATED` |
-| `POST /auth/devices/{id}/trust` | self | — | Trust a device for 30 days (requires OTP). | `otpChallengeId`, `code` | `200 { trustedUntil }` | `OTP_INVALID`, `NOT_FOUND` |
-| `DELETE /auth/devices/{id}` | self | — | Forget a device (revokes its sessions and trust). | — | `204` | `NOT_FOUND` |
-| `DELETE /auth/devices` | self | — | Forget all devices except current (revokes their sessions). | — | `204 { revokedCount }` | `UNAUTHENTICATED` |
-| `GET /auth/security-events` | self | — | Own recent security events (logins, failures, revocations) for the "security" screen. | cursor + `type?` | cursor list | `UNAUTHENTICATED` |
+| `GET /auth/devices` | self | — | List known devices (label, trusted flag, last seen, platform; never secrets). | — | list of devices | `UNAUTHENTICATED` |
+| `POST /auth/devices/{id}/trust` | self | — | Trust a device for 30 days: requires OTP and **issues a new server-side deviceSecret** (hash stored; cookie set). | `otpChallengeId`, `code`, `deviceName?` | `200 { trustedUntil }` + `Set-Cookie: device_secret` | `OTP_INVALID`, `RATE_LIMITED`, `NOT_FOUND` |
+| `DELETE /auth/devices/{id}` | self | — | Forget a device (revokes its sessions, trust and deviceSecret). | — | `204` | `NOT_FOUND` |
+| `DELETE /auth/devices` | self | — | Forget all devices except current (revokes their sessions and secrets). | — | `204 { revokedCount }` | `UNAUTHENTICATED` |
+| `GET /auth/security-events` | self | — | Own recent security events (logins, failures, revocations, step-ups) for the "security" screen. | cursor + `type?` | cursor list | `UNAUTHENTICATED` |
+
+**B-02 test expectation:** `POST /auth/login` with the correct password + a copied/guessed `deviceFingerprint` + **no** deviceSecret cookie MUST return `202 {mfaRequired:true}` and no tokens. With the correct deviceSecret cookie AND valid trust, it returns `200`. With a secret for another user/device it returns `202` (and audits `security_events.device.secret_mismatch`).
+
+### 2.3 Machine clients (API clients, M-06)
+
+API clients are for server-to-server integrations (e.g. the Carexy storefront backend or an internal BI job). They never use user cookies or user JWTs.
+
+| Method · Path | Auth | Permission | Purpose | Request (key fields) | Response | Important errors |
+|---|---|---|---|---|---|---|
+| `POST /api-clients/token` | public (client credentials; rate-limited `auth-login-ip`) | — | Exchange `client_key`+`client_secret` for a short-lived machine token. | `clientKey`, `clientSecret`, `grantType: "client_credentials"` | `200 { accessToken, tokenType:"Bearer", expiresIn:900, scopes[], clientId }` | `UNAUTHENTICATED`, `IP_NOT_ALLOWED`, `RATE_LIMITED`, `SESSION_REVOKED` |
+
+- Token: opaque/JWT, 15 min, claims `sub=client public_id`, `org`, `actor_type=api_client`, `scopes[]` (subset of `api_clients.scopes`), `jti`; no refresh token — re-authenticate.
+- Every request: source IP matched against `api_clients.allowed_cidrs` → `403 IP_NOT_ALLOWED`; scope→permission mapping goes through the same `PermissionsGuard` (a client cannot exceed seeded scopes); `pv` equivalent = registry version captured at token issue.
+- Idempotency keys are scoped per client (`actor_type=api_client`), never shared with a user.
+- Secret rotation: 24 h overlap; old secret invalidated after overlap; every token issuance and every client action is audited with `actor_type=api_client`.
 
 ---
-
 ## 3. How to read the endpoint catalog (§4)
 
 Each module has one table with these columns:
@@ -413,7 +433,7 @@ Universal rules applied to every row and not repeated:
 6. Every denial/approval/submit/post is audited (`audit_logs`) with `requestId`; no endpoint needs a separate "log" call.
 7. Soft-deleted resources are invisible; `DELETE` is idempotent (`204` if already deleted).
 8. All list endpoints default to `limit=50` (cursor) or `perPage=25` (offset); no unbounded lists exist.
-9. Cross-org access returns `404`; scope violations return `403 SCOPE_DENIED`.
+9. Out-of-tenant or out-of-scope access on a **detail/action** target returns `404 NOT_FOUND` (no existence oracle). `403 SCOPE_DENIED` is returned only when the target id is supplied **inside a bulk/selection body** whose parent list the caller can already legitimately see. Cross-org ids are always `404`.
 10. Fields that reference another aggregate accept only UUID `*Id` values (never codes, never bigints).
 
 ## 4. Endpoint catalog (by module)
@@ -429,19 +449,19 @@ Universal rules applied to every row and not repeated:
 | `DELETE /users/{id}` | `user.delete` | — | Soft-delete a user; revokes sessions; blocks self-delete and last superadmin. | — | `204` | `RULE_VIOLATION` (`last_superadmin`, `self_delete`) |
 | `POST /users/{id}/activate` | `user.update` | — | Reactivate a disabled user. | — | user | `DOCUMENT_STATE_INVALID` |
 | `POST /users/{id}/deactivate` | `user.update` | — | Disable user and revoke all sessions immediately. | `reason` | user | `DOCUMENT_STATE_INVALID` |
-| `PUT /users/{id}/roles` | `role.assign` | IM | Replace the user's role set; bumps `permissionsVersion`. | `roleIds[]` | user | `RULE_VIOLATION` (`last_superadmin`) |
-| `PUT /users/{id}/scope` | `user.scope.assign` | IM | Replace branch/warehouse scope. | `branchIds[]`, `warehouseIds[]` | user | `VALIDATION_ERROR` |
-| `POST /users/{id}/password/reset` | `user.update` | — | Admin-initiated reset: sends OTP/link, revokes sessions. | `delivery: "sms"\|"link"` | `202 { delivery, expiresIn }` | `NOT_FOUND`, `UPSTREAM_UNAVAILABLE` |
+| `PUT /users/{id}/roles` | `role.assign` | IM | Replace the role set of the user; bumps `permissionsVersion` in the same transaction. Step-up required. | `roleIds[]`, `stepUpToken` | user | `RULE_VIOLATION` (`last_superadmin`), `FORBIDDEN_PERMISSION_ESCALATION` (target or requested set not subset of actor effective set), `STEP_UP_REQUIRED` |
+| `PUT /users/{id}/scope` | `user.scope.assign` | IM | Replace branch/warehouse scope; **bumps `permissions_version` in the same transaction** and forces token re-validation on the next request (M-10). Step-up required. | `branchIds[]`, `warehouseIds[]`, `stepUpToken` | user | `VALIDATION_ERROR`, `FORBIDDEN_PERMISSION_ESCALATION` (scope not subset of actor scope), `STEP_UP_REQUIRED` |
+| `POST /users/{id}/password/reset` | `user.reset_password` | — | **Admin-assisted reset only (B-03).** Allowed only if the target effective permissions are a subset of the actor effective permissions; step-up required. Issues a single-use 256-bit reset token (purpose `password_reset`, TTL 10 min, hashed at rest, bound to user id) delivered to the user only via SMS/OTP; all target sessions and device secrets are revoked. The password/token is never returned to the admin. | `stepUpToken`, `delivery: "sms"\|"link"` | `202 { delivery, expiresIn:600 }` (no secret in body) | `FORBIDDEN_PERMISSION_ESCALATION`, `STEP_UP_REQUIRED`, `NOT_FOUND`, `UPSTREAM_UNAVAILABLE`, `RATE_LIMITED` |
 | `GET /users/{id}/permissions` | `user.read` | — | Effective permission keys (union of roles) + version. | — | `{ version, keys[] }` | `NOT_FOUND` |
 | `GET /users/{id}/sessions` | `session.read` | O | Active sessions of a user. | `F:active` | list of sessions | `NOT_FOUND` |
 | `POST /users/{id}/sessions/revoke` | `session.revoke` | — | Revoke all sessions of a user (force logout). | `reason` | `204 { revokedCount }` | `NOT_FOUND` |
 | `GET /roles` | `role.read` | O | List roles (system roles flagged). | `F:system`; `S:name,createdAt`; `Q` | list of roles | — |
-| `POST /roles` | `role.create` | IK | Create a custom role. | `name`, `nameFa`, `descriptionFa?`, `permissionKeys[]` | `201` role | `CONFLICT` (name) |
+| `POST /roles` | `role.create` | IK | Create a custom role. Step-up required; granted keys must be a subset of the actor effective permissions (H-01). | `name`, `nameFa`, `descriptionFa?`, `permissionKeys[]`, `stepUpToken` | `201` role | `CONFLICT` (name), `FORBIDDEN_PERMISSION_ESCALATION`, `STEP_UP_REQUIRED` |
 | `GET /roles/{id}` | `role.read` | — | Role detail with permission keys. | — | role | `NOT_FOUND` |
-| `PATCH /roles/{id}` | `role.update` | IM | Rename/describe a non-system role. | `name?`, `nameFa?`, `descriptionFa?` | role | `RULE_VIOLATION` (`system_role_immutable`) |
-| `DELETE /roles/{id}` | `role.delete` | — | Delete a non-system role with no users. | — | `204` | `RULE_VIOLATION` (`role_in_use`, `system_role_immutable`) |
+| `PATCH /roles/{id}` | `role.update` | IM | Rename/describe a non-system role. Step-up required. | `name?`, `nameFa?`, `descriptionFa?`, `stepUpToken` | role | `SYSTEM_ROLE_IMMUTABLE`, `STEP_UP_REQUIRED` |
+| `DELETE /roles/{id}` | `role.delete` | — | Delete a non-system role with no users. Step-up required. | `stepUpToken` | `204` | `RULE_VIOLATION` (`role_in_use`), `SYSTEM_ROLE_IMMUTABLE`, `STEP_UP_REQUIRED` |
 | `GET /roles/{id}/permissions` | `role.read` | — | Permission keys of a role. | — | `{ keys[] }` | `NOT_FOUND` |
-| `PUT /roles/{id}/permissions` | `role.assign` | IM | Replace role permission set; bumps every affected user's version. | `permissionKeys[]` | `{ keys[], affectedUsers }` | `VALIDATION_ERROR` (unknown key), `RULE_VIOLATION` (`system_role_immutable`) |
+| `PUT /roles/{id}/permissions` | `role.assign` | IM | Replace the role permission set; bumps every affected user `permissions_version`. Step-up required; no key outside the actor effective set may be granted. | `permissionKeys[]`, `stepUpToken` | `{ keys[], affectedUsers }` | `VALIDATION_ERROR` (unknown key), `SYSTEM_ROLE_IMMUTABLE`, `FORBIDDEN_PERMISSION_ESCALATION`, `STEP_UP_REQUIRED` |
 | `POST /roles/{id}/clone` | `role.create` | IK | Clone a role. | `name`, `nameFa` | `201` role | `CONFLICT` |
 | `GET /roles/{id}/users` | `user.read` | O | Users holding a role. | — | list of user summaries | `NOT_FOUND` |
 | `GET /permissions` | `permission.read` | — | Full permission registry grouped by resource (for the role editor). | `F:resource` | `{ version, groups: [{ resource, permissions[{key,action,descriptionFa}] }] }` | — |
@@ -722,6 +742,9 @@ Receiving writes stock through the inventory ledger only (`ADR-0007`); the recei
 | `DELETE /reorder-rules/{id}` | `reorder.rule.delete` | — | Delete rule. | — | `204` | `NOT_FOUND` |
 | `GET /procurement/recommendations` | `purchase.order.read` | O | Purchase recommendations from reorder rules, sales velocity, open POs. | `F:warehouseId,supplierId,categoryId` | recommendation rows | — |
 
+**Maker-checker in procurement (B-04):** POs and supplier invoices above the configured amount threshold require an approved `approval_request`; the approval workflow and thresholds are immutable via settings and can only be changed by `approval.config.manage` (superadmin, step-up, two-person approval, versioned snapshot). The enforcement point is the domain service (`PurchaseOrderService.approve`, `SupplierInvoiceService.post`), never the UI.
+
+
 ### 4.7 Sales — customers, sales orders, customer invoices, returns, refunds
 
 Orders are canonical; channel orders are mapped in `channels` (§4.10) and never bypass this state machine. State machine: `draft → submitted → confirmed → allocated → picking → packed → shipped → delivered → closed`, with `cancelled`, `on_hold`, and per-line `returned`. Transitions are `POST` actions; an invalid transition is `409 DOCUMENT_STATE_INVALID`.
@@ -780,6 +803,9 @@ Orders are canonical; channel orders are mapped in `channels` (§4.10) and never
 | `POST /refunds/{id}/approve` | `sales.refund.approve` | — | Approve refund (SoD). | `stepUpToken`, `note?` | refund | `FORBIDDEN` (self-approval) |
 | `POST /refunds/{id}/pay` | `sales.refund.pay` | — | Execute refund through treasury; posts journal. | `paymentMethodId`, `reference?` | refund + `paymentId` | `PERIOD_CLOSED`, `UPSTREAM_UNAVAILABLE` (gateway) |
 | `POST /refunds/{id}/void` | `sales.refund.void` | — | Void an unpaid refund. | `reason` | refund | `DOCUMENT_STATE_INVALID` |
+
+**Maker-checker in sales (B-04):** refunds and manual stock-affecting returns above threshold require `sales.refund.approve` / `sales.return.approve` by an actor different from the creator; the requester!=approver rule is enforced by a DB CHECK plus the domain service. Thresholds are approval-config (not settings) and changes need `approval.config.manage`.
+
 
 ### 4.8 Fulfillment — allocation, shipments, packages, labels, carriers, rates
 
@@ -867,7 +893,7 @@ Adapters are behind the canonical port (`ADR-0006`). Credentials are write-only:
 | `GET /channels/{id}/accounts` | `channel.account.read` | O | Seller/store accounts of a channel (multi-account supported). | `F:active,warehouseId` | accounts | `NOT_FOUND` |
 | `POST /channels/{id}/accounts` | `channel.account.create` | IK | Create a channel account (credentials set separately). | `nameFa`, `externalSellerId`, `warehouseIds[]`, `settings?` | `201` account | `CONFLICT` (external id) |
 | `GET /channel-accounts/{id}` | `channel.account.read` | — | Account detail + credential metadata (no secret) + health. | `include=health,credentialMeta,mappings` | account | `NOT_FOUND` |
-| `PATCH /channel-accounts/{id}` | `channel.account.update` | IM | Update account name/warehouses/settings. | `nameFa?`, `warehouseIds?`, `active?`, `settings?` | account | `VERSION_CONFLICT` |
+| `PATCH /channel-accounts/{id}` | `channel.account.update` | IM | Update account name/warehouses/sync settings. **Step-up required.** Signature header/algorithm/mandatory-ness are compile-time adapter constants and are rejected if present in `settings` (H-03). | `nameFa?`, `warehouseIds?`, `active?`, `settings{syncIntervalSeconds, stockDebounceSeconds, safetyBuffer?}`, `stepUpToken` | account | `VERSION_CONFLICT`, `VALIDATION_ERROR` (`signature_override_forbidden`), `STEP_UP_REQUIRED` |
 | `DELETE /channel-accounts/{id}` | `channel.account.delete` | — | Delete an account after mappings/sync are detached. | — | `204` | `RULE_VIOLATION` (`account_in_use`) |
 | `POST /channel-accounts/{id}/test` | `channel.account.test` | — | Live auth/capability probe against the partner (rate-limited). | — | `{ ok, latencyMs, capabilities[], scopes[]? }` | `UPSTREAM_UNAVAILABLE`, `NOT_IMPLEMENTED` |
 | `GET /channel-accounts/{id}/health` | `channel.account.read` | — | Detailed health/probe history. | `from?`, `to?` | health | `NOT_FOUND` |
@@ -893,16 +919,17 @@ Adapters are behind the canonical port (`ADR-0006`). Credentials are write-only:
 | `POST /channel-sync-jobs/{id}/cancel` | `channel.sync.cancel` | — | Cancel a queued/running job cooperatively. | — | job | `DOCUMENT_STATE_INVALID` |
 | `GET /channel-sync-jobs/{id}/errors` | `channel.sync.read` | C | Per-item sync errors (dead-letter subset). | — | errors | `NOT_FOUND` |
 | `GET /channels/{id}/webhook-subscriptions` | `channel.webhook.read` | O | Webhook subscriptions registered with the partner. | `F:accountId,eventType,active` | subscriptions | — |
-| `POST /channels/{id}/webhook-subscriptions` | `channel.webhook.manage` | IK | Register a webhook URL at the partner (Digikala `/webhook/subscription`; Carexy `TBD-CAREXY`). | `accountId`, `eventTypes[]`, `webhookUrl`, `secret?` | `201` subscription | `NOT_IMPLEMENTED` (no partner API), `UPSTREAM_UNAVAILABLE` |
+| `POST /channels/{id}/webhook-subscriptions` | `channel.webhook.manage` | IK | Register a webhook subscription at the partner (Digikala `/webhook/subscription`; Carexy `TBD-CAREXY`). `webhookUrl` MUST be on our public base (`https://erp.carexy.shop/api/v1/webhooks/...`) — arbitrary URLs rejected. Step-up required. | `accountId`, `eventTypes[]`, `webhookUrl`, `stepUpToken` | `201` subscription | `NOT_IMPLEMENTED` (no partner API), `VALIDATION_ERROR` (`webhook_url_not_allowed`), `STEP_UP_REQUIRED`, `UPSTREAM_UNAVAILABLE` |
 | `PATCH /channel-webhook-subscriptions/{id}` | `channel.webhook.manage` | IM | Enable/disable or change events. | `eventTypes?`, `active?` | subscription | `VERSION_CONFLICT` |
 | `DELETE /channel-webhook-subscriptions/{id}` | `channel.webhook.manage` | — | Unsubscribe at partner and locally. | — | `204` | `UPSTREAM_UNAVAILABLE` (logged, retried) |
 | `POST /channel-webhook-subscriptions/{id}/rotate-secret` | `channel.webhook.manage` | — | Rotate the HMAC secret used to verify inbound webhooks (dual-secret window 24 h). | — | `{ fingerprint, rotatedAt }` | `NOT_IMPLEMENTED` |
 | `POST /channel-webhook-subscriptions/{id}/test` | `channel.webhook.manage` | — | Send a synthetic signed event to our own receiver (loopback test). | `eventType` | `{ delivered, verified }` | `UPSTREAM_UNAVAILABLE` |
-| `GET /channel-webhook-events` | `channel.webhook.read` | C | Raw inbound webhook archive (payload included, secrets redacted). | `F:channelId,accountId,eventType,status,receivedAt[gte]` | events | — |
-| `GET /channel-webhook-events/{id}` | `channel.webhook.read` | — | One archived event + processing attempts. | — | event | `NOT_FOUND` |
+| `GET /channel-webhook-events` | `channel.webhook.read` | C | Inbound webhook archive — **identifiers, hashes and processing state only**; no headers, no raw payloads, no PII (H-10). | `F:channelId,accountId,eventType,status,receivedAt[gte]` | events (masked) | — |
+| `GET /channel-webhook-events/{id}` | `channel.webhook.read` | — | One archived event (masked) + processing attempts. | — | event (masked) | `NOT_FOUND` |
+| `GET /channel-webhook-events/{id}/raw` | `channel.webhook.read` | — | Raw payload view: requires `X-Step-Up-Token`, returns field-masked body (PII redacted), decrypts only in request scope, fully audited; raw bytes retained ≤ 30 d then hash-only. | `stepUpToken`, `fields?` (masked allowlist) | `{ payload, maskedFields[] }` | `STEP_UP_REQUIRED`, `FORBIDDEN`, `NOT_FOUND` |
 | `POST /channel-webhook-events/{id}/replay` | `channel.webhook.replay` | — | Re-process an archived event idempotently (safe; duplicate is a no-op). | `force?` | `202` job | `NOT_FOUND` |
 | `GET /channel-api-calls` | `channel.api_call.read` | C | Outbound partner API call log (method, path, status, latency, retry count; bodies redacted). | `F:channelId,accountId,method,status,createdAt[gte]`; `S:createdAt` | calls | — |
-| `GET /channel-api-calls/{id}` | `channel.api_call.read` | — | One call with redacted request/response excerpts. | — | call | `NOT_FOUND` |
+| `GET /channel-api-calls/{id}` | `channel.api_call.read` | — | One call with method/path/status/latency/retry count and **IDs/hashes only**; no headers, no bodies, no PII (H-10). | — | call (masked) | `NOT_FOUND` |
 | `GET /integration-dead-letters` | `integration.dead_letter.read` | C | Terminal failures after retries exhausted. | `F:channelId,type,createdAt[gte]` | dead letters | — |
 | `POST /integration-dead-letters/{id}/retry` | `integration.dead_letter.retry` | — | Re-enqueue a dead letter. | — | `202` job | `NOT_FOUND` |
 | `DELETE /integration-dead-letters/{id}` | `integration.dead_letter.delete` | — | Acknowledge/dismiss a dead letter. | `note?` | `204` | `NOT_FOUND` |
@@ -939,14 +966,14 @@ Accounting is event-driven: business endpoints emit outbox events and the accoun
 | `POST /accounting/periods/{id}/close` | `accounting.period.close` | — | Close a period (rejects posting afterwards). | `note?` | period | `RULE_VIOLATION` (`unposted_journals`) |
 | `POST /accounting/periods/{id}/reopen` | `accounting.period.reopen` | — | Reopen a period (finance manager + step-up). | `reason`, `stepUpToken` | period | `FORBIDDEN` |
 | `GET /accounting/journal-entries` | `accounting.journal.read` | C | Journal entries. | `F:status,type,fiscalYearId,periodId,date[gte],sourceType,sourceId,createdBy`; `S:date,number,createdAt` | journals | — |
-| `POST /accounting/journal-entries` | `accounting.journal.create` | IK | Create a manual journal draft (balanced). | `date`, `description`, `dimensions?`, `lines[{accountId, debit, credit, description?, dimensions?}]`, `attachmentFileIds[]?` | `201` journal | `JOURNAL_UNBALANCED`, `PERIOD_CLOSED`, `COST_CENTER_REQUIRED` |
+| `POST /accounting/journal-entries` | `accounting.journal.create` | IK | Create a manual journal draft (balanced). Amounts above the configured threshold are flagged for the high-value path (B-04). | `date`, `description`, `dimensions?`, `lines[{accountId, debit, credit, description?, dimensions?}]`, `attachmentFileIds[]?` | `201` journal | `JOURNAL_UNBALANCED`, `PERIOD_CLOSED`, `COST_CENTER_REQUIRED` |
 | `GET /accounting/journal-entries/{id}` | `accounting.journal.read` | — | Journal detail + lines + approvals + source links. | `include=lines,approval,links` | journal | `NOT_FOUND` |
 | `PATCH /accounting/journal-entries/{id}` | `accounting.journal.update` | IM | Edit a draft (balanced check on save). | lines/description/date | journal | `JOURNAL_UNBALANCED`, `PERIOD_CLOSED` |
 | `DELETE /accounting/journal-entries/{id}` | `accounting.journal.delete` | — | Delete a draft. | — | `204` | `DOCUMENT_STATE_INVALID` |
 | `POST /accounting/journal-entries/{id}/submit` | `accounting.journal.update` | — | Submit for approval. | — | journal | `DOCUMENT_STATE_INVALID` |
-| `POST /accounting/journal-entries/{id}/approve` | `accounting.journal.approve` | — | Approve (requester ≠ approver; amount matrix). | `stepUpToken`, `note?` | journal | `FORBIDDEN` (self-approval) |
-| `POST /accounting/journal-entries/{id}/post` | `accounting.journal.post` | — | Post: assigns document number, updates `account_balances`, locks lines. Step-up required. | `stepUpToken`, `postDate?` | journal | `PERIOD_CLOSED`, `JOURNAL_UNBALANCED`, `STEP_UP_REQUIRED` |
-| `POST /accounting/journal-entries/{id}/reverse` | `accounting.journal.reverse` | — | Create and post a reversal entry (never edit posted). | `reason`, `reversalDate?` | reversal journal | `DOCUMENT_STATE_INVALID`, `PERIOD_CLOSED` |
+| `POST /accounting/journal-entries/{id}/approve` | `accounting.journal.approve` | — | Approve (requester != approver; amount matrix). Step-up required. | `stepUpToken`, `note?` | journal | `FORBIDDEN` (self-approval), `STEP_UP_REQUIRED` |
+| `POST /accounting/journal-entries/{id}/post` | `accounting.journal.post` **or** `accounting.journal.post_high_value` (above threshold) | — | Post: assigns document number, updates `account_balances`, locks lines. Above `approval.journal_threshold` only `accounting.journal.post_high_value` is accepted **and** the journal must carry an approved `approval_request` whose approver differs from the creator (DB FK `journal_entries.approval_id`, B-04). Step-up required. | `stepUpToken`, `postDate?` | journal | `PERIOD_CLOSED`, `JOURNAL_UNBALANCED`, `APPROVAL_REQUIRED`, `FORBIDDEN` (self-approval), `STEP_UP_REQUIRED` |
+| `POST /accounting/journal-entries/{id}/reverse` | `accounting.journal.reverse` | — | Create and post a reversal entry (never edit posted). Step-up required. | `reason`, `reversalDate?`, `stepUpToken` | reversal journal | `DOCUMENT_STATE_INVALID`, `PERIOD_CLOSED`, `STEP_UP_REQUIRED` |
 | `GET /accounting/journal-entries/{id}/lines` | `accounting.journal.read` | — | Journal lines with account/dimension refs. | — | lines | `NOT_FOUND` |
 | `POST /accounting/journal-entries/{id}/lines` | `accounting.journal.update` | — | Append a line to a draft. | `accountId`, `debit`, `credit`, `description?`, `dimensions?` | line | `DOCUMENT_STATE_INVALID` |
 | `DELETE /accounting/journal-entries/{id}/lines/{lineId}` | `accounting.journal.update` | — | Remove a draft line. | — | `204` | `DOCUMENT_STATE_INVALID` |
@@ -1000,12 +1027,20 @@ Accounting is event-driven: business endpoints emit outbox events and the accoun
 | `POST /approval-requests/{id}/cancel` | `approval.request` | — | Withdraw a pending request. | `reason` | request | `DOCUMENT_STATE_INVALID` |
 | `GET /approval-requests/{id}/actions` | `approval.request.read` | C | Decision history per step. | — | actions | `NOT_FOUND` |
 | `GET /approval-workflows` | `approval.workflow.read` | O | Workflow definitions (thresholds, steps). | `F:active,entityType` | workflows | — |
-| `POST /approval-workflows` | `approval.workflow.manage` | IK | Create a workflow with steps/amount matrix. | `code`, `nameFa`, `entityType`, `steps[{roleId\|permissionKey, minAmount?, maxAmount?}]` | `201` workflow | `CONFLICT` (code) |
-| `PATCH /approval-workflows/{id}` | `approval.workflow.manage` | IM | Update workflow steps/thresholds. | `steps`, `active?` | workflow | `VERSION_CONFLICT` |
-| `DELETE /approval-workflows/{id}` | `approval.workflow.manage` | — | Delete a workflow with no pending requests. | — | `204` | `RULE_VIOLATION` (`pending_requests`) |
+| `POST /approval-workflows` | `approval.config.manage` | IK | Create a workflow with steps/amount matrix. Superadmin only; step-up required; the change itself must be approved by a second person and is stored as an immutable versioned snapshot (B-04). | `code`, `nameFa`, `entityType`, `steps[{roleId\|permissionKey, minAmount?, maxAmount?}]`, `stepUpToken` | `201` workflow | `CONFLICT` (code), `FORBIDDEN_PERMISSION_ESCALATION`, `APPROVAL_REQUIRED`, `STEP_UP_REQUIRED` |
+| `PATCH /approval-workflows/{id}` | `approval.config.manage` | IM | Update workflow steps/thresholds. Superadmin only; step-up; two-person approval; versioned snapshot. **Thresholds are not editable via `setting.update`.** | `steps`, `active?`, `stepUpToken` | workflow | `VERSION_CONFLICT`, `APPROVAL_REQUIRED`, `STEP_UP_REQUIRED` |
+| `DELETE /approval-workflows/{id}` | `approval.config.manage` | — | Delete a workflow with no pending requests (superadmin, step-up, two-person approval). | `stepUpToken` | `204` | `RULE_VIOLATION` (`pending_requests`), `APPROVAL_REQUIRED`, `STEP_UP_REQUIRED` |
 | `GET /accounting/document-links` | `accounting.link.read` | O | Links between business documents and journals (traceability). | `F:entityType,entityId,journalEntryId` | links | — |
 | `POST /accounting/document-links` | `accounting.link.create` | IK | Create an explicit link (usually automatic). | `entityType`, `entityId`, `journalEntryId`, `relation` | `201` link | `CONFLICT` |
 | `DELETE /accounting/document-links/{id}` | `accounting.link.delete` | — | Remove an erroneous manual link (not auto links). | — | `204` | `RULE_VIOLATION` (`auto_link`) |
+
+**Maker-checker enforcement point (B-04, normative):** every governed money/document action is enforced inside the domain service, not by UI or role templates:
+
+1. `JournalPostingService.post(journal, actor)` re-reads the journal amount against the **versioned** threshold snapshot, requires `accounting.journal.post_high_value` above it, requires an `approval_request` in `approved` state whose `approved_by != requested_by`, and the DB enforces `journal_entries.approval_id` NOT NULL when `amount >= threshold` (FK to `approval_requests`). Self-approval is rejected by a DB CHECK.
+2. The same pattern applies to purchase orders, supplier invoices, refunds, stock write-offs, channel credential changes, and profit distribution.
+3. Approval workflow definitions and thresholds are **not** mutable through `setting.update`: only `approval.config.manage` (superadmin, step-up, second-person approval, immutable `data_versions` snapshot) can change them. Role templates deliberately grant `approval.config.manage` to superadmin only.
+4. SoD guard: a single actor cannot both author and post the same document type unless they hold a documented emergency grant; the guard denies with `403 FORBIDDEN_PERMISSION_ESCALATION`.
+
 
 ### 4.12 Treasury — payments, bank accounts, cash, cheques, reconciliation
 
@@ -1112,20 +1147,34 @@ Reports are code-defined SQL/read-model definitions seeded as rows; the API expo
 | `GET /reports/{code}` | `report.read` | — | Definition + params + last run. | — | definition | `NOT_FOUND` |
 | `PATCH /reports/{code}` | `report.update` | IM | Update custom definition. | `titleFa?`, `paramsSchema?`, `active?` | definition | `RULE_VIOLATION` (`system_report`) |
 | `DELETE /reports/{code}` | `report.delete` | — | Delete a custom definition. | — | `204` | `RULE_VIOLATION` (`system_report`) |
-| `POST /reports/{code}/run` | `report.run` | IK/AS | Run a report (sync ≤ 5 s/small result; async otherwise). | `params{from,to,calendar?,filters...}`, `async?`, `format?` | `200 { rows, meta }` or `202` job | `VALIDATION_ERROR` |
+| `POST /reports/{code}/run` | `report.run` **+ the report `required_permissions[]`** | IK/AS | Run a report (sync <= 5 s/small result; async otherwise). Each seeded report declares `required_permissions[]` (financial reports include `accounting.balance.read`/`accounting.ledger.read`; partner-profit includes `partner.read`; audit-summary includes `audit.read`); ALL must be held, checked at run/rows/download (H-09). | `params{from,to,calendar?,filters...}`, `async?`, `format?` | `200 { rows, meta }` or `202` job | `VALIDATION_ERROR`, `FORBIDDEN` |
 | `GET /reports/runs` | `report.run` | C | Report run history. | `F:reportCode,status,createdAt[gte]` | runs | — |
 | `GET /reports/runs/{id}` | `report.run` | — | Run status/metrics/row count. | — | run | `NOT_FOUND` |
-| `GET /reports/runs/{id}/rows` | `report.run` | C | Paginated result rows (JSON). | `limit`, `cursor` | rows | `NOT_FOUND` |
+| `GET /reports/runs/{id}/rows` | `report.run` + report `required_permissions[]` | C | Paginated result rows (JSON); re-checked per request. | `limit`, `cursor` | rows | `NOT_FOUND`, `FORBIDDEN` |
 | `POST /reports/runs/{id}/cancel` | `report.run` | — | Cancel a running report. | — | run | `DOCUMENT_STATE_INVALID` |
-| `GET /reports/runs/{id}/download` | `report.run` | FILE | Download result (csv/xlsx/pdf). | `format` | `{ fileId, downloadUrl }` | `NOT_FOUND` |
-| `POST /exports` | `export.create` | IK/AS | Create a generic async export (products, inventory, orders, journal, audit). | `entity`, `format: "csv"\|"xlsx"`, `filters`, `columns?` | `202` job | `VALIDATION_ERROR` |
-| `GET /exports` | `export.read` | C | Export history. | `F:entity,status,createdAt[gte]` | exports | — |
-| `GET /exports/{id}` | `export.read` | — | Export detail + progress. | — | export | `NOT_FOUND` |
-| `GET /exports/{id}/download` | `export.read` | FILE | Presigned download (expires 15 min; export retained 7 days). | — | `{ fileId, downloadUrl, expiresIn }` | `NOT_FOUND`, `RULE_VIOLATION` (`export_expired`) |
-| `DELETE /exports/{id}` | `export.delete` | — | Delete export artifact. | — | `204` | `NOT_FOUND` |
+| `GET /reports/runs/{id}/download` | `report.run` + report `required_permissions[]` | FILE | Download result (csv/xlsx/pdf); re-checked at download, audited. | `format` | `{ fileId, downloadUrl }` | `NOT_FOUND`, `FORBIDDEN`, `STEP_UP_REQUIRED` (financial/audit) |
+| `POST /exports` | entity-derived (see map below) | IK/AS | Create a generic async export. The **required permission is derived from `entity`** (H-02): `audit` -> `audit.export`; `journal`/`trial_balance`/financial -> `accounting.balance.read` + `product.cost.read` when cost columns are requested; other entities -> the module read key. Mismatch -> `403 FORBIDDEN`. Large/financial exports additionally require step-up. | `entity`, `format: "csv"\|"xlsx"`, `filters`, `columns?`, `stepUpToken?` | `202` job | `FORBIDDEN`, `STEP_UP_REQUIRED`, `VALIDATION_ERROR` |
+| `GET /exports` | `export.read` (+ `export.read_all` when `all=true`) | C | Export history. Scoped to the requesting actor unless the caller holds `export.read_all`. | `F:entity,status,createdAt[gte]`, `all?` | exports | `FORBIDDEN` if `all=true` without `export.read_all` |
+| `GET /exports/{id}` | `export.read` | — | Export detail + progress. Visible only to its requester unless `export.read_all`; out-of-scope id -> `404`. | — | export | `NOT_FOUND` |
+| `GET /exports/{id}/download` | `export.read` | FILE | Presigned download (15 min; export retained 7 days). At download time the entity permission is **re-checked**, the artifact must belong to the actor (or caller has `export.read_all`), and an `audit_logs` row is written. | — | `{ fileId, downloadUrl, expiresIn }` | `NOT_FOUND`, `FORBIDDEN`, `RULE_VIOLATION` (`export_expired`) |
+| `DELETE /exports/{id}` | `export.delete` | — | Delete export artifact (requester or `export.read_all`). | — | `204` | `NOT_FOUND`, `FORBIDDEN` |
+
+**Export entity to required permission map** (enforced at create **and** download; closed enum in `packages/shared/export-entities.ts`, unknown entity -> `422`):
+
+| `entity` | Required permission(s) | Extra |
+|---|---|---|
+| `audit` | `audit.export` | step-up; PII redaction per SECURITY.md |
+| `journal`, `trial_balance`, `balance_sheet`, `income_statement`, `general_ledger`, `receivables_aging`, `payables_aging` | `accounting.balance.read` or `accounting.ledger.read`; `product.cost.read` when cost columns requested | financial; step-up at create and download |
+| `inventory` | `inventory.balance.read` or `inventory.ledger.read`; `product.cost.read` for cost columns | |
+| `products`, `customers`, `sales_orders`, `suppliers`, `purchase_orders` | corresponding module `.read` | |
+| `partner_profit`, `settlements` | `partner.read` or `settlement.read`; `product.cost.read` for margin | step-up |
+| any other | module `*.read` from the map; missing entry -> `422` | |
+
+| Method · Path | Perm | Kind | Purpose | Request (key) | Response | Errors |
+|---|---|---|---|---|---|---|
 | `GET /dashboards` | `dashboard.read` | O | Dashboard definitions. | `F:role` | dashboards | — |
-| `POST /dashboards` | `dashboard.create` | IK | Create a custom dashboard. | `code`, `titleFa`, `widgets[{type, queryCode, params, layout}]` | `201` dashboard | `CONFLICT` |
-| `GET /dashboards/{code}` | `dashboard.read` | — | Dashboard + widgets resolved values. | `params?` | dashboard + widget data | `NOT_FOUND` |
+| `POST /dashboards` | `dashboard.create` | IK | Create a custom dashboard. Widget `queryCode` must be a code-committed template; a dashboard inherits the **strictest widget permission** and resolution checks it per user (H-09). | `code`, `titleFa`, `widgets[{type, queryCode, params, layout}]` | `201` dashboard | `VALIDATION_ERROR` (unknown queryCode), `FORBIDDEN` |
+| `GET /dashboards/{code}` | `dashboard.read` | — | Dashboard + widgets resolved values. Each widget is permission-checked before rendering; unauthorized widgets are omitted (not errored). | `params?` | dashboard + widget data | `NOT_FOUND` |
 | `PATCH /dashboards/{code}` | `dashboard.update` | IM | Update widgets/layout. | `titleFa?`, `widgets?` | dashboard | `VERSION_CONFLICT` |
 | `DELETE /dashboards/{code}` | `dashboard.delete` | — | Delete a custom dashboard. | — | `204` | `RULE_VIOLATION` (`system_dashboard`) |
 | `GET /dashboard/summary` | `dashboard.read` | — | Home KPI summary (sales today, profit, open orders, low stock, cash, AR/AP). | `date?`, `branchId?` | KPI object | — |
@@ -1168,12 +1217,12 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 
 | Method · Path | Perm | Kind | Purpose | Request (key) | Response | Errors |
 |---|---|---|---|---|---|---|
-| `POST /files/uploads` | `file.create` | IK | Request a presigned upload URL. | `fileName`, `contentType`, `sizeBytes`, `sha256?`, `purpose: "product_media"\|"invoice"\|"attachment"\|"avatar"\|"import"\|"cheque_image"` | `201 { fileId, uploadUrl, method: "PUT", headers, expiresIn }` | `PAYLOAD_TOO_LARGE`, `UPLOAD_UNSUPPORTED_TYPE` |
-| `POST /files/uploads/{fileId}/complete` | `file.create` | IK | Complete upload: server verifies size/magic bytes/hash, marks file `ready`, triggers scan hook. | `sha256`, `sizeBytes` | file metadata | `UPLOAD_CHECKSUM_MISMATCH`, `UPLOAD_UNSUPPORTED_TYPE`, `NOT_FOUND` |
-| `POST /files` | `file.create` | FILE | Direct multipart upload for small images (≤10 MiB). | `multipart: file`, `purpose` | `201` file metadata | `PAYLOAD_TOO_LARGE`, `UPLOAD_UNSUPPORTED_TYPE` |
-| `GET /files` | `file.read` | O | Files by owner/purpose. | `F:ownerType,ownerId,purpose,createdAt[gte]` | files | — |
-| `GET /files/{id}` | `file.read` | — | File metadata + virus-scan status. | — | file | `NOT_FOUND` |
-| `GET /files/{id}/download-url` | `file.read` | — | Presigned download URL (15 min, `Content-Disposition` attachment, access audited). | `disposition?` | `{ downloadUrl, expiresIn, fileName, contentType, sizeBytes }` | `NOT_FOUND`, `RULE_VIOLATION` (`file_not_ready`, `file_quarantined`) |
+| `POST /files/uploads` | `file.create` | IK | Request a **S3 POST-policy** presigned upload (not a bare PUT URL): the policy binds `content-length-range` (per-purpose cap), exact `Content-Type` condition, `x-amz-meta-file-id`, and 24 h expiry (H-05). Client-declared `sizeBytes`/`contentType` are only hints. Per-user in-flight cap = 5. | `fileName`, `contentType`, `sizeBytes`, `sha256?`, `purpose: "product_media"\|"invoice"\|"attachment"\|"avatar"\|"import"\|"cheque_image"` | `201 { fileId, uploadUrl, method: "POST", fields{...policy...}, expiresIn }` | `PAYLOAD_TOO_LARGE`, `INVALID_FILE_TYPE`, `RATE_LIMITED` |
+| `POST /files/uploads/{fileId}/complete` | `file.create` | IK | Complete upload: server verifies stored object size/MIME/magic bytes/sha256 and marks the file `pending_scan` -> `ready` (ClamAV mandatory in the production profile; quarantined otherwise). Objects never completed are deleted by the 24 h bucket lifecycle rule. | `sha256`, `sizeBytes` | file metadata (`status`) | `UPLOAD_CHECKSUM_MISMATCH`, `INVALID_FILE_TYPE`, `NOT_FOUND`, `RULE_VIOLATION` (`file_quarantined`) |
+| `POST /files` | `file.create` | FILE | Direct multipart upload for small images (<= 10 MiB, same admission rules as presigned). | `multipart: file`, `purpose` | `201` file metadata | `PAYLOAD_TOO_LARGE`, `INVALID_FILE_TYPE` |
+| `GET /files` | `file.read` | O | Files by owner/purpose, **scoped to linked entities the caller may read and to the tenant scope**; unlinked files are visible only to their uploader and admins (H-06). | `F:ownerType,ownerId,purpose,createdAt[gte]` | files (authorized only) | — |
+| `GET /files/{id}` | `file.read` | — | File metadata + scan status. Requires read permission on the linked entity; out-of-scope/unlinked-and-not-owner -> `404`. | — | file | `NOT_FOUND` |
+| `GET /files/{id}/download-url` | `file.read` | — | Presigned GET (15 min). Authorization = `file.read` **plus the linked entity read permission and tenant/scope check** (H-06); unlinked -> uploader/admin only; out-of-scope -> `404` (not 403). Access audited. | `disposition?` | `{ downloadUrl, expiresIn, fileName, contentType, sizeBytes }` | `NOT_FOUND`, `RULE_VIOLATION` (`file_not_ready`, `file_quarantined`) |
 | `DELETE /files/{id}` | `file.delete` | — | Soft-delete file (blob removed by GC; blocked if linked to posted documents). | — | `204` | `RULE_VIOLATION` (`file_in_use`) |
 | `POST /files/{id}/links` | `file.link.create` | — | Link a file to a business entity (invoice, expense, cheque, product). | `ownerType`, `ownerId`, `role?` | `201` link | `CONFLICT` |
 | `DELETE /files/{id}/links/{linkId}` | `file.link.create` | — | Remove a link. | — | `204` | `RULE_VIOLATION` (`link_in_posted_document`) |
@@ -1184,7 +1233,7 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 |---|---|---|---|---|---|---|
 | `GET /settings` | `setting.read` | — | All settings groups (secrets never included; use credential endpoints). | — | settings object | — |
 | `GET /settings/{group}` | `setting.read` | — | One group (`general`, `inventory`, `accounting`, `sales`, `channels`, `notifications`, `security`, `files`). | — | group | `NOT_FOUND` |
-| `PUT /settings/{group}` | `setting.update` | IM | Replace a group (Zod-validated; security group needs step-up). | group fields | group | `VALIDATION_ERROR`, `STEP_UP_REQUIRED`, `VERSION_CONFLICT` |
+| `PUT /settings/{group}` | `setting.update` | IM | Replace a group (Zod-validated; `security` group needs step-up). **Approval thresholds, approval workflow steps, and permission/role definitions are not settings**: any attempt to write approval keys via settings is rejected (B-04) -> `422 RULE_VIOLATION` rule `approval_config_immutable`. | group fields, `stepUpToken?` | group | `VALIDATION_ERROR`, `STEP_UP_REQUIRED`, `VERSION_CONFLICT`, `RULE_VIOLATION` (`approval_config_immutable`) |
 | `GET /feature-flags` | `setting.read` | — | Feature flags and current state. | `F:enabled` | flags | — |
 | `PATCH /feature-flags/{key}` | `setting.update` | IM | Toggle a non-locked flag (production guardrails apply). | `enabled` | flag | `RULE_VIOLATION` (`flag_locked`) |
 | `GET /numbering-sequences` | `setting.read` | — | Document numbering sequences and last values. | `F:fiscalYearId,documentType` | sequences | — |
@@ -1195,10 +1244,10 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 | `GET /system/backups` | `system.backup.read` | — | Backup status (last dump, WAL/PITR, manifest hash). | — | backup status | — |
 | `POST /system/backups` | `system.backup.run` | — | Trigger an on-demand backup (rate-limited). | `type: "full"\|"manifest_verify"` | `202` job | `RATE_LIMITED` |
 | `GET /api-clients` | `api_client.read` | O | Machine clients (server-to-server integrations). | `F:active` | clients | — |
-| `POST /api-clients` | `api_client.create` | IK | Create an API client; secret returned once. | `nameFa`, `scopes[]`, `ipAllowlist[]?`, `expiresAt?` | `201 client + secret` | `VALIDATION_ERROR` |
-| `PATCH /api-clients/{id}` | `api_client.update` | IM | Update scopes/IPs/active. | `nameFa?`, `scopes?`, `ipAllowlist?`, `active?` | client | `VERSION_CONFLICT` |
-| `POST /api-clients/{id}/rotate-secret` | `api_client.rotate` | — | Rotate client secret (old valid 24 h overlap). | — | `{ secret, rotatedAt }` | `NOT_FOUND` |
-| `DELETE /api-clients/{id}` | `api_client.delete` | — | Revoke a client. | — | `204` | `NOT_FOUND` |
+| `POST /api-clients` | `api_client.create` | IK | Create an API client (server-to-server). Scopes must be a subset of the actor effective permissions; secret returned once and stored hashed; step-up required; audited. | `nameFa`, `scopes[]`, `allowedCidrs[]`, `expiresAt?`, `stepUpToken` | `201 client + secret` (shown once) | `VALIDATION_ERROR`, `FORBIDDEN_PERMISSION_ESCALATION`, `STEP_UP_REQUIRED` |
+| `PATCH /api-clients/{id}` | `api_client.update` | IM | Update scopes/CIDRs/active. Step-up required; scope widening beyond actor -> escalation error. | `nameFa?`, `scopes?`, `allowedCidrs?`, `active?`, `stepUpToken` | client | `VERSION_CONFLICT`, `FORBIDDEN_PERMISSION_ESCALATION`, `STEP_UP_REQUIRED` |
+| `POST /api-clients/{id}/rotate-secret` | `api_client.rotate` | — | Rotate client secret: new secret valid immediately, old secret valid for a 24 h overlap then invalidated; step-up required; audited. | `stepUpToken` | `{ secret, rotatedAt, oldValidUntil }` (secret shown once) | `NOT_FOUND`, `STEP_UP_REQUIRED` |
+| `DELETE /api-clients/{id}` | `api_client.delete` | — | Revoke a client; all its tokens become invalid on next request (`jti` revocation). | — | `204` | `NOT_FOUND` |
 | `GET /data-versions` | `data.version.read` | — | Cache-busting version keys (permissions, settings, categories, mappings). | — | versions | — |
 
 ### 4.18 Audit, request logs, automation, jobs/imports/printers (platform)
@@ -1238,7 +1287,7 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 | `GET /outbox-events/{id}` | `outbox.read` | — | Event payload + attempts + handler result. | — | event | `NOT_FOUND` |
 | `POST /outbox-events/{id}/retry` | `outbox.retry` | — | Re-dispatch a stuck event (safe; handlers idempotent). | — | `202` | `NOT_FOUND` |
 | `GET /imports` | `import.read` | C | Import jobs (products, inventory, prices, customers, CoA). | `F:entity,status,createdAt[gte]` | imports | — |
-| `POST /imports` | `import.create` | IK/AS/FILE | Create an import from an uploaded file (≤ 100k rows); stages and validates. | `entity`, `fileId`, `mode: "insert"\|"upsert"`, `mapping?` | `202` job | `IMPORT_VALIDATION_FAILED`, `PAYLOAD_TOO_LARGE` |
+| `POST /imports` | `import.create` | IK/AS/FILE | Create an import from an uploaded file (<= 100k rows). Parsing runs in a memory-limited worker with **decompression caps** (max 10x file size, 100k zip entries) and values-only cell reads (M-04); exceeding caps -> `IMPORT_VALIDATION_FAILED`. | `entity`, `fileId`, `mode: "insert"\|"upsert"`, `mapping?` | `202` job | `IMPORT_VALIDATION_FAILED`, `PAYLOAD_TOO_LARGE`, `INVALID_FILE_TYPE` |
 | `GET /imports/{id}` | `import.read` | — | Import progress/validation summary. | — | import | `NOT_FOUND` |
 | `POST /imports/{id}/validate` | `import.validate` | — | (Re)validate staged rows. | — | validation summary | `DOCUMENT_STATE_INVALID` |
 | `POST /imports/{id}/commit` | `import.commit` | — | Commit valid rows in chunks; idempotent per row key. | `skipInvalid?` | import | `IMPORT_VALIDATION_FAILED` |
@@ -1249,7 +1298,7 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 | `PATCH /printers/{id}` | `printer.device.manage` | IM | Update printer config. | `paperSize?`, `labelSize?`, `active?`, `agentId?` | printer | `VERSION_CONFLICT` |
 | `DELETE /printers/{id}` | `printer.device.manage` | — | Remove printer. | — | `204` | `NOT_FOUND` |
 | `POST /printers/{id}/test` | `printer.device.manage` | — | Send a test label/page to the printer agent. | — | `202` print job | `UPSTREAM_UNAVAILABLE` (agent offline) |
-| `POST /printers/print-jobs` | `printer.job.create` | IK | Create a print job (label, invoice, picking list, barcode sheet). | `printerId`, `documentType`, `documentId`, `copies?`, `payload?` | `201` print job | `NOT_FOUND`, `UPSTREAM_UNAVAILABLE` |
+| `POST /printers/print-jobs` | `printer.job.create` | IK | Create a print job (label, invoice, picking list, barcode sheet). Rendering uses a server-side PDF library / headless renderer with **no network/file access** and HTML-stripped label fields (M-04). | `printerId`, `documentType`, `documentId`, `copies?`, `payload?` | `201` print job | `NOT_FOUND`, `UPSTREAM_UNAVAILABLE`, `VALIDATION_ERROR` |
 | `GET /printers/print-jobs` | `printer.job.read` | C | Print job queue/status (`pending\|printed\|failed`). | `F:printerId,status,createdAt[gte]` | print jobs | — |
 | `GET /printers/print-jobs/{id}` | `printer.job.read` | — | Print job detail + retry count. | — | print job | `NOT_FOUND` |
 | `POST /print-jobs/{id}/retry` | `printer.job.retry` | — | Retry a failed print job. | — | `202` print job | `DOCUMENT_STATE_INVALID` |
@@ -1261,16 +1310,16 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 |---|---|---|---|---|---|---|---|
 | `GET /health/live` | public | — | — | Process liveness (no dependency checks). | — | `{ status: "ok", uptime }` | — |
 | `GET /health/ready` | public | — | — | Readiness: DB + Redis + S3 checks; used by LB/compose. | — | `{ status, checks{db,redis,s3} }` or `503` | `SERVICE_DEGRADED` |
-| `GET /health/version` | public | — | — | Build version, schema version, `APP_ENV`. | — | `{ version, schemaVersion, env, commit }` | — |
+| `GET /health/version` | public | — | — | App version only (no commit/env/host details publicly; those are behind `GET /system/info` with `system.read`) (L-05). | — | `{ version, schemaVersion }` | — |
 | `GET /metrics` | scrape | — | — | Prometheus exposition (HTTP histogram, pool, queue depth, outbox lag, channel failures). | (bearer `METRICS_TOKEN` or loopback allowlist) | `text/plain; version=0.0.4` | `UNAUTHENTICATED` (if token wrong) |
 | `GET /system/metrics` | perm | `system.metrics.read` | — | JSON metrics snapshot for the admin ops screen. | — | metrics object | — |
 | `POST /webhooks/channels/{channelCode}` | hmac | — | — | Generic inbound channel webhook receiver (Digikala; Carexy `TBD-CAREXY`). Raw body verified per §6. | raw body + signature headers | `200 { received: true }` (always fast; processing async) | `UNAUTHENTICATED` (bad signature), `PAYLOAD_TOO_LARGE`, `RATE_LIMITED` |
 | `POST /webhooks/channels/{channelCode}/{accountId}` | hmac | — | — | Multi-account variant of the receiver; `accountId` is the account public UUID in the URL configured at the partner. | raw body + signature headers | same as above | same as above |
 | `POST /webhooks/limo/delivery` | hmac | — | — | SMS delivery-status callback (**reserved**: not documented by Limo; disabled unless `LIMO_WEBHOOK_SECRET` is set). | raw body + signature | `200` | `NOT_IMPLEMENTED`, `UNAUTHENTICATED` |
-| `GET /webhooks/health` | public | — | — | Receiver health (secret configured per channel, last event age). | — | `{ channels: [{ code, secretConfigured, lastEventAt }] }` | — |
+| `GET /webhooks/health` | scrape | — | — | Receiver liveness only (`{ ok: true }`); per-channel secret/event details are internal (`/metrics` + `system.read`) (L-05). | — | `{ ok }` | `UNAUTHENTICATED` |
 | `GET /webhooks/outbound/subscriptions` | perm | `webhook.outbound.read` | O | Outbound webhook subscriptions to Carexy (`https://carexy.shop/...`) and other consumers. | `F:active,eventType` | subscriptions | — |
-| `POST /webhooks/outbound/subscriptions` | perm | `webhook.outbound.manage` | IK | Register an outbound subscription (ERP → Carexy) with HMAC secret. | `url`, `eventTypes[]`, `secret?`, `active?` | `201` subscription + secret (once) | `CONFLICT` (url+events) |
-| `PATCH /webhooks/outbound/subscriptions/{id}` | perm | `webhook.outbound.manage` | IM | Update URL/events/active. | `url?`, `eventTypes?`, `active?` | subscription | `VERSION_CONFLICT` |
+| `POST /webhooks/outbound/subscriptions` | perm | `webhook.outbound.manage` | IK | Register an outbound subscription to a **seeded allowlisted destination** (Carexy `https://carexy.shop` + approved consumers); free URLs are rejected (H-04). Step-up + audit required; secret shown once; **cost fields are never included** in outbound payloads. | `destinationCode`, `eventTypes[]`, `active?`, `stepUpToken` | `201` subscription + secret (once) | `VALIDATION_ERROR` (`destination_not_allowed`), `STEP_UP_REQUIRED`, `FORBIDDEN` |
+| `PATCH /webhooks/outbound/subscriptions/{id}` | perm | `webhook.outbound.manage` | IM | Update destination/events/active (allowlist only; step-up + audit; alert on change). | `destinationCode?`, `eventTypes?`, `active?`, `stepUpToken` | subscription | `VERSION_CONFLICT`, `VALIDATION_ERROR`, `STEP_UP_REQUIRED` |
 | `DELETE /webhooks/outbound/subscriptions/{id}` | perm | `webhook.outbound.manage` | — | Delete subscription. | — | `204` | `NOT_FOUND` |
 | `GET /webhooks/outbound/deliveries` | perm | `webhook.outbound.read` | C | Delivery attempts with response status/latency (bodies redacted). | `F:subscriptionId,status,eventType,createdAt[gte]` | deliveries | — |
 | `POST /webhooks/outbound/deliveries/{id}/retry` | perm | `webhook.outbound.manage` | — | Retry a delivery. | — | `202` | `NOT_FOUND` |
@@ -1282,7 +1331,7 @@ Two-step upload (default): request presigned `PUT` → upload raw bytes directly
 ### 5.1 Key grammar and granularity
 
 - A key is **`<resource>.<action>`**: the **last dot segment is the action**, everything before it is the resource. The resource may itself contain dots (`accounting.journal`), so `accounting.journal.post` = resource `accounting.journal`, action `post`.
-- Keys are **opaque, global, unique strings**; a role grant references an exact key (no wildcards in the database; wildcards appear only in seed source files). `permissions` seed row: `key`, `resource`, `action`, `description_fa`, `is_system`, `module`.
+Keys are **opaque, global, unique strings**; a role grant references an exact key. There is **no prefix/wildcard matching in the database or guards** — `warehouse.pick` never grants `warehouse.pick.read` and vice versa. `packages/shared/permissions.ts` is generated from this registry, not hand-maintained. Public endpoints (`/auth/login`, `/auth/otp/*`, `/health/*`, webhook receivers) carry **no permission key** and no `auth.*` keys exist in the registry (B-06).
 - Granularity rule:
   - **Master-data resources** use CRUD actions: `read`, `create`, `update`, `delete`.
   - **Workflow/capability resources** use domain actions (`approve`, `post`, `reverse`, `execute`, `confirm`, `issue`, `import`, `run`, `manage`, `trigger`, `retry`, `replay`, `allocate`, `seal`, `clear`, …). A bare capability key such as `inventory.adjust` gates "create/edit/submit an adjustment"; the stricter `inventory.adjust.approve` and `inventory.adjust.post` are separate keys because they are separation-of-duties gates.
@@ -1301,7 +1350,7 @@ accounting.dimension: create, delete, read, update
 accounting.document: create, export, issue, read, void
 accounting.expense: approve, create, delete, pay, read, update
 accounting.fiscal_year: close, create, read, reopen, update
-accounting.journal: approve, create, delete, post, read, reverse, update
+accounting.journal: approve, create, delete, post, post_high_value, read, reverse, update
 accounting.ledger: read
 accounting.link: create, delete, read
 accounting.period: close, read, reopen
@@ -1310,9 +1359,9 @@ accounting.tax: create, delete, read, update
 accounting.valuation: post, read, run
 api_client: create, delete, read, rotate, update
 api_request_log: read
-approval: act, request
+approval: act, config.manage, request
 approval.request: read
-approval.workflow: manage, read
+approval.workflow: read
 attribute: create, delete, read, update
 audit: export, read
 automation.alert: ack, manage, read
@@ -1344,7 +1393,7 @@ dashboard: create, delete, read, update
 data.version: read
 department: create, delete, read, update
 device: read, revoke
-export: create, delete, read
+export: delete, read, read_all
 file: create, delete, read
 file.link: create
 fulfillment: allocate
@@ -1414,7 +1463,7 @@ system.backup: read, run
 system.maintenance: read, run
 system.metrics: read
 unit: create, delete, read, update
-user: create, delete, read, update
+user: create, delete, read, reset_password, update
 user.scope: assign
 variant: create, delete, read, update
 warehouse: create, delete, device, pack, pick, putaway, read, update, wave
@@ -1453,7 +1502,7 @@ The data-model owner's list is expressed at *resource* level. The catalog above 
 
 ### 5.3.1 Exact delta vs docs/02-data-model/DATA-MODEL.md §6.2 (must be added to the seed)
 
-DATA-MODEL §6.2 is a **resource-level** view (314 keys / 248 expanded at the time of writing) and states that this API registry is the source of truth for names. The API references **412 keys**; the following 183 keys are **not present** in DATA-MODEL §6.2's current expansion and MUST be added by the backend/seed before go-live (`permissions` is idempotently upserted and CI diffs `packages/shared/permissions.ts` against this list):
+DATA-MODEL §6.2 originally used a resource-level view (314 keys) and declared this API registry the source of truth for names. **Status: reconciled** — DATA-MODEL §6.2 was regenerated verbatim from §5.2 at 412 keys (audit record below). Revision v1.1 then retires 2 keys and adds 4, so the final seed is **414 keys** (§5.3.3). The lists in this subsection are retained as the reconciliation audit trail, not as pending work:
 
 ```text
 accounting.budget.activate
@@ -1643,7 +1692,7 @@ webhook.outbound.read
 
 ### 5.3.2 Alias/reserved keys currently in DATA-MODEL §6.2 that the API does not reference
 
-These 85 keys appear in DATA-MODEL §6.2 but are not referenced by any route in §2/§4. Preferred action: **drop** them from the seed (regenerate §6.2 verbatim from §5.2) rather than seed dead keys. If the data-model owner prefers to keep some as `reserved` (e.g. `auth.*` route-guard keys for future use, `setting.secret.read` for a future secrets screen), they must be marked `is_system=true, reserved=true` and grants must not reference them.
+These 85 keys appeared in the pre-reconciliation DATA-MODEL §6.2 but are not referenced by any route in §2/§4. **Status: resolved** — DATA-MODEL §6.2 was regenerated from §5.2 and these keys were dropped (not reserved); no grant may reference a key outside the registry. Kept here as the audit record.
 
 ```text
 accounting.budget.manage
@@ -1732,10 +1781,35 @@ warehouse.wave.cancel
 warehouse.wave.create
 warehouse.wave.release
 ```
+### 5.3.3 Round-1 security additions (revision v1.1, 4 keys — backend/DATA-MODEL seed must add them)
+
+DATA-MODEL §6.2 was reconciled to the 412-key registry before this revision. Revision v1.1 changes the final seed to **414 keys**: it retires 2 keys (`approval.workflow.manage` -> replaced by `approval.config.manage`; `export.create` -> replaced by the entity-derived export map) and adds these 4:
+
+```text
+accounting.journal.post_high_value   # B-04 journal posting split above approval threshold
+approval.config.manage               # B-04 approval workflows/thresholds (superadmin, step-up, 2-person)
+export.read_all                      # H-02 cross-actor export visibility
+user.reset_password                  # B-03 admin-assisted reset with target-subset check
+```
+
+
 ### 5.4 Role templates (seed convenience; roles are rows, not code)
 
 | Role | Intended permission families (exact keys must be listed in seed) |
 |---|---|
+| `superadmin` | all keys (this is the only role holding `approval.config.manage`, `user.reset_password`, `identity.break_glass.use`, `system.*`); `is_system=true`, cannot be edited/deleted |
+| `admin` | all except `identity.break_glass.use`, `approval.config.manage`, `user.reset_password`, `system.backup.run`, `api_client.*`; cannot grant permissions it does not hold |
+| `finance_manager` | accounting.*, treasury.*, partners.*, `report.*`, `approval.request.*`, `approval.act`, `product.cost.read`; **no** inventory.adjust/count/transfer (SoD); **no** `approval.config.manage` |
+| `accountant` | accounting.coa/journal/ledger/balance/tax/document/valuation read + create/post where allowed, treasury read + `payment.create`, `report.*` |
+| `warehouse_manager` | warehouse.*, inventory.balance/ledger/count/adjust/transfer/lot/serial/unit/valuation.read, procurement.goods.receipt.*, fulfillment.allocate, report.read; no cost unless granted |
+| `warehouse_operator` | warehouse.pick/pack/putaway/device.*, inventory.balance.read (scoped warehouses), `inventory.count` (scan only), barcode.read, product.read (no cost), notification self |
+| `sales_agent` | customer.*, sales.order.*, sales.refund.create, product.read (retail prices only), report.read (sales family) |
+| `viewer` | `*.read` only, financial reports only if explicitly granted; no cost, no security_event.read |
+| `api_client` (actor type, not role) | scoped key subset from `api_clients.scopes`; never user-management, approval-config, credential or break-glass keys |
+
+Field-level rule: `product.cost.read` is a **standalone grant** (never implied by `product.read` or a manager role) and is required for every cost/price/margin field in responses; see §10.3. Warehouse operator and viewer roles must never receive it. Step-up requirements apply before any elevated grant takes effect (§2.1).
+
+---|---|
 | `superadmin` | all keys; `is_system=true`, cannot be edited/deleted; break-glass not needed |
 | `admin` | all except `identity.break_glass.use`, `system.backup.run`, `api_client.*` |
 | `finance_manager` | accounting.*, treasury.*, partners.*, report.*, approval.workflow.read/manage, product.cost.read; **no** inventory.adjust/count/transfer (SoD) |
@@ -1756,82 +1830,84 @@ Field-level rule: `product.cost.read` is a **standalone grant** (never implied b
 | Item | Rule |
 |---|---|
 | Receiver paths | `POST /api/v1/webhooks/channels/{channelCode}` and `POST /api/v1/webhooks/channels/{channelCode}/{accountPublicId}` |
-| Supported in v1 | `digikala` (webhook subscription API is contract-confirmed; signature header/algorithm **TBD-DIGIKALA** — see §8.3), `carexy` (**TBD-CAREXY**: contract has no webhook section; receiver exists but subscription stays disabled until partner confirms) |
-| Auth | No user JWT. Signature verification only. Wrong/missing signature → `401 UNAUTHENTICATED` with `details.rule = "webhook_signature"`; the event is *not* archived (untrusted). |
-| Raw body | Signature is computed over the **raw bytes** exactly as received (`fastify-raw-body` / `rawBody` capture before JSON parse). Re-serializing JSON breaks verification — this is a hard requirement. |
-| Signature scheme | `HMAC-SHA256(secret, timestamp + "." + rawBody)`, hex, header `X-Signature` (also accept `X-Hub-Signature-256` `sha256=…` and `X-Digikala-Signature` where the partner uses them). Secret per channel account, stored encrypted, rotatable with a 24 h dual-secret window. **Digikala header name/envelope are TBD-DIGIKALA** — the adapter reads the configured header from `channel_account.settings`. |
-| Timestamp | Header `X-Timestamp` (unix seconds or ISO-8601; adapter normalizes). Skew window **±300 s** (`WEBHOOK_MAX_SKEW_SECONDS`). Outside window → `401` (replay defense). Missing timestamp → rejected after a 1-release grace when `WEBHOOK_REQUIRE_TIMESTAMP=true`. |
-| Replay protection | Signature covers timestamp + body; event id (`X-Event-Id`, or partner event id from parsed body) is persisted in `channel_webhook_events` with a **unique index `(channel_id, external_event_id)`**; duplicate delivery → `200` immediately with `{ duplicate: true }`, no re-processing. Replay of a *different* payload with a used event id → archived as `rejected` and alerted. |
-| Idempotency | Two layers: (1) unique external event id; (2) business natural key (`channel:order:{externalOrderId}`) in `idempotency_keys`. Both are required. |
-| Processing | Receiver does **only**: verify → archive raw payload → insert outbox event → `200`. All parsing/domain work happens asynchronously in the worker (target p99 response < 100 ms). Slow partner callbacks must never block the API. |
-| Response codes | `200` accepted/duplicate, `401` bad signature/timestamp, `413` body > 2 MiB, `429` rate-limited, `503` DB unavailable (partner retries). Never `4xx` for a valid event whose business processing later fails — that would cause partner retry storms; failures go to DLQ. |
-| Event types (Digikala, contract-confirmed subscription) | `order.created`, `order.updated`, `order.cancelled` and shipping/status events as subscribed; exact payload schema **TBD-DIGIKALA**. Unknown event types are archived and ignored (counted in metrics). |
-| Carexy inbound | **TBD-CAREXY** — polling (`order_pull` sync job, 60 s interval) is the v1 default. If Carexy later exposes webhooks, they plug into the same receiver with a `carexy` signature config. |
-| Limo SMS delivery callback | `POST /webhooks/limo/delivery` is **reserved** (`TBD-LIMO`); enabled only when `LIMO_WEBHOOK_SECRET` is set. Delivery status is otherwise polled via the provider's message-status API (also **TBD-LIMO** — not in the supplied contract). |
-| Archive retention | `channel_webhook_events` raw payload retained 90 days (JSONB), then anonymized; `channel_api_calls` 180 days. |
-| Ops surface | `GET /channel-webhook-events`, `GET /webhook/health`, replay via `POST /channel-webhook-events/{id}/replay`. |
+| Supported in v1 | `digikala` (webhook subscription API is contract-confirmed; signature header/algorithm **TBD-DIGIKALA**), `carexy` (**TBD-CAREXY**: contract has no webhook section; receiver exists but subscription stays disabled until the partner confirms), `limo` delivery callback (**TBD-LIMO**, reserved, disabled). |
+| Auth | No user JWT. Signature verification only. Wrong/missing signature → `401 UNAUTHENTICATED` with `details.rule = "webhook_signature"`; the event is not archived as trusted. |
+| Raw body | Signature is computed over the **raw bytes** exactly as received (`rawBody` capture before JSON parse). Re-serializing JSON breaks verification — hard requirement. |
+| Signature parameters (H-03) | Header name, algorithm and required-ness are **compile-time constants per adapter** (`channels/adapters/<code>/webhook.ts`) and are **never read from `channel_account.settings`**. Only the HMAC secret is configurable, and only via `channel.credential.write` + step-up + second-admin approval. Any account whose settings carry a signature override is rejected (`422 VALIDATION_ERROR` rule `signature_override_forbidden`). |
+| MAC input (M-03) | `HMAC-SHA256(secret, channelId + "." + accountId + "." + eventId + "." + timestamp + "." + rawBody)` — the event id and routing ids are **inside** the MAC, so an attacker cannot replay a signed body with a mutated `X-Event-Id`. Constant-time compare (`crypto.timingSafeEqual`), fixed-length digest compare. |
+| Timestamp | Header `X-Timestamp` (unix seconds or ISO-8601; adapter normalizes). Skew window **±300 s**. Timestamp is **mandatory, no feature flag**; missing/invalid/out-of-window → `401`. |
+| Replay/idempotency | Unique index **(channel_id, account_id, external_event_id)** in `channel_webhook_events`; duplicate → fast `200 { duplicate: true }`, no reprocessing. A re-signed body with a used event id is archived as `rejected` and alerted. Business idempotency also uses `channel:order:{externalOrderId}`. |
+| Processing | Receiver does only: verify → archive **identifiers + payload hash** → insert outbox event → `200` (target p99 < 100 ms). Parsing/domain work is asynchronous. |
+| Response codes | `200` accepted/duplicate, `401` bad signature/timestamp, `413` body > 2 MiB, `429` rate-limited, `503` DB unavailable. Never `4xx` for a valid event whose business processing later fails (failures go to DLQ). |
+| Payload retention (H-10) | `channel_webhook_events` stores event ids, type, hashes, timestamps and processing state — **no headers, no credential values, no customer PII**. A redacted raw body is kept encrypted for at most 30 days for dispute resolution, then only the hash remains. Raw view (`GET /channel-webhook-events/{id}/raw`) requires step-up and returns field-masked data. |
+| Event types (Digikala, subscription-confirmed) | `order.created`, `order.updated`, `order.cancelled` and subscribed shipping/status events; payload schemas **TBD-DIGIKALA**. Unknown event types are archived and ignored (counted in metrics). |
+| Carexy inbound | **TBD-CAREXY** — polling (`order_pull` sync job, 60 s interval) is the v1 default; manual order entry always works. |
+| Limo delivery callback | `POST /webhooks/limo/delivery` is reserved (`TBD-LIMO`) and enabled only when the provider contract is confirmed; delivery status is otherwise derived from the provider response `MessageId` and local send state. |
+| Ops surface | `GET /channel-webhook-events`, `GET /webhooks/health` (liveness only), replay via `POST /channel-webhook-events/{id}/replay`. |
 
-### 6.2 Outbound webhooks (ERP → Carexy and other consumers)
+### 6.2 Outbound webhooks (ERP → Carexy and approved consumers)
 
 | Item | Rule |
 |---|---|
-| Purpose | Push ERP events to Carexy (`https://carexy.shop/...`) or another consumer (e.g. a notification relay). Carexy has no confirmed inbound webhook contract either, so v1 uses **configurable outbound subscriptions** and marks the Carexy receiver endpoint contract **TBD-CAREXY**; deliveries are logged and retried regardless. |
-| Endpoint | Configured URL; HTTPS only; public hosts only (SSRF guard: resolve DNS, reject private/link-local/metadata ranges, allowlist port 443/8443, no redirects). |
-| Signature | `X-Saman-Signature: sha256=HMAC_SHA256(secret, timestamp + "." + rawBody)`, `X-Saman-Timestamp`, `X-Saman-Event`, `X-Saman-Delivery-Id` (UUID, also in body). Consumer must verify and dedupe on delivery id. |
+| Destinations (H-04) | **Seeded allowlist only** (`packages/shared/webhook-destinations.ts`): `carexy` → `https://carexy.shop/...` plus explicitly approved consumer hosts. Operators select a `destinationCode`; free-form URLs are rejected (`422 destination_not_allowed`). Adding a destination is a code change reviewed by security (not a tenant setting). |
+| Change control | Create/update/delete of subscriptions requires `webhook.outbound.manage` + **step-up** + audit; an alert fires on every destination/event change and on the first delivery to a destination. Subscriptions cannot include cost/margin fields (`product.cost.read` is not applicable to outbound payloads). |
+| Signature | `X-Saman-Signature: sha256=HMAC_SHA256(secret, timestamp + "." + rawBody)`, `X-Saman-Timestamp`, `X-Saman-Event`, `X-Saman-Delivery-Id` (UUID, also in the body). Consumer must verify and dedupe on delivery id. |
 | Events (v1) | `order.created`, `order.confirmed`, `order.cancelled`, `order.shipped`, `order.delivered`, `shipment.tracking_updated`, `inventory.changed` (debounced), `price.changed`, `product.published`, `return.approved`, `refund.paid`, `settlement.confirmed` |
-| Delivery | Outbox → BullMQ `webhooks` queue, at-least-once, exponential backoff 30 s → 1 h, max 10 attempts, then `integration_dead_letters` + alert. Timeout 10 s, 2 retries per attempt by HTTP client. `2xx` = delivered; `410` = auto-disable subscription; other `4xx` = permanent failure (DLQ, no retry storm). |
-| Ordering | Per-aggregate ordering is best-effort per subscription (single queue lane keyed by `aggregateId` hash); consumers must be idempotent and tolerate out-of-order with `occurredAt`. |
-| Payload | `{ id, event, occurredAt, aggregateType, aggregateId, data, version }` with `data` being the same shape as the corresponding API resource (no cost fields unless the subscription is explicitly granted `product.cost.read`, which outbound subscriptions may configure). |
-| Observability | `webhook.outbound` metrics, `GET /webhooks/outbound/deliveries`, retry endpoint; secrets shown once. |
+| Delivery | Outbox → BullMQ `webhooks` queue, at-least-once, exponential backoff 30 s → 1 h, max 10 attempts, then `integration_dead_letters` + alert. Timeout 10 s. `2xx` delivered; `410` auto-disables the subscription; other `4xx` permanent failure (DLQ). |
+| Ordering | Per-aggregate ordering is best-effort (queue lane keyed by aggregate hash); consumers must be idempotent and tolerate out-of-order with `occurredAt`. |
+| Payload | `{ id, event, occurredAt, aggregateType, aggregateId, data, version }`; `data` matches the corresponding API resource **after cost/margin/PII redaction**. No credentials, no internal ids. |
+| SSRF | HTTPS only, port 443/8443, no redirects, DNS resolved and private/link-local/metadata ranges rejected, egress firewall as independent backstop. |
+| Observability | `webhook.outbound` metrics, `GET /webhooks/outbound/deliveries` (masked), retry endpoint; secrets shown once, never returned. |
 
 ### 6.3 Webhook security checklist (must be true in code review)
 
-1. Raw-body capture before JSON parsing; signature compared with `crypto.timingSafeEqual`.
-2. Constant-time compare, no early return on length mismatch that leaks info (compare fixed-length digests).
-3. Timestamp skew ±5 min; clock is NTP-synced server-side; no client-provided time trusted beyond this.
-4. Unique `(channel_id, external_event_id)`; duplicate → fast `200` no-op.
-5. Body size cap 2 MiB, header size cap 16 KiB, no query-string secrets.
-6. Archive before parse; never log signature/secret; redact `Authorization`/`X-API-KEY`/cookies from logs.
-7. Processing async-only; webhook handler has no direct DB writes to domain tables (outbox only).
-8. Per-account rate limiting and an anomaly alert on signature-failure spikes.
+1. Raw-body capture before JSON parsing; `crypto.timingSafeEqual` with fixed-length digests.
+2. Signature header/algorithm/mandatory-ness are compile-time per adapter; settings cannot override them (H-03).
+3. MAC covers channel+account+event id+timestamp+raw body (M-03); timestamp mandatory, skew ±5 min.
+4. Unique `(channel_id, account_id, external_event_id)`; duplicate → fast `200` no-op.
+5. Body cap 2 MiB, header cap 16 KiB, no query-string secrets.
+6. Archive stores identifiers/hashes/masked body only — no headers, no PII, no credential values (H-10).
+7. Processing async-only; the webhook handler writes only an outbox row, never domain tables.
+8. Per-account rate limiting; anomaly alerts on signature-failure spikes.
+9. Outbound destinations allowlist-only, step-up + audit on change, cost fields never sent (H-04).
 
 ---
 
 ## 7. Files: upload, download, validation
 
-### 7.1 Presigned upload flow (default)
+### 7.1 Presigned upload flow (default, H-05)
 
 ```text
-1. POST /api/v1/files/uploads            → { fileId, uploadUrl, method:"PUT", headers, expiresIn:900 }
-2. PUT <uploadUrl>  (browser → S3/MinIO) → raw bytes (no API involvement)
+1. POST /api/v1/files/uploads            -> { fileId, uploadUrl, method:"POST", fields{policy...}, expiresIn:900 }
+   (S3 POST policy: content-length-range, exact Content-Type, x-amz-meta-file-id, 24h lifecycle tag)
+2. POST <uploadUrl> (browser -> S3/MinIO) with multipart form fields + file
 3. POST /api/v1/files/uploads/{fileId}/complete { sha256, sizeBytes }
-                                          → file metadata { id, status:"ready", ... }
-4. POST /products/{id}/media { fileId }   (or file.link.create) → attach to business entity
-5. GET  /api/v1/files/{id}/download-url   → presigned GET (15 min, audited)
+                                          -> file metadata { id, status:"pending_scan"|"ready" }
+4. POST /products/{id}/media { fileId }   (or file.link.create) -> attach to business entity
+5. GET  /api/v1/files/{id}/download-url   -> presigned GET (15 min, authorized per linked entity, audited)
 ```
 
 | Rule | Value |
 |---|---|
-| URL TTL | Upload 15 min; download 15 min; both bound to the requesting user's session/request context (presign issued by API, not public bucket). |
-| Object key | `{orgPublicId}/{purpose}/{yyyy}/{mm}/{fileId}/{sanitizedFileName}` — no user path traversal; `fileId` is server-generated. |
-| Bucket | Private by default; `media` bucket versioned; no anonymous read. |
-| Max size | Images 10 MiB; PDF/documents 25 MiB; import files 100 MiB; label PDFs 5 MiB. Per-purpose cap in settings; `413` beyond. |
-| Allowed types | Images: `image/jpeg,image/png,image/webp`; docs: `application/pdf`; imports: `text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`; avatars same as images. |
-| Magic-byte validation | Server sniffs file header on `complete`; declared `contentType` must match sniffed type → else `UPLOAD_UNSUPPORTED_TYPE` and object deleted. |
-| Integrity | `sha256` (hex) required on complete; mismatch → `UPLOAD_CHECKSUM_MISMATCH`; size mismatch → `VALIDATION_ERROR`. |
-| Antivirus | `scan` hook (`FILE_SCAN_ENABLED`): file is `pending_scan` → `ready` or `quarantined`; quarantined files are never downloadable (`RULE_VIOLATION file_quarantined`). v1 ships a ClamAV sidecar profile as optional; without it files go straight to `ready` and a security note is logged at boot. |
-| Images | Server-side thumbnails (`_thumb.webp`, 320 px) generated in worker for product media; EXIF stripped. |
-| Download headers | `Content-Disposition: attachment; filename*=UTF-8''…`; `Content-Type` from sniffed type; `X-Content-Type-Options: nosniff`; no inline rendering for user uploads (except whitelisted product images via the SPA image pipeline). |
-| Access control | Every download URL is issued only after permission check on the linked entity (`file.read` + entity read); URL itself is short-lived. Files not linked to an entity are visible only to their uploader + admins. |
-| Deletion | Soft-delete metadata; blob GC after 30 days if no links; posted accounting documents' attachments cannot be deleted (`file_in_use`). |
-| Export files | Generated by worker into `exports/` prefix, download via `/exports/{id}/download`, retained 7 days then GC. |
-| Backup files | Stored by the backup sidecar under `backups/`; never exposed through the API (ops-only `/system/backups` metadata). |
-| Limits per org | `FILE_STORAGE_QUOTA_GB` (default 20 GB) → `413`/`RULE_VIOLATION quota_exceeded` with admin alert at 80%. |
-| Logging | File id, purpose, size, sha256, uploader, linked entity; never file bytes or presigned URLs in logs. |
+| Presign type | **S3 POST policy** (not bare PUT): storage enforces `content-length-range` = per-purpose cap, exact `Content-Type`, `x-amz-meta-file-id` binding, 15-min upload window. Oversized/wrong-type bodies are rejected by the object store, not by us. |
+| URL TTL | Upload policy 15 min; download 15 min; both issued by the API for the requesting actor; private bucket, no anonymous read. |
+| Object key | `{orgPublicId}/{purpose}/{yyyy}/{mm}/{fileId}/{sanitizedFileName}`; `fileId` server-generated; no user path traversal. |
+| Pending lifecycle | Objects never completed are deleted by a **24 h bucket lifecycle rule**; a per-user in-flight-upload cap (5) prevents quota flooding; soft-deleted files blobs are GC'd after 30 days. |
+| Max size | Images 10 MiB; PDF/documents 25 MiB; import files 100 MiB; label PDFs 5 MiB (per-purpose cap from settings; enforced by the POST policy). |
+| Allowed types | Images: `image/jpeg,image/png,image/webp`; docs: `application/pdf`; imports: `text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`; SVG/HTML/JS rejected (`INVALID_FILE_TYPE`). |
+| Admission validation | On `complete`: magic-byte sniff, extension/MIME cross-check, declared size vs stored size, `sha256` equality -> mismatch = reject + delete object. Filename sanitized; EXIF stripped by `sharp` re-encode; server thumbnails. |
+| Antivirus | ClamAV is **mandatory in the production profile** (`FILE_SCAN_ENABLED=true`, boot guard refuses production without it); files are `pending_scan` -> `ready` or `quarantined`. Quarantined files are never downloadable. Dev/test may no-op with a loud boot warning. |
+| Download authorization (H-06) | `GET /files/{id}/download-url` requires `file.read` **plus read permission on the linked entity and tenant/scope check**. Unlinked files are visible only to their uploader and admins; out-of-scope/unlinked -> `404` (no existence oracle). Every issued URL is audited with actor + entity. |
+| Download headers | `Content-Disposition: attachment; filename*=UTF-8''...`; `Content-Type` from sniffed type; `nosniff`; no inline rendering for user uploads. |
+| Per-entity checks | Files linked to posted accounting documents cannot be deleted (`file_in_use`); links to invoices/expenses/cheques carry the entity read key into the authorization check. |
+| Export files | Worker-generated under `exports/`, download via `/exports/{id}/download` with entity permission re-check (section 4.14), retained 7 days then GC. |
+| Backup files | Ops-only (`/system/backups` metadata), never exposed through the file API. |
+| Quota | `FILE_STORAGE_QUOTA_GB` per org (default 20 GB); 80% alert; over quota -> `413`/`RULE_VIOLATION` rule `quota_exceeded`. |
+| Logging | File id, purpose, size, sha256, uploader, linked entity; never bytes, presigned URLs, headers or secrets. |
 
 ### 7.2 Inline file transfer exceptions
 
-Only two endpoints accept multipart directly (`POST /files` and, for legacy integrations, imports can reference `fileId`); everything else is presigned. `POST /files` is capped at 10 MiB and is disabled when `FILE_DIRECT_UPLOAD=false`.
+Only `POST /files` accepts multipart directly (small images <= 10 MiB) and it is disabled when `FILE_DIRECT_UPLOAD=false`. All other uploads use the presigned POST-policy flow above. Import files are always uploaded via presign and referenced by `fileId`.
 
 ---
 
@@ -1855,7 +1931,7 @@ Adapters implement the port in `ADR-0006`; they are the **only** code allowed to
 
 ### 8.2 Carexy adapter (contract-confirmed: `project-doc.txt` §50, §52–§54; auth header `X-API-KEY`)
 
-- **Base URL**: `https://carexy.shop` (paths below are under `/api/v1`).
+- **Base URL**: `https://carexy.shop` (paths below are under `/api/v1`). The host is a **code-declared constant** (M-05); environment may only choose between declared `production`/`sandbox` hosts, never a free URL, and a boot assertion rejects anything outside the declared set.
 - **Auth**: header `X-API-KEY: <key>` (encrypted at rest in `channel_api_credentials`; write-only API §4.10). `Content-Type: application/json`.
 - **Direction**: ERP is source of truth; Carexy is the storefront. Product/inventory push, order pull, webhook **TBD-CAREXY** (polling default).
 
@@ -1879,7 +1955,7 @@ Adapters implement the port in `ADR-0006`; they are the **only** code allowed to
 
 ### 8.3 Digikala adapter (contract-confirmed catalog: 264 endpoints / scopes; auth OAuth2 client-credentials)
 
-- **Base URL**: `https://seller.digikala.com/open-api/v1` (OpenAPI spec `/open-api/v1/doc/specification.yml`). Server-side, host configurable per environment (sandbox supported).
+- **Base URL**: `https://seller.digikala.com/open-api/v1` (OpenAPI spec `/open-api/v1/doc/specification.yml`). The host is a **code-declared constant** with an explicit `sandbox` counterpart (M-05); it is not a free-form setting, `.env` may only select among declared hosts, and the network egress firewall is the independent backstop.
 - **Auth**: OAuth2. `POST /auth/token` with `{client_id, client_secret, grant_type:"client_credentials"}` → `{access_token, refresh_token?, expires_in}`; refresh via `POST /auth/refresh-token`; revoke via `POST /auth/revoke`; scopes discoverable via `GET /auth/scopes` and `GET /auth/scopes/{client_code}`. Token cached in memory per account; never logged.
 - **Scopes used**: `product`, `variant`, `inventory`, `order`, `package`, `shipment`, `sbs_orders`, `sbs_setting`, `sbs_shipment`, `profile`, `promotion`, `invoice`, `commission`, `self_settings` (webhooks), `insight` (optional).
 - **Full scope catalog (reviewed)**: `self_settings`, `product`, `variant`, `order`, `inventory`, `package`, `shipment`, `profile`, `question`, `insight`, `lightening_deal`, `promotion`, `voucher`, `sbs_setting`, `sbs_orders`, `sbs_shipment`, `invoice`, `commission`, `search_ads`. The supplied catalog contains 264 paths in 30 groups; the ERP consumes the core commerce groups only (product, variant, inventory, order, package, shipment, invoice, commission, webhook). The remaining groups — promotions/PLP/lightning deals/vouchers/smart discount, buybox/price-stats, search ads, Q&A, insight, batch API, SBS/postex wallet & shipping services, commitments, nearby stores — are **not integrated in v1** (future `09-roadmap`); their scopes are not requested, which keeps the least-privilege footprint small.
@@ -2030,16 +2106,21 @@ type RequestContext = {
 ### 10.2 Mutation pipeline (order is fixed)
 
 ```text
-router → auth guard (JWT) → permission guard (@Permissions) → scope guard
-→ idempotency interceptor → Zod validation (body/query/params)
+router → auth guard (JWT / api-client token) → API-client CIDR check
+→ permission guard (@Permissions, exact key, no prefix match) → scope guard (tenant + scope revision)
+→ step-up guard (X-Step-Up-Token for sensitive actions; session+action bound)
+→ SoD / escalation guard (no author+post by the same actor; no grant beyond own effective set)
+→ idempotency interceptor (actor-scoped key) → Zod validation (body/query/params)
 → If-Match precondition check → domain service in one DB transaction
-→ audit interceptor (diff) → serializers (cost redaction) → envelope
+→ approval requirement check (approved approval_request, non-self approver)
+→ audit interceptor (diff) → serializers (cost/PII redaction) → envelope
 ```
 
-- Unknown/extra body fields are rejected (`strict` Zod) by default; this prevents mass-assignment (e.g. a client setting `organizationId` or `version`).
-- Audit interceptor writes `audit_logs` in the **same transaction** for every mutation; high-risk actions add a `security_events` row.
+- Unknown/extra body fields are rejected (`strict` Zod) by default; this prevents mass-assignment (e.g. a client setting `organizationId`, `version`, or `permissions_version`).
+- Audit interceptor writes `audit_logs` in the **same transaction** for every mutation; high-risk actions (step-up actions, permission changes, break-glass, export of sensitive data) add a `security_events` row.
 - Outbox events are written in the same transaction as the business write; no network I/O inside the transaction (`ARCHITECTURE.md` §6).
 - Domain `AppError` maps to the stable envelope; unhandled exceptions → `500 INTERNAL` with `requestId` only.
+- Guard order is mandatory: an authorization denial must occur before validation errors leak resource-shape information (removes the validation-vs-permission existence oracle).
 
 ### 10.3 Cost / price field protection (must be enforced by serializers)
 
@@ -2082,20 +2163,25 @@ Rules: redaction happens in a single serializer layer (`common/serializers`) bas
 | Variable | Effect on API behaviour |
 |---|---|
 | `PORT` (4000) / `PUBLIC_BASE_URL` (`https://erp.carexy.shop`) | listening port; links in `Location` are path-only |
-| `DOCS_ENABLED` | `/api/v1/docs` on/off (off in production) |
+| `DOCS_ENABLED` | `/api/v1/docs` on/off (off in production, boot-guarded) |
 | `CORS_ORIGINS` | browser origins allowed; production is same-origin |
-| `ACCESS_TOKEN_TTL` (10m), `REFRESH_TOKEN_TTL_DAYS` (7), `TRUSTED_DEVICE_DAYS` (30) | auth |
+| `ACCESS_TOKEN_TTL` (10m), `REFRESH_TOKEN_TTL_DAYS` (7) | auth |
+| `DEVICE_TRUST_DAYS` (30), `DEVICE_SECRET_TTL_DAYS` | server-issued deviceSecret cookie lifetime/rotation |
+| `RESET_TOKEN_TTL_MINUTES` (10) | admin-assisted password reset token |
+| `STEP_UP_TTL_SECONDS` (300) | step-up token lifetime |
 | `PERMISSIONS_CACHE_TTL` (5m) | permission cache; version bump invalidates |
 | `IDEMPOTENCY_TTL_HOURS` (24) | replay window |
-| `RATE_LIMIT_*` | tier overrides (§1.12) |
-| `WEBHOOK_MAX_SKEW_SECONDS` (300), `WEBHOOK_REQUIRE_TIMESTAMP` | inbound webhook verification |
-| `FILE_SCAN_ENABLED`, `FILE_DIRECT_UPLOAD`, `FILE_MAX_MB_*` | files |
-| `SMS_MODE` (`mock`/`real`), `LIMO_BASE_URL` | notifications/OTP |
-| `CAREXY_BASE_URL` (`https://carexy.shop`), `DIGIKALA_BASE_URL` | adapters |
+| `RATE_LIMIT_*` | tier overrides (SECURITY.md §7.1 is normative) |
+| `SMS_DAILY_BUDGET_IRR` | organization daily SMS+voice monetary cap; 80% alert |
+| `CAPTCHA_PROVIDER`, `CAPTCHA_SITE_KEY`, `CAPTCHA_SECRET` | Turnstile/hCaptcha after 3 OTP sends |
+| `WEBHOOK_MAX_SKEW_SECONDS` (300) | inbound webhook timestamp window (mandatory; **no** `WEBHOOK_REQUIRE_TIMESTAMP` flag) |
+| `FILE_SCAN_ENABLED` (mandatory `true` in production), `FILE_DIRECT_UPLOAD`, `FILE_MAX_MB_*` | files |
+| `SMS_MODE` (`mock`/`real`), `LIMO_BASE_URL` (declared host only) | notifications/OTP; production refuses `mock` |
+| `CAREXY_BASE_URL`, `DIGIKALA_BASE_URL` | **select among code-declared hosts only**; free URLs rejected at boot (M-05) |
 | `METRICS_ENABLED`, `METRICS_TOKEN` | `/metrics` |
+| `EXPORT_READ_ALL_GRANTABLE`, `EXPORT_RETENTION_DAYS` (7) | export visibility/retention policy |
+| `BREAK_GLASS_ENABLED` (default `false`), `BREAK_GLASS_MAX_MINUTES` (60) | break-glass arming/kill switch |
 | `OTEL_ENABLED` | trace propagation |
-
----
 
 ## 11. Coverage matrix (self-review)
 
@@ -2128,8 +2214,8 @@ Rules: redaction happens in a single serializer layer (`common/serializers`) bas
 |---|---|
 | Every module in `ARCHITECTURE.md` §4 has an endpoint section | ✅ §11.1 |
 | Every endpoint has an auth class and a permission key (or explicit `self/public/hmac/scrape`) | ✅ enforced by §3 rules + registry-parity CI test (§9.1 rule 3) |
-| Every mutation has a permission key | ✅ (verified by extraction script; registry §5.2 lists all 412 keys) |
-| Permission keys consistent with data-model seed plan | ✅ naming agreed with data-model owner; API references 412 keys. DATA-MODEL §6.2 currently lists 314 (resource-level); the exact 183-key delta to add and 85 alias keys to drop are listed in §5.3.1/§5.3.2 for the backend seed |
+| Every mutation has a permission key | ✅ (verified by extraction script; registry §5.2 lists all 414 keys) |
+| Permission keys consistent with data-model seed plan | ✅ single source = §5.2 (414 keys); DATA-MODEL §6.2 regenerated from it (412 at reconciliation) and §5.3.3 lists the 4 keys added by revision v1.1. `packages/shared/permissions.ts` is generated; no prefix matching; no `auth.*` keys. |
 | No endpoint exposes internal `bigint` ids | ✅ §1.9; UUID only in paths/bodies/responses |
 | No cost field without a permission note | ✅ §10.3 + cost redaction tests |
 | Pagination/filter/sort/idempotency/If-Match documented per endpoint | ✅ Kind flags `C/O/IK/IM` |
@@ -2137,6 +2223,7 @@ Rules: redaction happens in a single serializer layer (`common/serializers`) bas
 | Outbound webhooks to Carexy | ✅ §6.2 |
 | Adapter mappings: Carexy real endpoints, Digikala contract-confirmed only + TBD marks, Limo payloads incl. `ReplaceToken` | ✅ §8.2–§8.4 |
 | OpenAPI generation from Zod, SPA client, versioning/deprecation, changelog | ✅ §9 |
+| Round-1 security review (R1-security, 33 findings) addressed or explicitly deferred with owner | ✅ §14 revision log (fixed in API contract: B-02/B-03/B-04/B-06, H-01–H-10, M-02/M-03/M-05–M-10, L-03/L-04/L-05; cross-doc items B-01/B-05/H-11/H-12/L-01/L-02 deferred to the owning docs with reason) |
 | Persian error messages | ✅ §1.4, §10.4 |
 | Money as string, ISO timestamps | ✅ §1.8, ADR-0013/0014 |
 
@@ -2144,7 +2231,8 @@ Rules: redaction happens in a single serializer layer (`common/serializers`) bas
 
 | Group | Endpoints |
 |---|---|
-| §2 Authentication & session | 27 |
+| §2.2 Authentication & session | 26 |
+| §2.3 Machine clients (API clients) | 1 |
 | §4.1 Identity | 29 |
 | §4.2 Organization | 20 |
 | §4.3 Catalog | 60 |
@@ -2154,7 +2242,7 @@ Rules: redaction happens in a single serializer layer (`common/serializers`) bas
 | §4.7 Sales | 52 |
 | §4.8 Fulfillment | 31 |
 | §4.9 Pricing | 27 |
-| §4.10 Channels | 50 |
+| §4.10 Channels | 51 |
 | §4.11 Accounting | 92 |
 | §4.12 Treasury | 50 |
 | §4.13 Partners | 32 |
@@ -2164,18 +2252,16 @@ Rules: redaction happens in a single serializer layer (`common/serializers`) bas
 | §4.17 Settings/System/API clients | 18 |
 | §4.18 Audit/Automation/Platform | 49 |
 | §4.19 Health/Metrics/Webhooks | 15 |
-| **Total** | **765** |
+| **Total** | **766** |
 
-Counting rule: one row = one HTTP method + path (post-action endpoints count separately from the document resource). The count is machine-verified by the extraction script in CI; this table and the file must stay in sync.
-
----
+Counting rule: one row = one HTTP method + path (post-action endpoints count separately from the document resource). The count is machine-verified by CI; this table and the file must stay in sync. Revision v1.1 delta vs v1.0: −2 public password endpoints, +1 `POST /api-clients/token`, +1 `POST /auth/break-glass/kill`, +1 `GET /channel-webhook-events/{id}/raw` (net +1).
 
 ## 12. Open questions and TBD register
 
 | # | Item | Owner | Blocking? | Proposed default until resolved |
 |---|---|---|---|---|
 | 1 | Digikala request/response schemas are not in the supplied catalog (paths + scopes only) | channels/backend | yes for adapter P5 | `TBD-DIGIKALA` constants + `501 NOT_IMPLEMENTED`; obtain OpenAPI YAML/sandbox before enabling |
-| 2 | Digikala webhook signature header + algorithm | security/channels | yes for inbound DK | configurable header/secret in account settings; reject events until configured |
+| 2 | Digikala webhook signature header + algorithm (**resolved in v1.1**: header/algorithm are compile-time adapter constants; only the secret is configurable via credential write; partner header value still TBD-DIGIKALA) | security/channels | no (adapter config) | adapter ships with the documented default header; sandbox confirms before enabling |
 | 3 | Carexy order endpoints and webhook contract (not in §50) | channels | yes for Carexy order pull | polling behind `TBD-CAREXY`, disabled by default; manual order entry works |
 | 4 | Carexy pagination/query parameter names and success envelope exact shape | channels | no (adapter-internal) | adapter tolerates both `data`/raw shapes; never leaks to core |
 | 5 | Limo delivery-status API/webhook | notifications | no | store `MessageId`, mark `sent`; reserved receiver endpoint |
@@ -2183,16 +2269,16 @@ Counting rule: one row = one HTTP method + path (post-action endpoints count sep
 | 7 | Carexy `user_id` semantics (single store user vs per-account) | channels | no | store per channel account `settings.carexyUserId` |
 | 8 | Approval amount thresholds/matrix defaults | finance/product | no | seed placeholders in settings; workflow rows editable |
 | 9 | Iranian 6-level CoA exact mapping to the accountant's chart | accounting | yes for accounting P4 | seed standard CoA; override via import before go-live |
-| 10 | Whether `report.create` may use SQL templates or only pre-seeded codes | security/backend | no | custom report definitions restricted to admin + non-arbitrary template registry |
+| 10 | ~~Whether `report.create` may use SQL templates~~ **closed in v1.1 (H-09):** custom report definitions are restricted to code-committed query templates (`queryTemplateId` closed enum); free SQL is rejected at both create and run | security/backend | no | n/a — closed |
 | 11 | E-invoicing (سامانه مؤدیان) submission vs export-only | product | no (out of scope v1) | export JSON/XML only; submission roadmap |
 | 12 | Rate-limit numeric tiers validation under load | qa/perf | no | values in §1.12 are targets pending k6 in `05-testing` |
 | 13 | `If-Match` required on every PATCH vs optional for low-risk master data | backend/product | no | required where marked `IM`; others accept-if-present |
-| 14 | Antivirus sidecar mandatory in production? | security | no | optional in v1, logged at boot; recommended for go-live |
+| 14 | ~~Antivirus sidecar optional?~~ **closed in v1.1 (H-05):** ClamAV is mandatory in the production profile (`FILE_SCAN_ENABLED=true`, boot guard); dev/test may no-op with a loud warning | security | no | n/a — closed |
 | 15 | Channel order poll interval 60 s vs webhook-only | channels/product | no | 60 s cron + webhook nudge |
 | 16 | Idempotency retention 24 h vs partners retrying later | backend/channels | no | 24 h for client keys; business natural keys are permanent |
 | 17 | Persian message ownership: message catalog vs hardcoded per service | frontend/backend | no | shared catalog keyed by `messageKey`; `message` always server-provided |
 | 18 | Named financial reports as generic codes vs dedicated routes | frontend/backend | no | generic `POST /reports/{code}/run`; SPA menu maps codes |
-| 19 | Carexy outbound webhook consumer endpoint existence | channels | no | outbound subscriptions configurable; deliver to any HTTPS consumer |
+| 19 | Carexy outbound webhook consumer endpoint existence (**v1.1:** outbound destinations are a seeded allowlist with `destinationCode`, no free URLs; Carexy endpoint contract remains TBD-CAREXY) | channels | no | seeded `carexy` destination; deliveries logged/retried; receiver contract TBD-CAREXY |
 | 20 | Multi-currency documents | product | no (explicitly out of scope v1) | reject non-IRR with `currency_not_supported` |
 
 ---
@@ -2208,4 +2294,46 @@ Counting rule: one row = one HTTP method + path (post-action endpoints count sep
 | `docs/05-testing/TESTING.md` | contract tests, RBAC matrix tests, k6 thresholds |
 | `docs/06-deployment/*`, `docs/07-operations/*` | env vars, reverse proxy, metrics scraping |
 | `docs/adr/0004-auth-sessions.md`, `0006-channel-adapters.md`, `0007-inventory-ledger.md`, `0008-authorization.md`, `0013-money-precision.md`, `0014-calendar-numbering.md` | normative decisions applied here |
+---
 
+## 14. Revision log — Round 1 (security review)
+
+Source: `docs/_review/round-1/R1-security.md` (33 findings: B-01…B-06, H-01…H-12, M-01…M-10, L-01…L-05). Status legend: **fixed** = contract updated in this revision; **deferred** = outside this document's ownership, tracked with the owning doc/agent (reason given).
+
+| ID | Sev | Status | Where / reason |
+|---|---|---|---|
+| B-01 | Blocker | deferred | ARCHITECTURE §17 phase status + SECURITY evidence links (owner: Lead Architect / security-lead). API.md is a design baseline and does not claim implementation. |
+| B-02 | Blocker | fixed | §2.1 device trust + §2.2 login/OTP/devices rows + B-02 test expectation: server-issued `deviceSecret` (HttpOnly, hash at rest) is the only authenticator; fingerprint is a label. |
+| B-03 | Blocker | fixed | §2.2 removed public `password/forgot` + `password/reset`; §4.1 admin-assisted reset (`user.reset_password`, target ⊄ actor check, step-up, 10-min single-use 256-bit token, no secret returned); §1.16 anti-enumeration text. |
+| B-04 | Blocker | fixed | §4.11 maker-checker enforcement note (service + DB FK + self-approval CHECK), `accounting.journal.post_high_value` split, `approval.config.manage` (superadmin, step-up, two-person, versioned); §4.17 settings cannot write approval keys; §5.4 role templates no longer grant workflow manage to finance_manager. |
+| B-05 | Blocker | deferred | Audit hash-chain schema/grants/event vocabulary (owner: data-model + security). API impact is none; §4.18 audit endpoints unchanged. |
+| B-06 | Blocker | fixed | §5 single registry (414 keys, generated `packages/shared/permissions.ts`, no prefix matching, no `auth.*` keys), §5.1/§5.2/§5.3.3 + data-model reconciliation. |
+| H-01 | High | fixed | §4.1 role/scope/user-role rows: `FORBIDDEN_PERMISSION_ESCALATION`, step-up, subset rule; §2.1 step-up list; §1.4.1 new code. |
+| H-02 | High | fixed | §4.14 exports: entity→permission map enforced at create+download, `export.read_all`, actor scoping, re-check at download, step-up for financial/audit. |
+| H-03 | High | fixed | §6.1 compile-time signature params (never settings), §4.10 account PATCH step-up + `signature_override_forbidden`. |
+| H-04 | High | fixed | §6.2 outbound seeded allowlist, no cost fields, step-up+audit, alert on change; §4.19 subscription rows updated. |
+| H-05 | High | fixed | §7.1 S3 POST-policy presign (`content-length-range`, content-type), 24 h pending lifecycle, in-flight cap, mandatory ClamAV in production. |
+| H-06 | High | fixed | §4.16 file list/detail/download rows + §7.1 download authorization (linked-entity read + tenant scope, 404 out-of-scope, audit). |
+| H-07 | High | fixed | §1.12 tiers aligned to SECURITY.md (auth-login-ip/user, mfa-verify, password-reset, etc.); duplicate numbers removed. |
+| H-08 | High | fixed | §1.12 `auth-otp-voice` tiers + challengeId requirement + SMS/voice monetary budget (`SMS_BUDGET_EXHAUSTED`) + CAPTCHA after 3 sends; §2.2 voice row. |
+| H-09 | High | fixed | §4.14 report `required_permissions[]` enforced at run/rows/download; dashboard widget permission inheritance; `report.create` restricted to committed templates (open question #10 closed in this revision). |
+| H-10 | High | fixed | §4.10 webhook/API-call archive stores identifiers/hashes only; `GET /channel-webhook-events/{id}/raw` gated by step-up + masking; §6.1 retention. |
+| H-11 | High | deferred | Docker secrets vs env_file, sudoers (owner: security-lead + devops-lead; SECURITY.md §5.1/§10.3). Not an API-contract item. |
+| H-12 | High | deferred | DB role grants / readonly views (owner: data-model + security; SECURITY.md §8.1). Not an API-contract item. |
+| M-01 | Medium | fixed (contract) + follow-up | §2.2 complete purpose list (`login/mfa/step_up/password_change/device_trust/channel_credential/password_reset`); DATA-MODEL must replace OTP/security-event CHECKs with lookup tables (owner: data-model). |
+| M-02 | Medium | fixed | §1.10 idempotency unique scope `(org, actor_type, actor_id, scope, key)`, replay lookup per actor. |
+| M-03 | Medium | fixed | §6.1 MAC covers channel+account+eventId+timestamp+rawBody; timestamp mandatory (no flag); unique `(channel_id, account_id, external_event_id)`. |
+| M-04 | Medium | fixed (contract) | §4.18 import decompression caps + sandboxed parsing; §4.18 print-job renderer with no network/file access and HTML-stripped fields; worker implementation tracked in SECURITY.md. |
+| M-05 | Medium | fixed | §8.2/§8.3 base URLs are code-declared hosts; §10.5 env selects among declared hosts only; egress firewall backstop. |
+| M-06 | Medium | fixed | §2.3 machine clients (`POST /api-clients/token`, 15-min token, `actor_type=api_client`, scopes, CIDR, `403 IP_NOT_ALLOWED`, audit, rotation overlap); §4.17 rows; §1.10 actor scope. |
+| M-07 | Medium | fixed | §2.1/§2.2 break-glass: offline sealed account, second custodian, `actor_type=break_glass`, per-request session check, action denylist, kill switch, post-incident review. |
+| M-08 | Medium | fixed | §1.12 `auth-mfa-verify` + `auth-password-reset` tiers; shared challenge attempt counter across otp/mfa/step-up. |
+| M-09 | Medium | fixed | §3 universal rule 9: detail/action out-of-scope => `404`, `403 SCOPE_DENIED` only inside bulk/selection; cross-org always 404. |
+| M-10 | Medium | fixed | §4.1 scope row bumps `permissions_version` + forces token re-validation; §2.1 scope-revocation bullet. |
+| L-01 | Low | deferred | CI pinning/SBOM (owner: devops/security; SECURITY.md §11). |
+| L-02 | Low | deferred | Edge container ports/capabilities (owner: devops/security; SECURITY.md §10). |
+| L-03 | Low | fixed | §1.17 header/CSP values no longer duplicated: SECURITY.md §6.1/§6.5 is normative; snapshot test from one source. |
+| L-04 | Low | fixed | §2.1 JWT verification hardening (pinned algorithm, no `alg:none`, aud/iss, jti revocation on sensitive routes). |
+| L-05 | Low | fixed | §4.19 `GET /health/version` returns version only; `GET /webhooks/health` public liveness only (details internal). |
+
+**Deferred summary:** B-01, B-05, H-11, H-12, L-01, L-02 belong to ARCHITECTURE/SECURITY/DATA-MODEL/ops documents and are listed in the review's own remediation plan; they are recorded here for traceability, not silently dropped. All API-contract-owned findings are fixed in this revision.

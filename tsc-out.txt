@@ -1,0 +1,2 @@
+﻿src/modules/catalog/product.repository.ts(271,77): error TS1005: ';' expected.
+src/modules/catalog/product.repository.ts(271,85): error TS1443: Module declaration names may only use ' or " quoted strings.

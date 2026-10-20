@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { ShoppingCart } from 'lucide-react';
 import { api } from '../lib/api-client';
 import { formatJalali } from '../lib/dates';
 import { useDocumentTitle } from '../lib/hooks';
@@ -13,7 +12,6 @@ import type { SalesOrderSummary } from '../types/api';
 import { PermissionNotice } from '../components/auth/Can';
 import { StatusBadge } from '../components/ui/Badge';
 import { DataTableToolbar } from '../components/ui/DataTableToolbar';
-import { EmptyState } from '../components/ui/EmptyState';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Pagination } from '../components/ui/Pagination';
 import { Select } from '../components/ui/Select';
@@ -143,14 +141,7 @@ export function OrdersListPage() {
         onRetry={() => void query.refetch()}
         caption="فهرست سفارش‌ها"
         emptyTitle="سفارشی یافت نشد"
-        emptyDescription="سفارش‌های کانال‌ها پس از همگام‌سازی در این فهرست نمایش داده می‌شوند."
-        emptyAction={
-          <EmptyState
-            icon={<ShoppingCart className="size-8" />}
-            title="هنوز سفارشی ثبت نشده است"
-            description="برای ثبت سفارش دستی از دکمه «سفارش جدید» استفاده کنید."
-          />
-        }
+        emptyDescription="سفارش‌های کانال‌ها پس از همگام‌سازی و سفارش‌های دستی در این فهرست نمایش داده می‌شوند."
       />
 
       <Pagination

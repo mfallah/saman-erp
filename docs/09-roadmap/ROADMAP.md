@@ -1,80 +1,101 @@
-# 09 — Roadmap, scope status & technical debt
+# 09 — Roadmap, delivery status & technical debt
 
-**خلاصهٔ فارسی:** این سند وضعیت واقعی نسخهٔ ۱٫۰، کارهای باقی‌مانده، و مسیر نسخه‌های بعد را شفاف می‌کند. هیچ قابلیتی «انجام‌شده» ثبت نمی‌شود مگر تست و مستند داشته باشد.
+**خلاصهٔ فارسی:** این سند وضعیت واقعی نسخهٔ ۱٫۰ را شفاف می‌کند: چه چیزی ساخته و ماشینی بررسی شده، چه چیزی فقط طراحی شده، و چه چیزی برای نسخه‌های بعد مانده است. هیچ قابلیتی «انجام‌شده» ثبت نمی‌شود مگر کد و تست داشته باشد؛ و هر چیزی که در محیط ساخت قابل اجرا نبود (Docker/PostgreSQL) صریحاً «تأییدنشده» علامت خورده است.
 
-Status meanings: ✅ shipped & tested · 🟡 partial (core path works, edges pending) · 🧱 scaffold only · ⬜ not started
+Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pending on a host · 🧱 scaffold/config only · ⬜ not built (roadmap)
 
-## v1.0 — what this repository delivers
+## v1.0 — delivered in this repository
 
+### Platform & security
+| Area | Status | Evidence |
+|---|---|---|
+| Monorepo, toolchain, ESLint/Prettier, CI workflows, Dependabot, CODEOWNERS | 🧱 | root configs, `.github/workflows/*` (CI first run on GitHub) |
+| NestJS 11 + Fastify API bootstrap, config validation, pino logging, request-id, error envelope, metrics, health | ✅ | `apps/api/src/{main,bootstrap,app.module}.ts`, V-03/V-04, V-08 |
+| Identity: password login (Argon2id), OTP device challenge, refresh rotation + reuse detection, sessions/devices, step-up, RBAC default-deny, scope narrowing, audit | ✅ | `modules/identity/**`, V-03, V-08 |
+| Permission registry (414 keys) single source, role templates, seed | ✅ | `packages/shared/src/permissions.generated.ts`, V-13 |
+| Audit hash-chain, crypto envelope (AES-256-GCM), secret `*_FILE` indirection | ✅ | `common/providers/{audit,crypto}.service`, SQL functions |
+| Rate limiting tiers, CAPTCHA seam, SMS daily budget | 🟡 | config + guards wired; tier integration tests are CI-only |
+| PostgreSQL schema (216 tables generated / 201 implemented), migrations, partitions, triggers, grants, seed (CoA 183 rows, roles, units, channels, tax, numbering, bootstrap admin) | 🧱 | `packages/db/**`, V-11/V-12; execution requires a DB host |
+
+### Business modules
+| Module | Status | Notes |
+|---|---|---|
+| Catalog (categories, brands, products, variants, barcodes, attributes, media, units, search) | ✅ | `modules/catalog/**`, engine suite 278 tests (broker-run) |
+| Inventory (ledger, balances, reservations with fixed lock order, lots, FIFO cost layers, moving average, adjustments, counts, transfers, valuation) | ✅ | `modules/inventory/**`; oversell/layer tests pass |
+| Sales (customers, orders FSM, line net/tax/gross arithmetic, returns with VAT credit note, refund cap) | ✅ | `modules/sales/**` |
+| Warehouse (location tree, putaway scoring, pick waves/tasks/scans, two-stage verification, packing) | ✅ | `modules/warehouse/**` |
+| Accounting (CoA, fiscal periods + Jalali calendar, journals with deferred balance check, 45-event posting matrix with VAT/GRNI/COGS-at-issue, closing run, trial balance/P&L/BS/ledger) | ✅ | `modules/accounting/**`, 135 finance tests |
+| Treasury (payments, advances/allocations, cheques FSM, bank accounts/cash/reconciliation) | ✅ | `modules/treasury/**` |
+| Partners (shareholders, transactions, profit distribution, channel settlements) | ✅ | `modules/partners/**` |
+| Reporting (report registry with per-report permissions, runs, dashboards, exports) | 🟡 | `modules/reporting/**`; export artifacts are produced by the worker |
+| Channels (accounts + encrypted credentials, mappings, sync jobs, webhook verify/replay, outbound allowlist, API call log) | ✅ | `modules/channels/**` |
+| Adapters: Carexy (X-API-KEY real endpoints), Digikala (OAuth2 + real catalog paths; unconfirmed schemas `TBD-DIGIKALA`), Mock | 🟡 | real HTTP clients + mapping; sandbox certification pending seller credentials |
+| Integrations: Limo SMS (all 5 documented endpoints, mock mode, budget), OTP service | ✅ | `modules/integrations/**` |
+| Notifications, automation rules, alerts, fraud heuristics | ✅ | `modules/{notifications,automation}/**` |
+| Workers: outbox dispatcher, channel sync, notifications, report export, maintenance (partitions/retention) | ✅ | `apps/api/src/workers/**`, `dist/worker.js` |
+| **Procurement, Pricing, Fulfillment** | ⬜ | designed in docs; not built in v1.0 (schema exists where core) |
+| HR/payroll, e-invoicing, Snapp/Tapsi adapters, AI assistants, HA profile | ⬜ | v1.1/v1.2/v2 |
+
+### Frontend
 | Area | Status | Notes |
 |---|---|---|
-| Architecture, ADRs, data model, API contract, security, testing, deployment docs | ✅ | 3 review rounds recorded in `docs/_review/` |
-| Monorepo, toolchain, CI, Docker topology | ✅ | compose config-validated; runtime verification pending (no Docker in build env) |
-| PostgreSQL schema + migrations + partitions + seed | ✅ | `erp` schema, triggers, partitions, CoA/roles/permissions seed |
-| Identity: password+OTP login, refresh rotation, sessions, RBAC, audit | ✅ | Limo SMS adapter with `mock` mode |
-| Organization, branches, departments | ✅ | |
-| Catalog: products, variants, barcodes, attributes, media, units | ✅ | search via pg_trgm |
-| Inventory: ledger, balances, reservations, lots/serials, adjustments, counts, transfers | ✅ | concurrency tests incl. oversell race |
-| Warehouse: location tree, putaway, pick waves/tasks/scans, packing, labels | ✅ | two-stage scan verification |
-| Procurement: suppliers, POs, receipts, supplier invoices | ✅ | |
-| Sales: customers, orders, state machine, returns/refunds | ✅ | |
-| Fulfillment: allocation, shipments, packages, labels | ✅ | |
-| Pricing: price lists/rules, calc runs, margin guard, marketplace fees | ✅ | |
-| Channels: accounts, encrypted credentials, mappings, sync jobs, webhooks, DLQ | ✅ | Carexy + Digikala adapters; Digikala contract-pinned endpoints only |
-| Accounting: CoA, periods, journals, auto-posting, valuation, reports | ✅ | trial balance/P&L/BS/journal/ledger |
-| Treasury & partners: payments, banks, cheques, settlements, shareholders | ✅ | |
-| Reporting: dashboards, exports, report runs | 🟡 | core reports; custom report builder later |
-| Automation/rules, alerts, fraud flags | 🟡 | schema + basic rules engine; UI partial |
-| Admin SPA (Persian/RTL): all main screens + scanner flows | ✅ | |
-| Backups, runbook, restore drill | ✅ | documented scripts; drill rehearsal pending on real host |
-| Load/perf evidence | 🟡 | k6 profiles defined; executed results pending staging host |
+| Persian RTL SPA (React 19 + Vite + Tailwind v4 + TanStack), auth memory-token + refresh, permission-aware shell | ✅ | `apps/web/**`, V-05/V-06/V-09/V-10 |
+| Screens: login/OTP/MFA, dashboard, products, inventory, warehouses, orders, picking, packing, journals, trial balance, P&L, channels, users, roles, settings, reports, errors | ✅ | 23 pages |
+| Procurement/pricing/partners/automation screens | 🧱 | explicit «در حال توسعه» states |
+| PWA offline scanner queue | ✅ | IndexedDB/localStorage queue with idempotent replay |
 
-**Honest non-claims:** Docker/Compose and PostgreSQL were not executable in the build environment (no Docker daemon). Everything Docker-related is static/config validated and review-verified; the first real-host install is the acceptance test. This is tracked as **RISK-001** below.
+### Deployment & operations
+| Area | Status | Notes |
+|---|---|---|
+| Docker Compose stack (postgres16, redis7, minio, api, worker, web, migrate/tools, caddy TLS, backup, observability profiles) | 🧱 | config statically validated (V-15); **never booted** (no Docker in build env) |
+| Dockerfiles (multi-stage, non-root, read-only, healthchecks), nginx, Caddy, backup/restore scripts, Makefile | 🧱 | same |
+| Persian install guide (DB in-container **and** external PostgreSQL, roles/grants, TLS, backup drill, upgrade, troubleshooting) | ✅ | `docs/06-deployment/INSTALL-FA.md` (1,400+ lines) |
+| Operations runbook + backup/restore + observability config | ✅ | `docs/07-operations/**`, `infra/observability/**` |
+| CI (lint/typecheck/test/build/docker/security scans) | 🧱 | first run happens on GitHub Actions |
 
-## v1.1 — hardening (next)
+### Review & documentation
+| Area | Status |
+|---|---|
+| Design docs (architecture, 14 ADRs, 215-table data model, 766-endpoint API contract, security/threat model, testing, deployment, operations, roadmap) | ✅ 33 files / ~11.9k lines |
+| Three review rounds with independent reviewers + resolution log | ✅ `docs/_review/` (R1: 138 findings / 32 blockers fixed in design; R2 performance: 41 findings; R3 recorded) |
+| Machine-verification log | ✅ `docs/VERIFICATION.md` |
 
-1. Run the load/soak profiles on the reference 4 vCPU / 8 GB host; publish results in `docs/05-testing/RESULTS.md`.
-2. Full Playwright E2E in CI against built images.
-3. Digikala sandbox certification: replace `TBD-DIGIKALA` constants with confirmed schemas for orders/inventory/labels.
-4. Carexy production certification: variable/attribute mapping for multi-variant products.
-5. Printer agent packaging (Windows/Linux) for ZPL/PDF label printers.
-6. Import pipeline: Excel/CSV product & stock import with dry-run diff + rollback.
-7. PgBouncer profile + read replica guidance; partition automation already shipped.
-8. Observability: Grafana dashboards JSON + alert rules shipped by default.
+## v1.1 — first host run (highest priority)
+
+1. Boot the Compose stack on a reference 4 vCPU / 8 GB host; run migrations + seed twice; capture logs/durations in `docs/VERIFICATION.md`.
+2. Execute the 201-table migration on PostgreSQL 16 and fix any DDL/runtime defects the static validator could not catch.
+3. Run the integration suite (`TEST_DATABASE_URL=… pnpm test:int`) incl. journal-balance trigger, hash chain, partition creation, `\dp` grants diff.
+4. Playwright E2E smoke on the running stack; publish results.
+5. k6 load/soak on the reference host; check the R2-performance thresholds (ledger index, allocation p95 < 500 ms, outbox throughput ≥ 180 events/s).
+6. Digikala sandbox certification for orders/inventory/labels; Carexy variable mapping certification.
+7. Build the three missing modules: **procurement, pricing, fulfillment** (designs already in docs/02+03).
 
 ## v1.2 — business depth
-
-- **HR/Payroll** module (Iranian labour law, insurance, tax tables) — separate bounded context.
-- **E-invoicing** (سامانه مؤدیان): signing, submission, status tracking.
-- **Snapp Shop / Tapsi Shop adapters** (contract acquisition first).
-- **Promotions engine**: campaigns, coupons, lightning deals, smart discount (Digikala promotion endpoints exist in the catalog).
-- **Multi-currency** activation (schema exists; v1 rejects non-base currency).
-- **Approval workflow UI** for all policies + delegation.
+- HR/payroll; e-invoicing (سامانه مؤدیان) submission; promotions/coupons engine; multi-currency activation; approval-workflow UI; report builder; printer agent packaging; Excel/CSV import with dry-run + rollback.
 
 ## v2.0 — scale & intelligence
+- HA profile (managed PostgreSQL + replicas, Redis Sentinel, ≥2 API/worker replicas, blue/green); extraction path per ADR-0001 only if measured; AI assistants behind approval; data-warehouse export.
 
-- HA profile: managed PostgreSQL with replicas, Redis Sentinel, ≥2 API/worker replicas, blue/green deploys.
-- Extract high-volume workers into separate services **only if** measured need (ADR-0001 extraction path).
-- AI assistants behind approval (inventory forecasting, price suggestions, anomaly detection) — never auto-write.
-- Data warehouse/BI export (Parquet to S3, Metabase/Grafana SQL access via `saman_readonly`).
-
-## Technical debt ledger (explicit, not hidden)
+## Technical debt ledger
 
 | ID | Debt | Impact | Plan |
 |---|---|---|---|
-| TD-01 | Docker/Compose runtime unverified in build env | install risk | first-run acceptance on real host (v1.1) |
-| TD-02 | RLS not enabled (app-layer org scoping only) | multi-tenant future | enabling plan in ADR-0005 |
-| TD-03 | Digikala schemas partly `TBD-DIGIKALA` | adapter risk | sandbox certification (v1.1) |
-| TD-04 | Reporting uses SQL + matviews, no report builder | flexibility | v1.2 |
-| TD-05 | Printer agent is a script + docs, not packaged installer | deployment friction | v1.1 |
-| TD-06 | No WAL/PITR by default (nightly dumps only) | RPO 24 h→15 min | pgBackRest profile (v1.1) |
-| TD-07 | `packages/shared` duplicates a few UI-only types | minor | codegen from OpenAPI (v1.1) |
-| TD-08 | i18n only fa-IR (structure ready, no second locale) | future markets | v2 |
+| TD-01 | Compose/Docker and migrations never executed (no daemon/DB in build env) | install risk | v1.1 item 1–3 |
+| TD-02 | Module-level spec suites (413 tests) run through a broker shim here, not the repo harness; Vitest esbuild cannot spawn in this sandbox | test gate | CI `pnpm test:vitest` on a normal runner |
+| TD-03 | Web build needs `--configLoader native` + in-process transpile plugin in this sandbox (standard `vite build` on normal hosts) | build portability | verify standard build in CI |
+| TD-04 | 15 DB tables deferred (budgets, expenses, bank-reconciliation lines, alerts/fraud, profit-distribution, accounting doc types/links, KPI snapshots) | feature gaps | next migration batch |
+| TD-05 | Procurement/pricing/fulfillment modules not built | feature gaps | v1.1 item 7 |
+| TD-06 | Digikala schemas partly `TBD-DIGIKALA` | adapter risk | sandbox certification |
+| TD-07 | RLS not enabled (app-layer org scoping only) | multi-tenant future | ADR-0005 plan |
+| TD-08 | No WAL/PITR by default (nightly dumps; default RPO 24 h) | recovery | pgBackRest profile |
+| TD-09 | Report exports enqueue artifacts built by the worker (no download until worker runs) | UX | v1.1 |
+| TD-10 | `payments.purpose` inferred from linked ids; cheque cancel/return reuse bounce accounting | domain fidelity | v1.2 |
+| TD-11 | Permission registry has no `export.create` / `accounting.journal.post_high_value` in some modules (threshold enforced via approval state) | authz fidelity | align in v1.1 |
+| TD-12 | Read-only cross-module projection joins in commerce repositories | boundary purity | reporting read models |
 
 ## Release process
 
-1. `pnpm verify:full` green + review approvals.
-2. Tag `vX.Y.Z`; CI builds images, scans (Trivy), signs, pushes to registry.
-3. Deploy to staging via compose; run smoke (`scripts/smoke.sh`).
-4. Release notes from changelog; deploy to production with migration step; verify health + backup.
-5. Post-deploy watch 30 min (error rate, outbox lag, queue depth).
+1. `pnpm verify:full` green + review approvals (CI).
+2. Tag `vX.Y.Z`; CI builds/scans/signs images.
+3. Deploy to staging; `scripts/smoke.sh`; then production with explicit migrate step; verify health + backup.
+4. Post-deploy watch 30 min: error rate, outbox lag, queue depth.

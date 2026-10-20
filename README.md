@@ -1,4 +1,4 @@
-# سامان ERP — Saman ERP
+﻿# سامان ERP — Saman ERP
 
 > **ERP یکپارچه، چندکاناله و مقیاس‌پذیر برای فروش، انبار، حسابداری و تسویه**
 > Omnichannel Commerce ERP · WMS · OMS · Accounting · Channel Integration
@@ -12,7 +12,7 @@
 - **پایگاه داده:** PostgreSQL 16 (schema `erp`)
 - **معماری:** Modular Monolith + Event Driven (Outbox + BullMQ)
 - **استقرار:** `docker compose up -d` روی هر سرور لینوکسی
-- **وضعیت:** نسخهٔ 1.0.0 — پایهٔ عملیاتی (جزئیات دامنهٔ پیاده‌سازی‌شده در [`docs/09-roadmap`](docs/09-roadmap/ROADMAP.md))
+- **وضعیت:** نسخهٔ 1.0.0 — هستهٔ عملیاتی ساخته و typecheck/build تست شده؛ اجرای Docker/DB اولین قدم روی سرور شماست (جزئیات: `docs/VERIFICATION.md` و `docs/09-roadmap/ROADMAP.md`)
 
 </p>
 
@@ -67,3 +67,4 @@ See [`SECURITY.md`](SECURITY.md) and [`docs/04-security/SECURITY.md`](docs/04-se
 ## License
 
 Proprietary — © Carexy Shop. All rights reserved. See [`LICENSE`](LICENSE).
+

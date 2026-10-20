@@ -110,7 +110,7 @@ export function OrderDetailPage() {
   });
 
   const actionMutation = useMutation({
-    mutationFn: async ({ action, reason }: { action: OrderAction; reason?: string }) => {
+    mutationFn: ({ action, reason }: { action: OrderAction; reason?: string }) => {
       const order = orderQuery.data;
       const body: Record<string, unknown> = {};
       if (reason !== undefined) {

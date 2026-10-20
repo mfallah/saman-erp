@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "composite": false,
+    "incremental": false,
+    "types": ["node"],
+    "typeRoots": [
+      "../../apps/api/node_modules/@types",
+      "../../node_modules/.pnpm/@types+node@22.20.5/node_modules/@types",
+      "../../node_modules/@types",
+      "./node_modules/@types"
+    ]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}

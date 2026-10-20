@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { BookOpen, Plus } from 'lucide-react';
-import { api } from '../lib/api-client';
+import { Plus } from 'lucide-react';import { api } from '../lib/api-client';
 import { formatJalali } from '../lib/dates';
 import { useDocumentTitle } from '../lib/hooks';
 import { formatMoney } from '../lib/money';
@@ -14,7 +13,6 @@ import { Can, PermissionNotice } from '../components/auth/Can';
 import { StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { DataTableToolbar } from '../components/ui/DataTableToolbar';
-import { EmptyState } from '../components/ui/EmptyState';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Pagination } from '../components/ui/Pagination';
 import { Select } from '../components/ui/Select';
@@ -141,11 +139,11 @@ export function JournalsListPage() {
         emptyTitle="سندی ثبت نشده است"
         emptyDescription="اسناد دستی و اسناد خودکار ناشی از رویدادهای فروش/خرید در این فهرست نمایش داده می‌شوند."
         emptyAction={
-          <EmptyState
-            icon={<BookOpen className="size-8" />}
-            title="دفتر روزنامه خالی است"
-            description="برای شروع، یک سند دستی جدید ثبت کنید."
-          />
+          canCreate ? (
+            <Link to="/accounting/journals/new">
+              <Button size="sm">ثبت اولین سند</Button>
+            </Link>
+          ) : undefined
         }
       />
 

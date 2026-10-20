@@ -164,7 +164,7 @@ export function Drawer({
   description,
   children,
   footer,
-  size = 'sm',
+  size: _size = 'sm',
   closeOnOverlay = true,
   side = 'start',
 }: DrawerProps) {

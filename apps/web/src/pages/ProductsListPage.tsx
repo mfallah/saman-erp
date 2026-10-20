@@ -13,7 +13,6 @@ import { Can } from '../components/auth/Can';
 import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { DataTableToolbar } from '../components/ui/DataTableToolbar';
-import { EmptyState } from '../components/ui/EmptyState';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Pagination } from '../components/ui/Pagination';
 import { Select } from '../components/ui/Select';
@@ -144,9 +143,7 @@ export function ProductsListPage() {
             <Link to="/products/new">
               <Button size="sm">افزودن اولین کالا</Button>
             </Link>
-          ) : (
-            <EmptyState title="کالایی ثبت نشده است" description="برای ثبت کالای جدید با مدیر سامانه تماس بگیرید." />
-          )
+          ) : undefined
         }
       />
 

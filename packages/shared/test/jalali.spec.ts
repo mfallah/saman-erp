@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+
+import { expect } from './expect';
 
 import {
   JALALI_MONTH_NAMES,
@@ -51,11 +53,13 @@ describe('known Jalali/Gregorian boundaries', () => {
     [1398, 1, 1, '2019-03-21'],
   ];
 
-  it.each(cases)('converts %i/%i/%i <-> %s', (jy, jm, jd, iso) => {
-    expect(jalaliToIso({ jy, jm, jd })).toBe(iso);
-    expect(isoToJalali(iso)).toEqual({ jy, jm, jd });
-    const gregorian = jalaliToGregorian(jy, jm, jd);
-    expect(gregorianToJalali(gregorian.gy, gregorian.gm, gregorian.gd)).toEqual({ jy, jm, jd });
+  it('converts known boundary dates in both directions', () => {
+    for (const [jy, jm, jd, iso] of cases) {
+      expect(jalaliToIso({ jy, jm, jd })).toBe(iso);
+      expect(isoToJalali(iso)).toEqual({ jy, jm, jd });
+      const gregorian = jalaliToGregorian(jy, jm, jd);
+      expect(gregorianToJalali(gregorian.gy, gregorian.gm, gregorian.gd)).toEqual({ jy, jm, jd });
+    }
   });
 });
 
@@ -88,8 +92,8 @@ describe('ICU oracle cross-check', () => {
       const date = new Date(time);
       const iso = date.toISOString().slice(0, 10);
       const expected = intlJalali(iso);
-      expect(isoToJalali(iso), iso).toEqual(expected);
-      expect(jalaliToIso(expected), iso).toBe(iso);
+      expect(isoToJalali(iso)).toEqual(expected);
+      expect(jalaliToIso(expected)).toBe(iso);
     }
   });
 });

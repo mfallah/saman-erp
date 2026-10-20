@@ -292,9 +292,9 @@ export function hasAnyPermission(permissions: readonly string[]): boolean {
   return permissions.some((permission) => hasPermission(permission));
 }
 
-export async function ensureAuthenticated(): Promise<boolean> {
+export function ensureAuthenticated(): Promise<boolean> {
   if (state.status === 'authenticated') {
-    return true;
+    return Promise.resolve(true);
   }
   return bootstrap();
 }

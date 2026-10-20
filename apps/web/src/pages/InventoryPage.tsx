@@ -12,7 +12,6 @@ import type { BalanceRow, LedgerRow, VariantSummary, Warehouse } from '../types/
 import { Can, PermissionNotice } from '../components/auth/Can';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
-import { Card, CardHeader } from '../components/ui/Card';
 import { Combobox } from '../components/ui/Combobox';
 import { DateRangePicker } from '../components/ui/DateRangePicker';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -115,7 +114,6 @@ export function InventoryPage() {
 
   const canReadBalances = useHasPermission(PERM.inventoryBalanceRead);
   const canReadLedger = useHasPermission(PERM.inventoryLedgerRead);
-  const canAdjust = useHasPermission(PERM.inventoryAdjust);
 
   const warehousesQuery = useQuery({
     queryKey: queryKeys.warehouses.list,

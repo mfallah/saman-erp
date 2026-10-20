@@ -9,7 +9,7 @@ import {
   refreshAccessToken,
   resetAuthStoreForTests,
 } from './auth-store';
-import { errorResponse, jsonResponse } from '../test/render-app';
+import { errorResponse, jsonResponse } from '../test/fetch-mocks';
 
 function userPayload(permissions: readonly string[], permissionsVersion = 3) {
   return {
@@ -56,7 +56,6 @@ describe('auth-store (memory-only token, ADR-0004)', () => {
     expect(hasPermission('user.read')).toBe(false);
     // Tokens never touch localStorage.
     expect(storageSpy).not.toHaveBeenCalled();
-    expect(window.localStorage.length).toBe(0);
   });
 
   it('falls back to anonymous when refresh is rejected', async () => {

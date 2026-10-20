@@ -1,0 +1,13 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "types": ["node"],
+    "rootDir": "../../../..",
+    "baseUrl": "../../../..",
+    "skipLibCheck": true
+  },
+  "include": ["./**/*.ts", "../common/contracts.ts"]
+}

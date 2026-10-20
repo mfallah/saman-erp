@@ -186,9 +186,9 @@ export function LoginPage() {
   });
 
   const verifyMutation = useMutation({
-    mutationFn: async (values: OtpForm) => {
+    mutationFn: (values: OtpForm) => {
       if (challenge === null) {
-        throw new Error('چالش ورود یافت نشد.');
+        return Promise.reject(new Error('چالش ورود یافت نشد.'));
       }
       const path = challenge.kind === 'mfa' ? '/auth/mfa/verify' : '/auth/otp/verify';
       return api.post<LoginResult>(
@@ -215,9 +215,9 @@ export function LoginPage() {
   });
 
   const resendMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: () => {
       if (challenge === null) {
-        throw new Error('چالش ورود یافت نشد.');
+        return Promise.reject(new Error('چالش ورود یافت نشد.'));
       }
       if (challenge.kind === 'mfa') {
         return api.post<{ resendAfter?: number }>(

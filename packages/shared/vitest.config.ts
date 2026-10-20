@@ -1,8 +1,11 @@
+/// <reference types="vitest" />
 /**
- * Vitest config for `@saman/shared`.
+ * Vitest config for normal CI environments (`pnpm test:vitest`).
  *
- * `pool: 'threads'` keeps the suite inside the process (no child-process spawn),
- * which is required in the constrained CI sandbox; see `scripts/vitest-preload.cjs`.
+ * The default `test` script uses `tsc` + Node's built-in runner because this
+ * repository is also developed inside a sandbox that denies the process spawning
+ * Vitest/Vite needs (esbuild service + worker pool). Both runners execute the
+ * same `test/**/*.spec.ts` files.
  */
 import { defineConfig } from 'vitest/config';
 

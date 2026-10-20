@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, api } from './api-client';
 import { completeLogin, getAccessToken, resetAuthStoreForTests } from './auth-store';
-import { errorResponse, jsonResponse } from '../test/render-app';
+import { errorResponse, jsonResponse } from '../test/fetch-mocks';
 
 const USER = {
   id: 'user-1',
@@ -32,7 +32,7 @@ describe('api-client', () => {
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         calls.push({ url, init });
-        if (url.endsWith('/products')) {
+        if (url.includes('/products')) {
           if (authHeader(init) === 'Bearer new-token') {
             return Promise.resolve(
               jsonResponse({
@@ -55,7 +55,7 @@ describe('api-client', () => {
     expect(page.items).toHaveLength(1);
     expect(page.pagination?.total).toBe(1);
     expect(getAccessToken()).toBe('new-token');
-    expect(calls.filter((call) => call.url.endsWith('/products'))).toHaveLength(2);
+    expect(calls.filter((call) => call.url.includes('/products'))).toHaveLength(2);
     expect(calls.filter((call) => call.url.endsWith('/auth/refresh'))).toHaveLength(1);
   });
 

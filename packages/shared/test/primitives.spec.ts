@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+
+import { expect } from './expect';
 
 import { isInVocabulary, ORDER_STATUSES, DOCUMENT_STATUSES } from '../src/enums';
 import { toArabicDigits, toAsciiDigits, toPersianDigits, normalizeDigits } from '../src/digits';
@@ -32,9 +34,11 @@ describe('Iranian mobile normalization', () => {
     ['۰۹۱۲۳۴۵۶۷۸۹', '09123456789'],
   ] as const;
 
-  it.each(valid)('normalizes %s to %s', (input, expected) => {
-    expect(normalizeIranianMobile(input)).toBe(expected);
-    expect(isValidIranianMobile(input)).toBe(true);
+  it('normalizes all supported notations', () => {
+    for (const [input, expected] of valid) {
+      expect(normalizeIranianMobile(input)).toBe(expected);
+      expect(isValidIranianMobile(input)).toBe(true);
+    }
   });
 
   it('rejects invalid numbers', () => {

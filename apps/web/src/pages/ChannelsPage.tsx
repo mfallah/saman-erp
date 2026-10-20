@@ -15,7 +15,7 @@ import type {
   SyncJob,
 } from '../types/api';
 import { PermissionNotice } from '../components/auth/Can';
-import { Badge } from '../components/ui/Badge';
+import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { Combobox } from '../components/ui/Combobox';
@@ -49,8 +49,7 @@ const healthColumns: readonly Column<ChannelHealthRow>[] = [
         {row.status ?? ((row.failureStreak ?? 0) > 0 ? 'نیازمند بررسی' : 'سالم')}
       </Badge>
     ),
-  },
-  {
+  },  {
     key: 'lastSuccessAt',
     header: 'آخرین موفقیت',
     render: (row) => (row.lastSuccessAt === undefined || row.lastSuccessAt === null ? '—' : relativeTimeFa(row.lastSuccessAt)),
@@ -70,11 +69,7 @@ const jobColumns: readonly Column<SyncJob>[] = [
   {
     key: 'status',
     header: 'وضعیت',
-    render: (job) => (
-      <Badge tone={job.status === 'succeeded' ? 'success' : job.status === 'failed' ? 'danger' : 'warning'}>
-        {job.status}
-      </Badge>
-    ),
+    render: (job) => <StatusBadge status={job.status} />,
   },
   {
     key: 'progress',

@@ -169,22 +169,21 @@ function j2d(jy: number, jm: number, jd: number): number {
 
 function d2j(jdn: number): JalaliDate {
   const gy = d2g(jdn).gy;
-  const baseJy = gy - 621;
-  const r = jalCal(baseJy, false);
-  const jdn1f = g2d(gy, 3, r.march);
-  let k = jdn - jdn1f;
-  if (k >= 0) {
-    if (k <= 185) {
-      return { jy: baseJy, jm: 1 + div(k, 31), jd: mod(k, 31) + 1 };
+  let jy = gy - 621;
+  // The Gregorian year containing the day can fall one Jalali year before/after
+  // (Farvardin 1 is around March 20), so settle the year by comparing to its start.
+  for (let guard = 0; guard < 3; guard += 1) {
+    const dayOfYear = jdn - j2d(jy, 1, 1);
+    if (dayOfYear >= 0 && dayOfYear <= 365) {
+      if (dayOfYear <= 185) {
+        return { jy, jm: 1 + div(dayOfYear, 31), jd: mod(dayOfYear, 31) + 1 };
+      }
+      const k = dayOfYear - 186;
+      return { jy, jm: 7 + div(k, 30), jd: mod(k, 30) + 1 };
     }
-    k -= 186;
-  } else {
-    const previous = baseJy - 1;
-    const previousCal = jalCal(previous, false);
-    k = jdn - g2d(previousCal.gy, 3, previousCal.march);
-    return { jy: previous, jm: 1 + div(k, 31), jd: mod(k, 31) + 1 };
+    jy = dayOfYear < 0 ? jy - 1 : jy + 1;
   }
-  return { jy: baseJy, jm: 7 + div(k, 30), jd: mod(k, 30) + 1 };
+  throw new RangeError('jalali_conversion_out_of_range');
 }
 
 function isGregorianLeapYear(gy: number): boolean {
