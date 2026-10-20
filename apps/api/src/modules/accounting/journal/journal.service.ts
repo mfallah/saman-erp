@@ -48,6 +48,18 @@ export class JournalService {
     return this.repo.list(ctx.orgId, { ...filter, page: normalisePagination(filter.page ?? {}) });
   }
 
+  /**
+   * Accept the documented public uuid for account references (numeric ids remain
+   * accepted for internal tooling/back-compat). Resolved before the domain sees it.
+   */
+  async resolveAccountId(ctx: TenantContext, ref: string | number): Promise<bigint> {
+    const value = String(ref);
+    if (/^\d+$/.test(value)) return BigInt(value);
+    const internal = await this.coaRepo.idByPublicId(ctx.orgId, value);
+    if (internal === null) throw new AppError('NOT_FOUND', { message: 'حساب حسابداری یافت نشد.' });
+    return internal;
+  }
+
   /** Resolve the API-facing public id to the internal key used by the journal aggregate. */
   async resolveId(ctx: TenantContext, publicId: string): Promise<bigint> {
     const internal = await this.repo.idByPublicId(ctx.orgId, publicId);

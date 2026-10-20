@@ -105,8 +105,11 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-23 | BullMQ not installed; worker uses DB `job_runs` fallback queue | throughput | add BullMQ + Redis adapter (documented topology) |
 | TD-24 | ~~Write-path column drift~~ | — | **CLOSED (v1.1.2)**: 10 tables + 6 columns added (226 tables), 12 column refs aligned, `scripts/check-sql-schema.cjs` reports 0 drift; write-path E2E verified |
 | TD-25 | Redis not executed in the local E2E (rate limits/queues degraded); `/health/ready` correctly reported it | observability/limits untested | first CI/host run with Redis |
-| TD-26 | Accounting DTOs accept internal numeric ids for account references (contract says public uuid); journal/accounting paths work but the contract is violated | API contract/security | v1.2 public-id resolution in accounting DTOs |
-| TD-27 | Full order→pick→pack→ship→journal E2E needs a seeded location hierarchy + stock | happy-path proof | v1.2 seed script + E2E |
+| TD-26 | ~~Accounting DTOs accept internal numeric ids~~ | — | **CLOSED (v1.2.0)**: accounting DTO `Id` + journal/account resolution accept public uuid; legacy numeric accepted only internally |
+| TD-27 | ~~Full order→pick→ship E2E~~ | — | **PARTIAL (v1.2.0)**: order→confirm→reserve→wave→pick verified; packing/shipping endpoints absent (**TD-30**) |
+| TD-28 | Automatic journal posting from outbox events was not wired in the worker | core accounting | **CLOSED (v1.2.0)**: worker posts inventory events transactionally; journal JV-1405-000001 verified |
+| TD-29 | `inventory.transfer.*` / `inventory.valuation.posted` accounting payloads still have the RT-E2E-18 shape (domain payload, same event type) | accounting completeness | v1.2.x emitter parity + E2E |
+| TD-30 | Packing / shipping / label modules not implemented (pick is the last warehouse step) | fulfillment completeness | v1.3 modules |
 
 ## Release process
 

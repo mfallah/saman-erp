@@ -30,6 +30,18 @@ export function asNumber(value: unknown): number {
 }
 
 export function asRecord(value: unknown): Record<string, unknown> {
+  // postgres.js may hand back `jsonb` as a JSON string (driver/PgBouncer
+  // dependent); parse it instead of silently returning an empty object.
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};

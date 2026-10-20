@@ -13,6 +13,9 @@ import type { DatabaseJobQueue } from './queue/job-queue';
 import type { ChannelSyncService } from '../modules/channels/services/channel-sync.service';
 import type { OutboundWebhookService } from '../modules/channels/services/outbound-webhook.service';
 import type { NotificationsService } from '../modules/notifications/services/notifications.service';
+import type { PostingService } from '../modules/accounting/posting/posting.service';
+import type { AccountingEventType } from '../modules/accounting/events';
+import type { TenantContext } from '../common/contracts';
 import {
   NotificationJobPayload,
   OutboundWebhookJobPayload,
@@ -46,6 +49,7 @@ export interface HandlerDependencies {
   readonly outbound: OutboundWebhookService;
   readonly notifications: NotificationsService;
   readonly jobs: DatabaseJobQueue;
+  readonly posting: PostingService;
 }
 
 export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxHandler[] {
@@ -155,7 +159,54 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
     },
   };
 
-  return [webhookReceived, orderReceived, notificationSend, syncRequested, outboundDeliver, reportRequested];
+
+  /**
+   * Automatic double-entry posting from inventory domain events. The posting
+   * rules are code-owned and versioned; `postEventIsolated` writes the journal,
+   * balances, audit and the follow-up outbox event in one transaction.
+   */
+  const makeAccountingHandler = (eventType: string): OutboxHandler => ({
+    eventType,
+    schema: z.record(z.unknown()),
+    async handle(event, payload) {
+      // outbox jsonb may arrive as a string depending on the driver path; normalise.
+      const rawPayload: unknown = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      const data = (rawPayload ?? {}) as Record<string, unknown>;
+      const entryDate = String(data['businessDate'] ?? new Date().toISOString().slice(0, 10));
+      const ctx: TenantContext = {
+        requestId: `outbox:${event.id}`,
+        orgId: BigInt(event.organizationId),
+        orgPublicId: '',
+        actorId: null,
+        actorPublicId: null,
+        permissions: [],
+        branchIds: null,
+        warehouseIds: null,
+      };
+      // Adjustments: derive gain/shortage from the signed quantity when the
+      // emitter did not supply a kind (the rule needs it to pick the account).
+      const enriched =
+        event.eventType === 'inventory.adjustment.posted' && data['kind'] === undefined
+          ? { ...data, kind: String(data['quantity'] ?? '0').startsWith('-') ? 'count_shortage' : 'count_gain' }
+          : data;
+      await deps.posting.postEventIsolated(ctx, {
+        eventType: event.eventType as AccountingEventType,
+        payload: enriched,
+        context: { entryDate },
+      });
+      deps.logger.info({ eventId: event.id, eventType: event.eventType }, 'accounting journal posted from event');
+    },
+  });
+  const accountingHandlers: OutboxHandler[] = [
+    'inventory.adjustment.posted',
+    'inventory.issue.posted',
+    'inventory.transfer.dispatched',
+    'inventory.transfer.received',
+    'inventory.valuation.posted',
+  ].map(makeAccountingHandler);
+
+  return [webhookReceived, orderReceived, notificationSend, syncRequested, ...accountingHandlers];
+
 }
 
 export function createOutboxDispatcher(input: {

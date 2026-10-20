@@ -6,12 +6,17 @@ import { Module } from '@nestjs/common';
 
 import { AppError } from '@saman/shared';
 import { DB, type Db } from '../common/contracts';
+import { PlatformModule } from '../common/platform.module';
+import { AppConfigModule } from '../config/config.module';
+import { LoggingModule } from '../common/logging/logging.module';
 import { ChannelsModule } from '../modules/channels/channels.module';
 import { LOGGER } from '../modules/channels/ports/logger.port';
 import type { AppLogger } from '../modules/channels/ports/logger.port';
 import { IntegrationsModule } from '../modules/integrations/integrations.module';
 import { NotificationsModule } from '../modules/notifications/notifications.module';
 import { AutomationModule } from '../modules/automation/automation.module';
+import { AccountingModule } from '../modules/accounting/accounting.module';
+import { PostingService } from '../modules/accounting/posting/posting.service';
 import { SqlOutboxStore } from './queue/outbox.store';
 import { DatabaseJobQueue } from './queue/job-queue';
 import { OutboxDispatcher } from './queue/outbox.dispatcher';
@@ -30,7 +35,7 @@ import { OutboundWebhookService } from '../modules/channels/services/outbound-we
 import { NotificationsService } from '../modules/notifications/services/notifications.service';
 
 @Module({
-  imports: [ChannelsModule, IntegrationsModule, NotificationsModule, AutomationModule],
+  imports: [AppConfigModule, LoggingModule, PlatformModule, ChannelsModule, IntegrationsModule, NotificationsModule, AutomationModule, AccountingModule],
   providers: [
     {
       provide: SqlOutboxStore,
@@ -52,8 +57,9 @@ import { NotificationsService } from '../modules/notifications/services/notifica
         outbound: OutboundWebhookService,
         notifications: NotificationsService,
         jobs: DatabaseJobQueue,
+        posting: PostingService,
       ): OutboxDispatcher => {
-        const handlers = buildOutboxHandlers({ db, logger, sync, outbound, notifications, jobs });
+        const handlers = buildOutboxHandlers({ db, logger, sync, outbound, notifications, jobs, posting });
         const dispatcher = new OutboxDispatcher({
           store,
           logger,
@@ -70,6 +76,7 @@ import { NotificationsService } from '../modules/notifications/services/notifica
         OutboundWebhookService,
         NotificationsService,
         DatabaseJobQueue,
+        PostingService,
       ],
     },
     {

@@ -114,6 +114,21 @@ static review could catch (all fixed except the last):
 | TD-26 | accounting DTOs still accept internal numeric ids for account references | open (v1.2) |
 | TD-27 | full order→pick→pack→ship E2E needs location hierarchy + stock seeding | open (v1.2) |
 
+### Round 4 — commerce spine + automatic posting (2026-10-20)
+
+| ID | Finding | Status |
+|---|---|---|
+| RT-E2E-14 | pick-wave creation used public uuids as internal ids | fixed |
+| RT-E2E-15 | adjustment posting hit dead `findBalance(…, '')` placeholder | fixed |
+| RT-E2E-16 | worker composition missing platform providers / inject | fixed |
+| RT-E2E-17 | `asRecord` dropped jsonb-string payloads → handlers got `{}` | fixed (critical) |
+| RT-E2E-18 | adjustment accounting event lacked amounts + duplicated event type | fixed |
+| RT-E2E-19 | accounting DTOs required internal ids for account refs | fixed (public uuid accepted) |
+| TD-26 | accounting endpoints internal ids | **closed** |
+| TD-28 | automatic journal posting not wired in worker | **closed** (inventory events) |
+| TD-29 | transfer/valuation accounting payload parity | open |
+| TD-30 | packing/shipping modules missing | open |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning

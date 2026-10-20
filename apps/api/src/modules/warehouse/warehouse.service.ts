@@ -518,13 +518,14 @@ export class WarehouseService {
             details: [{ rule: 'order_not_allocated', params: { orderId, status } }],
           });
         }
-        const orderInternalId = toBigInt(String(order['id']));
+        const orderInternalId = await this.sales.resolveOrderId(ctx, orderId);
         await this.repo.insertWaveOrder(tx, toBigInt(wave.internalId), orderInternalId, orderIndex + 1);
         const reservations = await this.inventory.listReservations(ctx, {
           limit: 500,
           status: 'active',
           sourceType: 'sales_order',
-          sourceId: orderId,
+          // listReservations expects the internal key (see inventory.dto contract).
+          sourceId: orderInternalId.toString(),
         });
         const grouped = new Map<string, { variantId: string; locationId: string; quantity: string }>();
         for (const reservation of reservations) {

@@ -225,13 +225,11 @@ export class InventoryService {
     if (input.idempotencyKey !== null && input.idempotencyKey !== undefined) {
       const existing = await this.repo.findTransactionByIdempotencyKey(tx, ctx.orgId, input.idempotencyKey);
       if (existing !== null) {
-        const balance = await this.repo.findBalance(tx, ctx.orgId, '');
         throw new AppError('CONFLICT', {
           message: 'این حرکت انبار قبلاً ثبت شده است.',
           messageKey: 'inventory.duplicate_movement',
           details: [{ rule: 'duplicate_movement', params: { transactionId: existing.id } }],
         });
-        void balance;
       }
     }
 
@@ -396,8 +394,6 @@ export class InventoryService {
       });
     }
 
-    const refreshedBalance = await this.repo.findBalance(tx, ctx.orgId, '');
-    void refreshedBalance;
     await this.emitMovementEvents(tx, ctx, transaction, variant, unitCostAmount, totalCostAmount);
     return {
       transaction,
@@ -940,6 +936,8 @@ export class InventoryService {
       assertState(adjustment.status, ['approved'], 'adjustment_post');
       const lines = await this.repo.listAdjustmentLines(tx, toBigInt(adjustment.internalId));
       const ledgerIds: string[] = [];
+      let gainCostAmount = 0n;
+      let lossCostAmount = 0n;
       for (const line of lines) {
         if (compareQuantity(line.differenceQuantity, '0') === 0) continue;
         const inbound = compareQuantity(line.differenceQuantity, '0') > 0;
@@ -962,6 +960,8 @@ export class InventoryService {
           idempotencyKey: `adj:${adjustment.id}:line:${line.id}`,
         });
         ledgerIds.push(movement.transaction.id);
+        if (inbound) gainCostAmount += movement.totalCostAmount;
+        else lossCostAmount += movement.totalCostAmount;
         await this.repo.setAdjustmentLineTransaction(
           tx,
           toBigInt(line.internalId),
@@ -972,20 +972,39 @@ export class InventoryService {
         status: 'applied',
         applied: true,
       });
-      const payload: AdjustmentPayload = {
-        adjustmentId: adjustment.id,
-        adjustmentNo: adjustment.adjustmentNo,
-        warehouseId: adjustment.warehouseId,
-        reasonCode: adjustment.reasonCode,
-        status: 'applied',
-        ledgerIds,
-      };
-      await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.adjustmentPosted, 'stock_adjustment', toBigInt(adjustment.internalId), {
-        adjustmentId: adjustment.id,
-        ledgerIds,
-        status: 'applied',
-      });
-      await this.emitDomain(tx, ctx, INVENTORY_EVENTS.adjustmentPosted, 'stock_adjustment', toBigInt(adjustment.internalId), payload);
+      const adjustmentBusinessDate = todayIso();
+      if (gainCostAmount > 0n) {
+        await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.adjustmentPosted, 'stock_adjustment', toBigInt(adjustment.internalId), {
+          adjustmentId: adjustment.internalId.toString(),
+          adjustmentPublicId: adjustment.id,
+          adjustmentNo: adjustment.adjustmentNo,
+          warehouseId: adjustment.warehouseId,
+          reasonCode: adjustment.reasonCode,
+          kind: 'count_gain',
+          totalCostAmount: gainCostAmount.toString(),
+          businessDate: adjustmentBusinessDate,
+          ledgerIds,
+          status: 'applied',
+        });
+      }
+      if (lossCostAmount > 0n) {
+        const lossKind = adjustment.reasonCode === 'damage' ? 'damage' : adjustment.reasonCode === 'writeoff' ? 'writeoff' : 'count_shortage';
+        await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.adjustmentPosted, 'stock_adjustment', toBigInt(adjustment.internalId), {
+          adjustmentId: adjustment.internalId.toString(),
+          adjustmentPublicId: adjustment.id,
+          adjustmentNo: adjustment.adjustmentNo,
+          warehouseId: adjustment.warehouseId,
+          reasonCode: adjustment.reasonCode,
+          kind: lossKind,
+          totalCostAmount: lossCostAmount.toString(),
+          businessDate: adjustmentBusinessDate,
+          ledgerIds,
+          status: 'applied',
+        });
+      }
+      // Single canonical event: the accounting payload also carries the domain
+      // fields so consumers do not receive a second, amount-less event with the
+      // same event_type (which would be mis-posted by the accounting handler).
       await this.record(tx, ctx, 'inventory.adjustment.post', 'stock_adjustment', adjustment.id, adjustmentView(adjustment), { status: 'applied', ledgerIds });
       return this.getAdjustmentInTx(tx, ctx, publicId);
     });

@@ -478,6 +478,13 @@ export class SalesService {
     return rows.map(orderView);
   }
 
+  /** Internal id for cross-module composition (warehouse waves); never exposed over HTTP. */
+  async resolveOrderId(ctx: TenantContext, publicId: string): Promise<bigint> {
+    const row = await this.repo.findOrder(this.db, ctx.orgId, publicId);
+    if (row === null) throw notFound('sales_order');
+    return toBigInt(row.internalId);
+  }
+
   async getOrder(ctx: TenantContext, publicId: string): Promise<Record<string, unknown>> {
     return this.getOrderInTx(this.db, ctx, publicId);
   }

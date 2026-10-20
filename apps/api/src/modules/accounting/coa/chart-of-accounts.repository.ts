@@ -148,6 +148,16 @@ export class ChartOfAccountsRepository {
     return rows.map(toAccount);
   }
 
+  /** Resolve the API-facing public id (or numeric code-free id) to the internal key. */
+  async idByPublicId(orgId: bigint, publicId: string): Promise<bigint | null> {
+    const rows = await this.db<{ id: string }[]>`
+      select id::text as id from erp.chart_of_accounts
+       where organization_id = ${orgId.toString()} and public_id = ${publicId}::uuid and deleted_at is null
+       limit 1`;
+    const row = rows[0];
+    return row === undefined ? null : BigInt(row.id);
+  }
+
   async assertCodeFree(orgId: bigint, code: string): Promise<void> {
     const existing = await this.findByCode(orgId, code);
     if (existing !== undefined) throw conflict('کد حساب تکراری است.');

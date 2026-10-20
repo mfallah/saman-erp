@@ -8,16 +8,31 @@ import { AppendJournalLineSchema, CreateJournalSchema, JournalFilterSchema, Reve
 import { RequirePermissions, Tenant } from '../http/decorators';
 import { journalOut } from '../http/serialise';
 
-function linesOf(lines: readonly { accountId: string | number; debit: string; credit: string; description?: string; partnerType?: string; partnerId?: string | number; taxRateId?: string | number }[]): JournalLineDto[] {
-  return lines.map((line) => ({
-    accountId: toBigInt(line.accountId),
-    debit: toMoney(line.debit),
-    credit: toMoney(line.credit),
-    ...(line.description === undefined ? {} : { description: line.description }),
-    ...(line.partnerType === undefined ? {} : { partnerType: line.partnerType }),
-    ...(line.partnerId === undefined ? {} : { partnerId: toBigInt(line.partnerId) }),
-    ...(line.taxRateId === undefined ? {} : { taxRateId: toBigInt(line.taxRateId) }),
-  }));
+async function linesOf(
+  ctx: TenantContext,
+  journals: JournalService,
+  lines: readonly {
+    accountId: string | number;
+    debit: string;
+    credit: string;
+    description?: string;
+    partnerType?: string;
+    partnerId?: string | number;
+    taxRateId?: string | number;
+  }[],
+): Promise<JournalLineDto[]> {
+  const resolved = await Promise.all(
+    lines.map(async (line) => ({
+      accountId: await journals.resolveAccountId(ctx, line.accountId),
+      debit: toMoney(line.debit),
+      credit: toMoney(line.credit),
+      ...(line.description === undefined ? {} : { description: line.description }),
+      ...(line.partnerType === undefined ? {} : { partnerType: line.partnerType }),
+      ...(line.partnerId === undefined ? {} : { partnerId: toBigInt(line.partnerId) }),
+      ...(line.taxRateId === undefined ? {} : { taxRateId: toBigInt(line.taxRateId) }),
+    })),
+  );
+  return resolved;
 }
 
 @ApiTags('accounting')
@@ -56,7 +71,7 @@ export class JournalController {
       date: dto.date,
       description: dto.description,
       ...(dto.entryType === undefined ? {} : { entryType: dto.entryType }),
-      lines: linesOf(dto.lines),
+      lines: await linesOf(ctx, this.journals, dto.lines),
     });
     return { data: journalOut(journal) };
   }
@@ -84,7 +99,7 @@ export class JournalController {
       {
         ...(dto.description === undefined ? {} : { description: dto.description }),
         ...(dto.date === undefined ? {} : { date: dto.date }),
-        ...(dto.lines === undefined ? {} : { lines: linesOf(dto.lines) }),
+        ...(dto.lines === undefined ? {} : { lines: await linesOf(ctx, this.journals, dto.lines) }),
       },
       version === undefined ? 0 : Number(version),
     );
@@ -168,7 +183,7 @@ export class JournalController {
         debit: line.debitAmount,
         credit: line.creditAmount,
       })),
-      ...linesOf([dto]),
+      ...(await linesOf(ctx, this.journals, [dto])),
     ];
     const journal = await this.journals.updateDraft(
       ctx,

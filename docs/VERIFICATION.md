@@ -293,3 +293,62 @@ DB after writes: products/variants/customer/warehouse/user rows present,
 **Still open (next round):** accounting endpoints accept *internal* numeric ids for account references in
 some DTOs (contract says public uuid) — tracked as TD-26; full order→pick→pack→ship flow needs stock seeded
 via the location hierarchy (TD-27); Docker/Redis still unverified (TD-01/TD-25).
+
+
+---
+
+## 9. Full commerce spine + automatic journal posting (2026-10-20, round 2)
+
+### 9.1 Stock and reservation chain (real HTTP + PostgreSQL)
+
+```text
+warehouse hierarchy seeded (zone → aisle → rack → shelf → bin → location)
+POST /inventory/adjustments            201  ADJ-2026-000002 (draft)
+POST …/adjustments/:id/submit          200  approved (auto, no approval needed)
+POST …/adjustments/:id/post            200  applied
+GET  /inventory/balances               200  on_hand = 10.0000, location + SKU correct
+DB: inventory_transactions = 1, inventory_balances = 1
+
+POST /sales-orders                     201  draft
+POST …/sales-orders/:id/submit         200
+POST …/sales-orders/:id/confirm        200  orderNo SLS-2026-000001, reservation created (stock_reservations = 1)
+POST /pick-waves                       201  WAV-000001
+POST /pick-waves/:id/release           200  released
+POST /pick-tasks/:id/start             200
+POST /pick-tasks/:id/scans             200  task → picked (barcode verified against product_barcodes)
+```
+
+`confirm` with no stock correctly returns **422 INSUFFICIENT_STOCK** — the reservation
+planner is real, not a stub.
+
+### 9.2 Automatic double-entry posting from the outbox
+
+The worker now wires `PostingService` into the outbox dispatcher and posts
+inventory accounting events transactionally:
+
+```text
+event 32  inventory.adjustment.posted  (kind=count_gain, totalCostAmount=160000)
+→ worker handler → PostingService.postEventIsolated
+→ journal JV-1405-000001  entry_date 2026-10-20  Dr 160,000 / Cr 160,000
+   source_type=stock_adjustment  description «تعدیل موجودی (count_gain)»
+→ account_balances rows = 2
+→ outbox row processed, no dead-letter
+```
+
+### 9.3 Defects found and fixed in this round
+
+| ID | Defect | Root cause | Fix |
+|---|---|---|---|
+| RT-E2E-14 | `POST /pick-waves` 500 | warehouse passed **public uuid** to `toBigInt` and to `listReservations(sourceId)` which expects internal key | `SalesService.resolveOrderId()` + internal source id |
+| RT-E2E-15 | `POST /inventory/adjustments/:id/post` 500 | dead `findBalance(tx, orgId, '')` placeholder calls in `postMovement` | removed dead calls |
+| RT-E2E-16 | worker would not boot | `WorkerModule` did not import `PlatformModule`/`ConfigModule`/`LoggingModule`; `PostingService` missing from inject list (`undefined.postEventIsolated`) | imports + inject fixed |
+| RT-E2E-17 | every outbox handler saw `{}` payload | `asRecord()` returned `{}` for a `jsonb` **string** (driver-dependent) | parse JSON strings in `asRecord` |
+| RT-E2E-18 | adjustment events unpostable | emitter sent `{adjustmentId, ledgerIds}` without amounts, and emitted a second amount-less domain event with the **same** event type; posting rule also rejects a uuid in `adjustmentId` (`optionalId` needs an internal id) | single canonical event with `adjustmentId` (internal), `kind`, `totalCostAmount`, `businessDate`, domain fields |
+| RT-E2E-19 | accounting journal endpoints used internal numeric ids | `Id = /^\d+$/` in accounting DTOs | `resolveAccountId()` accepts public uuid **and** legacy numeric; 12 controller call sites resolved public ids |
+
+### 9.4 Still open
+
+- transfer/valuation accounting events still emit domain payloads with the same event type
+  (same class as RT-E2E-18) — **TD-29**.
+- packing/shipping/label endpoints do not exist yet (pick is the last implemented step) — **TD-30**.
+- Docker/Redis/PG16 on a real host still unexecuted — TD-01/TD-25.
