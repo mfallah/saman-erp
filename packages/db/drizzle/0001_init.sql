@@ -8,6 +8,12 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 CREATE SCHEMA IF NOT EXISTS erp;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_app') THEN CREATE ROLE saman_app NOLOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_migrator') THEN CREATE ROLE saman_migrator NOLOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_worker') THEN CREATE ROLE saman_worker NOLOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_readonly') THEN CREATE ROLE saman_readonly NOLOGIN; END IF;
+END $$;
 SET search_path TO erp, public;
 COMMENT ON SCHEMA erp IS 'Saman ERP business schema (single schema; module.table notation is ownership only)';
 
@@ -176,7 +182,7 @@ CREATE TRIGGER trg_roles_version BEFORE UPDATE ON erp."roles" FOR EACH ROW EXECU
 
 -- global permission registry (412 keys from API.md §5.2)
 CREATE TABLE IF NOT EXISTS erp."permissions" (
-  "id" bigint,
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
   "key" varchar(120) NOT NULL,
   "resource" varchar(80) NOT NULL,
   "action" varchar(40) NOT NULL,
@@ -1217,7 +1223,7 @@ CREATE TABLE IF NOT EXISTS erp."audit_chain_heads" (
 
 -- currency reference
 CREATE TABLE IF NOT EXISTS erp."currencies" (
-  "id" bigint,
+  "id" bigint GENERATED ALWAYS AS IDENTITY,
   "code" char(3) NOT NULL,
   "name" varchar(100) NOT NULL,
   "symbol" varchar(10),
@@ -5613,7 +5619,7 @@ ALTER TABLE erp.accounting_periods ADD CONSTRAINT ex_accounting_periods_no_overl
   EXCLUDE USING gist (fiscal_year_id WITH =, daterange(start_date, end_date, '[]') WITH &&) DEFERRABLE;
 -- partition maintenance (SECURITY DEFINER, identifier-safe)
 CREATE OR REPLACE FUNCTION erp.ensure_month_partition(p_parent regclass, p_month date)
-RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE v_nsp text; v_rel text; v_part text;
         v_start timestamptz := date_trunc('month', p_month)::timestamptz;
         v_end timestamptz := (date_trunc('month', p_month) + interval '1 month')::timestamptz;
@@ -5630,7 +5636,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION erp.maintain_partitions(p_ahead_months integer DEFAULT 2)
-RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE r record; m date; created int := 0;
 BEGIN
   FOR r IN SELECT parent_table FROM erp.partitioned_tables_registry WHERE is_enabled LOOP
@@ -5646,7 +5652,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION erp.drain_default_partition(p_parent regclass, p_month date)
-RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE v_nsp text; v_rel text; v_part text; v_rows bigint;
 BEGIN
   SELECT n.nspname, c.relname INTO v_nsp, v_rel FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = p_parent;
@@ -5682,7 +5688,7 @@ BEGIN
 END $$;
 -- audit hash chain (SECURITY DEFINER; only this function writes the chain columns + head)
 CREATE OR REPLACE FUNCTION erp.chain_audit(p_batch integer DEFAULT 500)
-RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE r record; v_head record; v_prev char(64); v_seq bigint; v_hash char(64); v_next_id bigint; n int := 0;
 BEGIN
   SELECT * INTO v_head FROM erp.audit_chain_heads WHERE organization_id = 1 FOR UPDATE;

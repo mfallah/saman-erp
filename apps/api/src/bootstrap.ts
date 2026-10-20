@@ -22,6 +22,25 @@ export function apiBasePath(config: AppConfig): string {
   return `/${config.apiPrefix}/${config.apiVersion}`;
 }
 
+/**
+ * Preserve the exact raw request body for channel webhooks.
+ * HMAC verification is computed over the raw bytes (ADR-0006 revision), so the
+ * webhook route prefix is buffered before Fastify parses JSON.
+ */
+export function registerRawBodyParser(fastify: FastifyInstance): void {
+  fastify.addHook('preParsing', async (request, _reply, payload) => {
+    if (!request.url.startsWith('/api/v1/webhooks/channels/')) return payload;
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    }
+    const raw = Buffer.concat(chunks);
+    (request as unknown as { rawBody?: Buffer }).rawBody = raw;
+    const { Readable } = await import('node:stream');
+    return Readable.from(raw);
+  });
+}
+
 function registerCorsHook(fastify: FastifyInstance, config: AppConfig): void {
   if (config.appEnv === 'production' || config.corsOrigins.length === 0) {
     // Same-origin in production (`API.md` §1.17); CORS exists for the dev SPA.
@@ -110,6 +129,7 @@ export async function configureApp(
 
   const fastify = app.getHttpAdapter().getInstance();
   registerRequestIdHook(fastify);
+  registerRawBodyParser(fastify);
   registerCorsHook(fastify, config);
   registerContractFallbacks(fastify);
 

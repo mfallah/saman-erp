@@ -1,45 +1,45 @@
-﻿{
-    "name":  "saman-erp",
-    "version":  "1.0.0",
-    "private":  true,
-    "description":  "Saman ERP â€” omnichannel commerce ERP (WMS, OMS, accounting) for Carexy Shop",
-    "license":  "UNLICENSED",
-    "packageManager":  "pnpm@11.6.0",
-    "engines":  {
-                    "node":  "\u003e=22.11.0",
-                    "pnpm":  "\u003e=11.0.0"
-                },
-    "devDependencies":  {
-                            "@eslint/js":  "^9.20.0",
-                            "eslint":  "^9.20.0",
-                            "eslint-config-prettier":  "^10.0.1",
-                            "globals":  "^15.14.0",
-                            "prettier":  "^3.4.2",
-                            "typescript":  "^5.7.3",
-                            "typescript-eslint":  "^8.24.0"
-                        },
-    "scripts":  {
-                    "build":  "pnpm -r --if-present build",
-                    "dev:api":  "pnpm --filter @saman/api dev",
-                    "dev:web":  "pnpm --filter @saman/web dev",
-                    "lint":  "eslint .",
-                    "lint:fix":  "eslint . --fix",
-                    "format":  "prettier --write .",
-                    "format:check":  "prettier --check .",
-                    "typecheck":  "pnpm -r --if-present typecheck",
-                    "test":  "pnpm -r --if-present test",
-                    "test:int":  "pnpm --filter @saman/api test:int",
-                    "test:e2e":  "pnpm --filter @saman/web test:e2e",
-                    "verify":  "pnpm lint \u0026\u0026 pnpm typecheck \u0026\u0026 pnpm test",
-                    "verify:full":  "pnpm verify \u0026\u0026 pnpm build",
-                    "db:generate":  "pnpm --filter @saman/db generate",
-                    "db:migrate":  "pnpm --filter @saman/db migrate",
-                    "db:seed":  "pnpm --filter @saman/db seed",
-                    "db:reset":  "pnpm --filter @saman/db reset",
-                    "db:create-admin":  "pnpm --filter @saman/db create-admin",
-                    "docker:up":  "docker compose up -d --build",
-                    "docker:down":  "docker compose down",
-                    "docker:logs":  "docker compose logs -f --tail=200",
-                    "docker:ps":  "docker compose ps"
-                }
+{
+  "name": "saman-erp",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Saman ERP â€” omnichannel commerce ERP (WMS, OMS, accounting) for Carexy Shop",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=22.11.0",
+    "pnpm": ">=11.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "eslint": "^9.20.0",
+    "eslint-config-prettier": "^10.0.1",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev:api": "pnpm --filter @saman/api dev",
+    "dev:web": "pnpm --filter @saman/web dev",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:int": "pnpm --filter @saman/api test:int",
+    "test:e2e": "pnpm --filter @saman/web test:e2e",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test",
+    "verify:full": "pnpm verify && pnpm build",
+    "db:generate": "pnpm --filter @saman/db generate",
+    "db:migrate": "pnpm --filter @saman/db migrate",
+    "db:seed": "pnpm --filter @saman/db seed",
+    "db:reset": "pnpm --filter @saman/db reset",
+    "db:create-admin": "pnpm --filter @saman/db create-admin",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f --tail=200",
+    "docker:ps": "docker compose ps"
+  }
 }

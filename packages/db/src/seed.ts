@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createDb } from './client.js';
 import { hashPassword } from './crypto.js';
 import { PERMISSIONS } from './generated/permissions.js';
@@ -7,8 +8,17 @@ import { TABLES } from './schema/spec.js';
 
 type Sql = ReturnType<typeof createDb>;
 
+/** Seed writes master data: run as the migration role, never the runtime role. */
+function adminUrl(): string | undefined {
+  const file = process.env.MIGRATION_DATABASE_URL_FILE;
+  if (file) return readFileSync(file, 'utf8').trim();
+  const direct = process.env.MIGRATION_DATABASE_URL;
+  if (direct && direct.length > 0) return direct;
+  return process.env.DATABASE_URL;
+}
+
 const log = (msg: string) => console.log('[seed] ' + msg);
-const ORG_ID = 1;
+let ORG_ID = 1;
 
 const ROLES: { code: string; name: string; scope: string }[] = [
   { code: 'superadmin', name: 'مدیر سیستم', scope: 'all' },
@@ -168,16 +178,20 @@ function monthsFrom(start: string): string[][] {
   return out;
 }
 
-export async function seed(url = process.env.DATABASE_URL): Promise<Record<string, number>> {
+export async function seed(url = adminUrl()): Promise<Record<string, number>> {
   const sql = createDb(url);
   const counts: Record<string, number> = {};
   try {
     await sql.begin(async (tx) => {
-      // organization
-      const org = await tx`SELECT id FROM erp.organizations WHERE id = ${ORG_ID}`;
-      if (org.length === 0) {
-        await tx`INSERT INTO erp.organizations (name, legal_name, base_currency, timezone, valuation_method)
-                 VALUES ('Carexy Shop', 'فروشگاه کرکسی', 'IRR', 'Asia/Tehran', 'moving_average')`;
+      // organization — resolve the real identity value instead of assuming id=1
+      // (a rolled-back earlier seed still advances the identity sequence).
+      const existingOrg = await tx<{ id: string }[]>`SELECT id::text AS id FROM erp.organizations ORDER BY id LIMIT 1`;
+      if (existingOrg.length === 0) {
+        const inserted = await tx<{ id: string }[]>`INSERT INTO erp.organizations (name, legal_name, base_currency, timezone, valuation_method)
+                 VALUES ('Carexy Shop', 'فروشگاه کرکسی', 'IRR', 'Asia/Tehran', 'moving_average') RETURNING id::text AS id`;
+        ORG_ID = Number(inserted[0]?.id ?? 1);
+      } else {
+        ORG_ID = Number(existingOrg[0]?.id ?? 1);
       }
       counts.organizations = 1;
 
@@ -195,7 +209,7 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
       for (const r of ROLES) {
         await tx`INSERT INTO erp.roles (organization_id, code, name, is_system, scope_mode)
                  VALUES (${ORG_ID}, ${r.code}, ${r.name}, true, ${r.scope})
-                 ON CONFLICT (organization_id, code) DO UPDATE SET name = excluded.name, scope_mode = excluded.scope_mode`;
+                 ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO UPDATE SET name = excluded.name, scope_mode = excluded.scope_mode`;
         const role = await tx`SELECT id FROM erp.roles WHERE organization_id = ${ORG_ID} AND code = ${r.code}`;
         const roleId = role[0]!.id as number;
         const grants = grantsFor(r.code, allKeys);
@@ -217,7 +231,7 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
             (organization_id, code, name_fa, account_level, parent_id, account_type, normal_balance, nature, is_postable, is_active, currency)
           VALUES (${ORG_ID}, ${row.code}, ${row.name}, ${row.code.split('-').length}, ${parentId},
                   ${row.accountType}, ${row.normalBalance}, ${row.nature}, ${row.isPostable}, true, 'IRR')
-          ON CONFLICT (organization_id, code) DO UPDATE SET name_fa = excluded.name_fa
+          ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO UPDATE SET name_fa = excluded.name_fa
           RETURNING id`;
         codeToId.set(row.code, inserted[0]!.id as number);
       }
@@ -227,7 +241,7 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
       for (const [code, name, symbol, dimension, isBase, precision] of UNITS) {
         await tx`INSERT INTO erp.units_of_measure (organization_id, code, name, symbol, dimension, is_base, decimal_precision)
                  VALUES (${ORG_ID}, ${code}, ${name}, ${symbol}, ${dimension}, ${isBase}, ${precision})
-                 ON CONFLICT (organization_id, code) DO NOTHING`;
+                 ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO NOTHING`;
       }
       const unitRows = await tx<{ id: number; code: string }[]>`SELECT id, code FROM erp.units_of_measure WHERE organization_id = ${ORG_ID}`;
       const unitByCode = new Map(unitRows.map((u) => [u.code, u.id]));
@@ -235,9 +249,9 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
         const f = unitByCode.get(from); const t = unitByCode.get(to);
         if (!f || !t) continue;
         await tx`INSERT INTO erp.unit_conversions (organization_id, from_unit_id, to_unit_id, factor, is_exact)
-                 VALUES (${ORG_ID}, ${f}, ${t}, ${factor}, true) ON CONFLICT (from_unit_id, to_unit_id) DO NOTHING`;
+                 VALUES (${ORG_ID}, ${f}, ${t}, ${factor}, true) ON CONFLICT (from_unit_id, to_unit_id) WHERE deleted_at IS NULL DO NOTHING`;
         await tx`INSERT INTO erp.unit_conversions (organization_id, from_unit_id, to_unit_id, factor, is_exact)
-                 VALUES (${ORG_ID}, ${t}, ${f}, ${String(1 / Number(factor))}, true) ON CONFLICT (from_unit_id, to_unit_id) DO NOTHING`;
+                 VALUES (${ORG_ID}, ${t}, ${f}, ${String(1 / Number(factor))}, true) ON CONFLICT (from_unit_id, to_unit_id) WHERE deleted_at IS NULL DO NOTHING`;
       }
       counts.units_of_measure = UNITS.length;
 
@@ -245,14 +259,14 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
       for (const [code, name, type, rate] of TAX_RATES) {
         await tx`INSERT INTO erp.tax_rates (organization_id, code, name_fa, tax_type, rate_percent, effective_from, is_default)
                  VALUES (${ORG_ID}, ${code}, ${name}, ${type}, ${rate}, '2025-03-21', ${code === 'VAT-10'})
-                 ON CONFLICT (organization_id, code) DO NOTHING`;
+                 ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO NOTHING`;
       }
       counts.tax_rates = TAX_RATES.length;
 
       // price lists before channel accounts
       await tx`INSERT INTO erp.price_lists (organization_id, code, name, list_type, currency, rounding_mode, priority)
                VALUES (${ORG_ID}, 'BASE', 'لیست قیمت پایه', 'retail', 'IRR', 'nearest_1000', 10)
-               ON CONFLICT (organization_id, code) DO NOTHING`;
+               ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO NOTHING`;
       const baseList = await tx`SELECT id FROM erp.price_lists WHERE organization_id = ${ORG_ID} AND code = 'BASE'`;
 
       // fiscal year + periods
@@ -282,7 +296,7 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
       for (const [code, name, type, stock, price, orders, label] of CHANNELS) {
         await tx`INSERT INTO erp.sales_channels (organization_id, code, name, channel_type, supports_stock_push, supports_price_push, supports_order_pull, supports_webhook, supports_label, is_active)
                  VALUES (${ORG_ID}, ${code}, ${name}, ${type}, ${stock}, ${price}, ${orders}, true, ${label}, ${code !== 'snapp' && code !== 'tapsi'})
-                 ON CONFLICT (organization_id, code) DO NOTHING`;
+                 ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO NOTHING`;
       }
       const channelRows = await tx<{ id: number; code: string }[]>`SELECT id, code FROM erp.sales_channels WHERE organization_id = ${ORG_ID}`;
       const channelByCode = new Map(channelRows.map((c) => [c.code, c.id]));
@@ -296,7 +310,7 @@ export async function seed(url = process.env.DATABASE_URL): Promise<Record<strin
         if (!ch) continue;
         await tx`INSERT INTO erp.channel_accounts (channel_id, organization_id, name, external_account_id, auth_type, rate_limit_per_min, price_list_id, is_active)
                  VALUES (${ch}, ${ORG_ID}, ${label}, ${name}, ${authType}, ${rate}, ${baseList[0]?.id ?? null}, true)
-                 ON CONFLICT (channel_id, external_account_id) DO NOTHING`;
+                 ON CONFLICT (channel_id, external_account_id) WHERE deleted_at IS NULL DO NOTHING`;
       }
       counts.channels = CHANNELS.length;
 
@@ -356,6 +370,7 @@ if (require.main === module) {
     .then(() => process.exit(0))
     .catch((err) => {
       console.error('[seed] FAILED:', err instanceof Error ? err.message : err);
+  if (err instanceof Error && err.stack) console.error(err.stack);
       process.exit(1);
     });
 }

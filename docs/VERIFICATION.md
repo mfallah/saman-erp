@@ -101,3 +101,68 @@ sql generation ................ deterministic (1,348-line migration, 414 permiss
 
 **Still not verified here:** Docker stack boot, PostgreSQL migration/seed execution, E2E, load tests.
 **Open release blockers (not security-certified):** TD-14…TD-21 in `09-roadmap/ROADMAP.md`.
+
+
+---
+
+## 6. Real PostgreSQL execution (2026-10-20)
+
+Because the build environment has no Docker, a **local PostgreSQL 18.4 cluster** (binaries obtained via npm,
+`initdb` + `postgres` on port 55432, trust auth, throw-away data dir) was used to execute the delivered
+migration and seed for real. Script: [`scripts/verify-db.cjs`](../scripts/verify-db.cjs) (17 automated checks).
+
+```text
+$ MIGRATION_DATABASE_URL=postgres://postgres@127.0.0.1:55432/saman_verify node packages/db/dist/migrate.js
+[migrate] applied 0001_init.sql
+[migrate] done: applied=1 skipped=0
+
+$ node packages/db/dist/seed.js        # run twice
+[seed] done {permissions:414, chart_of_accounts:169, grants:1209, periods:12, channels:6, users:1, ...}
+
+$ node scripts/verify-db.cjs
+PASS  schema erp tables >= 200 — 216
+PASS  helper functions >= 8 — 10
+PASS  triggers attached >= 300 — 323
+PASS  partitioned parents = 5 / partition children >= 15 — 5 / 111
+PASS  saman_app has NO DELETE grant — 0
+PASS  saman_readonly cannot read secret tables — 0
+PASS  permissions seeded = 414
+PASS  chart of accounts >= 160 — 169
+PASS  role grants > 700 — 1209
+PASS  bootstrap admin exists — admin
+PASS  seeded admin password verifies via API password service — scrypt path OK
+PASS  unbalanced posted journal rejected at commit — JOURNAL_UNBALANCED: entry 1 debit 200 <> credit 100
+PASS  availability CHECK reserved+safety_buffer+damaged <= on_hand — ck_inventory_balances_available
+PASS  audit hash chain executes — chained=1, hashed=1
+PASS  worker can execute partition maintenance
+PASS  journal balance constraint triggers exist
+SUMMARY: 17/17 checks passed
+```
+
+### Runtime defects found by executing the SQL (and fixed in this commit)
+
+These could **not** be found by static validation; all were fixed in `packages/db` and re-verified from scratch
+on a clean database:
+
+1. **Grants ran before the cluster roles existed** → `role "saman_worker" does not exist`. The migration now
+   emits an idempotent `CREATE ROLE` block directly after `CREATE SCHEMA`.
+2. **`permissions.id` (and other bare `bigint pk` columns) had no identity/default** → seed failed with a
+   `not-null` violation. The generator now emits `GENERATED ALWAYS AS IDENTITY` for surrogate keys named `id`
+   only (named PKs such as `audit_chain_heads.organization_id` stay caller-supplied).
+3. **`ON CONFLICT (organization_id, code)` did not match partial unique indexes** (`…_active … WHERE deleted_at
+   IS NULL`) → seed failed. Seed now repeats the partial-index predicate for soft-deleted master data, and
+   leaves non-soft-delete tables (e.g. `fiscal_years`) without it.
+4. **Seed assumed `organizations.id = 1`** while a rolled-back earlier seed advanced the identity sequence →
+   FK violation on `roles.organization_id`. Seed now resolves the organization id from the database.
+5. **`chain_audit()` could not resolve `digest()`** because its `SECURITY DEFINER` search_path omitted `public`
+   (pgcrypto) → audit chain failed at runtime. All such functions now use `SET search_path = erp, public, pg_temp`.
+6. **`audit_chain_heads.organization_id` was generated as identity** while `chain_audit()` inserts it explicitly
+   → fixed by the same identity-rule change as (2).
+
+**Compatibility note:** execution was verified on PostgreSQL **18.4** (the only binaries obtainable offline);
+the target remains PostgreSQL **16**, so a PG16 run is still required in CI/release (tracked in ROADMAP TD-01).
+
+### Still not executed here
+
+Docker/Compose boot, Redis-backed paths (rate limits/queues), full API boot + HTTP login against the DB,
+Playwright E2E and k6 load tests. Those remain the first items of the v1.1 verification round.

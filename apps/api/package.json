@@ -12,7 +12,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.test.json && node dist-test/test/run.js",
     "test:vitest": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "start:worker": "node dist/worker.js",
+    "db:migrate": "node ../../packages/db/dist/migrate.js",
+    "db:seed": "node ../../packages/db/dist/seed.js"
   },
   "dependencies": {
     "@fastify/compress": "^9.2.2",

@@ -70,6 +70,20 @@ basic journal posting* are fixed; the remaining open items above are security/fi
 that must be closed before real money moves. This repository is a **v1.0 engineering baseline**, not a
 certified production system.
 
+### Round 3 — additional runtime defects found while executing the SQL (2026-10-20)
+
+Static review could not see these; a real PostgreSQL execution did. All are fixed and re-verified from a clean
+database (17/17 checks in `docs/VERIFICATION.md` §6):
+
+| ID | Defect | Fix |
+|---|---|---|
+| R3-RT-01 | GRANTs executed before the cluster roles were created → migration aborted | idempotent `CREATE ROLE` block emitted right after `CREATE SCHEMA` |
+| R3-RT-02 | Bare `bigint` primary keys without identity/default → seed `not-null` violation | generator emits identity only for surrogate keys named `id` |
+| R3-RT-03 | `ON CONFLICT` did not match partial unique indexes (`WHERE deleted_at IS NULL`) | seed repeats the predicate for soft-delete tables |
+| R3-RT-04 | Seed hard-coded `organizations.id = 1`; identity sequence advanced by failed runs | organization id resolved at runtime |
+| R3-RT-05 | `chain_audit()` could not resolve `public.digest()` under its `SECURITY DEFINER` search_path | all such functions use `search_path = erp, public, pg_temp` |
+| R3-RT-06 | `audit_chain_heads.organization_id` wrongly generated as identity | same identity-rule fix as R3-RT-02 |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning

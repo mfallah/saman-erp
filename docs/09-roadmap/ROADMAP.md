@@ -80,7 +80,7 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 
 | ID | Debt | Impact | Plan |
 |---|---|---|---|
-| TD-01 | Compose/Docker and migrations never executed (no daemon/DB in build env) | install risk | v1.1 item 1–3 |
+| TD-01 | Docker/Compose never executed (no daemon in build env). **Migration + seed are now executed and verified against a real local PostgreSQL 18.4** (17/17 checks, see `VERIFICATION.md` §6); PG16 + Docker boot still pending | install risk | v1.1 item 1–3 |
 | TD-02 | Module-level spec suites (413 tests) run through a broker shim here, not the repo harness; Vitest esbuild cannot spawn in this sandbox | test gate | CI `pnpm test:vitest` on a normal runner |
 | TD-03 | Web build needs `--configLoader native` + in-process transpile plugin in this sandbox (standard `vite build` on normal hosts) | build portability | verify standard build in CI |
 | TD-04 | 15 DB tables deferred (budgets, expenses, bank-reconciliation lines, alerts/fraud, profit-distribution, accounting doc types/links, KPI snapshots) | feature gaps | next migration batch |

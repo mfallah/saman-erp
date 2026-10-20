@@ -3,7 +3,19 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createDb } from './client.js';
 
-const MIGRATIONS_DIR = process.env.MIGRATIONS_DIR ?? resolve(process.cwd(), 'drizzle');
+const MIGRATIONS_DIR = process.env.MIGRATIONS_DIR ?? resolve(__dirname, '..', 'drizzle');
+
+/**
+ * DDL must run as the migration role, never the runtime (DML-only) role.
+ * Precedence: MIGRATIONS_DIR_URL_FILE -> MIGRATION_DATABASE_URL_FILE -> MIGRATION_DATABASE_URL -> DATABASE_URL.
+ */
+function adminUrl(): string | undefined {
+  const file = process.env.MIGRATIONS_DIR_URL_FILE ?? process.env.MIGRATION_DATABASE_URL_FILE;
+  if (file) return readFileSync(file, 'utf8').trim();
+  const direct = process.env.MIGRATION_DATABASE_URL;
+  if (direct && direct.length > 0) return direct;
+  return process.env.DATABASE_URL;
+}
 
 /**
  * Forward-only SQL migration runner.
@@ -11,7 +23,7 @@ const MIGRATIONS_DIR = process.env.MIGRATIONS_DIR ?? resolve(process.cwd(), 'dri
  * - applied versions tracked in public.schema_migrations with checksum;
  * - refuses to run if an applied migration's checksum changed (drift protection).
  */
-export async function migrate(url = process.env.DATABASE_URL): Promise<{ applied: string[]; skipped: string[] }> {
+export async function migrate(url = adminUrl()): Promise<{ applied: string[]; skipped: string[] }> {
   const sql = createDb(url);
   const applied: string[] = [];
   const skipped: string[] = [];

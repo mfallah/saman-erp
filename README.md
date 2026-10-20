@@ -29,7 +29,9 @@ docker compose --profile tools run --rm migrate node /app/packages/db/dist/seed.
 # open http://127.0.0.1:8080 — admin credentials are printed by the seed (BOOTSTRAP_ADMIN_*)
 ```
 
-> **Docker was not runnable in the build environment** — this quick start is the first thing to verify
+> **Verified locally:** TypeScript build/typecheck of all packages, 63 unit tests, and the full 5,729-line
+> migration + idempotent seed executed against a real PostgreSQL with 17/17 integrity checks
+> (`scripts/verify-db.cjs`). **Docker was not runnable in the build environment** — this quick start is the first thing to verify
 > on a real host. Full Persian guide: [`docs/06-deployment/INSTALL-FA.md`](docs/06-deployment/INSTALL-FA.md);
 > exact evidence of what was machine-verified: [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 

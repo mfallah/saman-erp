@@ -334,7 +334,9 @@ services:
       dockerfile: infra/docker/api.Dockerfile
       target: prod
     image: saman-erp/api:${IMAGE_TAG:-1.0.0}
-    command: ["pnpm", "db:migrate"]
+    # Migrations live in @saman/db; run its compiled runner (DDL role via MIGRATION_DATABASE_URL_FILE).
+    working_dir: /app
+    command: ["node", "/app/packages/db/dist/migrate.js"]
     env_file:
       - .env
     environment:

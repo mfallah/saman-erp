@@ -97,6 +97,14 @@ w('');
 w('CREATE EXTENSION IF NOT EXISTS pgcrypto;');
 w('CREATE EXTENSION IF NOT EXISTS btree_gist;');
 w('CREATE SCHEMA IF NOT EXISTS erp;');
+// Cluster-level roles must exist before any GRANT in this migration. This block is
+// idempotent and safe to run on managed PostgreSQL where the roles are pre-provisioned.
+w(`DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_app') THEN CREATE ROLE saman_app NOLOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_migrator') THEN CREATE ROLE saman_migrator NOLOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_worker') THEN CREATE ROLE saman_worker NOLOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saman_readonly') THEN CREATE ROLE saman_readonly NOLOGIN; END IF;
+END $$;`);
 w("SET search_path TO erp, public;");
 w("COMMENT ON SCHEMA erp IS 'Saman ERP business schema (single schema; module.table notation is ownership only)';");
 w('');
@@ -147,7 +155,15 @@ for (const T of TABLES) {
   const pkCols = [];
   for (const line of T.cols) {
     const c = parseCol(line);
-    if (c.pk) { pkCols.push(c.name); cols.push(`${ident(c.name)} ${c.rawType === 'textarr' ? 'text[]' : c.rawType === 'cidr' ? 'cidr[]' : c.type}${c.name === 'parent_table' ? '' : ''}`); }
+    if (c.pk) {
+      pkCols.push(c.name);
+      const pkType = c.rawType === 'textarr' ? 'text[]' : c.rawType === 'cidr' ? 'cidr[]' : c.type;
+      // Bare `bigint` primary keys without an explicit default are identity columns.
+      // Only surrogate keys named `id` are identity; named PKs (e.g. organization_id on
+      // single-row-per-org tables) are supplied by the caller.
+      const identity = c.rawType === 'bigint' && c.def === null && c.name === 'id' ? ' GENERATED ALWAYS AS IDENTITY' : '';
+      cols.push(`${ident(c.name)} ${pkType}${identity}`);
+    }
     else cols.push(`${ident(c.name)} ${c.type}${c.nn ? ' NOT NULL' : ''}${c.def !== null ? ' DEFAULT ' + sqlDefault(c.def) : ''}`);
     if (c.uq) constraints.push(`CONSTRAINT "uq_${table}_${c.name}" UNIQUE (${ident(c.name)})`);
     if (c.fk) constraints.push(`CONSTRAINT "fk_${table}_${c.name}" FOREIGN KEY (${ident(c.name)}) REFERENCES erp."${c.fk}" (id) ON DELETE ${(c.pd || 'restrict').toUpperCase()}`);
@@ -270,7 +286,7 @@ ALTER TABLE erp.accounting_periods ADD CONSTRAINT ex_accounting_periods_no_overl
 
 w('-- partition maintenance (SECURITY DEFINER, identifier-safe)');
 w(`CREATE OR REPLACE FUNCTION erp.ensure_month_partition(p_parent regclass, p_month date)
-RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE v_nsp text; v_rel text; v_part text;
         v_start timestamptz := date_trunc('month', p_month)::timestamptz;
         v_end timestamptz := (date_trunc('month', p_month) + interval '1 month')::timestamptz;
@@ -287,7 +303,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION erp.maintain_partitions(p_ahead_months integer DEFAULT 2)
-RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE r record; m date; created int := 0;
 BEGIN
   FOR r IN SELECT parent_table FROM erp.partitioned_tables_registry WHERE is_enabled LOOP
@@ -303,7 +319,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION erp.drain_default_partition(p_parent regclass, p_month date)
-RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE v_nsp text; v_rel text; v_part text; v_rows bigint;
 BEGIN
   SELECT n.nspname, c.relname INTO v_nsp, v_rel FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = p_parent;
@@ -341,7 +357,7 @@ END $$;`);
 
 w('-- audit hash chain (SECURITY DEFINER; only this function writes the chain columns + head)');
 w(`CREATE OR REPLACE FUNCTION erp.chain_audit(p_batch integer DEFAULT 500)
-RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, pg_temp AS $$
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = erp, public, pg_temp AS $$
 DECLARE r record; v_head record; v_prev char(64); v_seq bigint; v_hash char(64); v_next_id bigint; n int := 0;
 BEGIN
   SELECT * INTO v_head FROM erp.audit_chain_heads WHERE organization_id = 1 FOR UPDATE;
