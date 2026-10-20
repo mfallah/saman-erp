@@ -6,6 +6,7 @@ import { JournalService } from '../journal/journal.service';
 import type { JournalLineDto } from '../journal/journal.service';
 import { AppendJournalLineSchema, CreateJournalSchema, JournalFilterSchema, ReverseJournalSchema, UpdateJournalSchema, parseDto, toBigInt, toMoney } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
+import { RequireStepUp } from '../../../common/decorators/require-step-up.decorator';
 import { journalOut } from '../http/serialise';
 
 async function linesOf(
@@ -120,6 +121,7 @@ export class JournalController {
     return { data: journalOut(await this.journals.submit(ctx, await this.journals.resolveId(ctx, id))) };
   }
 
+  @RequireStepUp('accounting.journal.approve')
   @Post(':id/approve')
   @RequirePermissions('accounting.journal.approve')
   @ApiOperation({ summary: 'تأیید سند (تفکیک وظایف)' })
@@ -131,6 +133,7 @@ export class JournalController {
     return { data: journalOut(await this.journals.approve(ctx, await this.journals.resolveId(ctx, id), body.note)) };
   }
 
+  @RequireStepUp('accounting.journal.post')
   @Post(':id/post')
   @RequirePermissions('accounting.journal.post')
   @ApiOperation({ summary: 'ثبت سند: شماره، مانده‌ها و قفل سطرها' })
@@ -142,6 +145,7 @@ export class JournalController {
     return { data: journalOut(await this.journals.post(ctx, await this.journals.resolveId(ctx, id), body.postDate)) };
   }
 
+  @RequireStepUp('accounting.journal.reverse')
   @Post(':id/reverse')
   @RequirePermissions('accounting.journal.reverse')
   @ApiOperation({ summary: 'ایجاد سند برگشتی (بدون ویرایش سند ثبت‌شده)' })

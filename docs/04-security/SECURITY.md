@@ -1726,3 +1726,12 @@ v1.1 has **160 control IDs** (AUTH-01…17, AZ-01…18, IN-01…21, OUT-01…07,
 | 1.1 | 1405-07-27 | Security Lead | Round-1 remediation: 24 new control IDs + materially strengthened existing rows (160 total) — device secret, reset policy, JWT hardening, break-glass, registry conformance, role/scope step-up, approval-config protection, export/report authz, API-client auth, outbound webhook allowlist, upload constraints, import/PDF caps, channel-payload PII, file-download entity authz, secret-file delivery, vocabulary lookups + chain function, grant manifest, accounting-period/posting integrity, CI pinning, edge ports; canonical env names; evidence-triple sign-off (§9, 44 rows); revision log (§17); R1 routing D-11…D-23 (§16) |
 
 Review cadence: quarterly and on any trust-boundary/role/schema change. Change control: Security Lead approves changes to this document; the ASVS status column is updated at each release. Open items requiring decisions are tracked in `THREAT-MODEL.md` §9.3 (Q1–Q6). Round-2 re-review is gated on the §16 remaining dependencies landing in sibling documents.
+
+
+### Enforcement status (2026-10-20)
+
+- Step-up: enforced by the global `StepUpGuard` on journal approve/post/reverse,
+  inventory adjustment approve/post/void, user reset-password/roles and settings update.
+- OTP: single-use via a conditional `UPDATE … RETURNING` (no replay window).
+- Maker-checker: approver ≠ creator enforced in the journal service (403 verified live).
+- ScopeGuard: **not yet enforced** (TD-32).

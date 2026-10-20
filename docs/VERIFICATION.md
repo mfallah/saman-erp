@@ -352,3 +352,59 @@ event 32  inventory.adjustment.posted  (kind=count_gain, totalCostAmount=160000)
   (same class as RT-E2E-18) — **TD-29**.
 - packing/shipping/label endpoints do not exist yet (pick is the last implemented step) — **TD-30**.
 - Docker/Redis/PG16 on a real host still unexecuted — TD-01/TD-25.
+
+
+---
+
+## 10. Step-up enforcement, atomic OTP and transfer accounting (2026-10-20, round 3)
+
+### 10.1 Step-up guard (global, fail-closed)
+
+`@RequireStepUp(action)` + `StepUpGuard` registered as the third global guard.
+The proof must be a `step_up` JWT bound to the caller and the current session,
+carry the exact action, and be at most 300 s old.
+
+```text
+POST /accounting/journal-entries/:id/approve   without header → 401 STEP_UP_REQUIRED
+POST /accounting/journal-entries/:id/post      without header → 401 STEP_UP_REQUIRED
+POST /auth/step-up {action, password}          → 200 stepUpToken
+POST …/approve  with x-step-up-token            → guard passes → 403 (SoD: approver ≠ creator)
+POST …/post     with approve-action token       → 401 STEP_UP_REQUIRED (action mismatch)
+```
+
+Decorated routes: journal approve/post/reverse, adjustment approve/post/void,
+user reset-password/roles, settings update.
+
+### 10.2 OTP single-use (atomic)
+
+`consumeOtpChallenge()` is a conditional `UPDATE … WHERE consumed_at IS NULL
+AND status IN ('pending','verified') RETURNING id`; a losing concurrent request
+gets `OTP_INVALID`.
+
+```text
+verify correct code            → 200 access token
+replay the same challenge      → 422 OTP_INVALID
+```
+
+### 10.3 Inter-warehouse transfer accounting (TD-29)
+
+Dispatch stores the movement unit cost on the line, the receipt reuses it, and
+each side emits one canonical accounting event:
+
+```text
+TRF-2026-000002: submit → approve → dispatch → receive   all 200
+line unit_cost_amount = 113636
+JV-1405-000003  ارسال بین انبارها (کالای در راه)   Dr 113,636
+JV-1405-000004  دریافت بین انبارها                 Dr 113,636   (goods-in-transit cleared)
+outbox: all processed
+```
+
+Valuation runs now only emit an accounting event when the GL variance is non-zero
+(the rule rejects a zero variance by design); noted as TD-31 (variance needs a
+prior-GL snapshot to be meaningful).
+
+### 10.4 Still open
+
+- ScopeGuard (branch/warehouse row-level enforcement) — TD-32.
+- Packing/shipping modules — TD-30.
+- Docker/Redis/PG16 host verification — TD-01/TD-25.

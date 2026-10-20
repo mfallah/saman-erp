@@ -1016,6 +1016,7 @@ export class InventoryService {
       assertState(adjustment.status, ['applied'], 'adjustment_void');
       const lines = await this.repo.listAdjustmentLines(tx, toBigInt(adjustment.internalId));
       const ledgerIds: string[] = [];
+      let dispatchCostAmount = 0n;
       for (const line of lines) {
         if (compareQuantity(line.differenceQuantity, '0') === 0) continue;
         const inbound = compareQuantity(line.differenceQuantity, '0') > 0;
@@ -1146,6 +1147,7 @@ export class InventoryService {
       assertState(transfer.status, ['approved', 'pending_approval'], 'transfer_dispatch');
       const lines = await this.repo.listTransferLines(tx, toBigInt(transfer.internalId));
       const ledgerIds: string[] = [];
+      let dispatchCostAmount = 0n;
       for (const line of lines) {
         if (line.fromLocationId === null) {
           throw new AppError('RULE_VIOLATION', {
@@ -1166,6 +1168,7 @@ export class InventoryService {
           idempotencyKey: `trf-out:${transfer.id}:line:${line.id}`,
         });
         ledgerIds.push(movement.transaction.id);
+        dispatchCostAmount += movement.totalCostAmount;
         // Park the quantity in transit on the *source* balance row.
         const sourceBalance = await this.repo.lockBalances(tx, ctx.orgId, [
           {
@@ -1187,25 +1190,25 @@ export class InventoryService {
         await this.repo.updateTransferLine(tx, toBigInt(line.internalId), {
           dispatchedQuantity: line.quantity,
           receivedQuantity: line.receivedQuantity,
+          unitCostAmount: movement.unitCostAmount.toString(),
         });
       }
       await this.repo.updateTransferStatus(tx, toBigInt(transfer.internalId), {
         status: 'dispatched',
         dispatched: true,
       });
-      const payload: TransferPayload = {
-        transferId: transfer.id,
+      // Single canonical accounting event (TD-29): amounts + domain fields.
+      await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.transferDispatched, 'inventory_transfer', toBigInt(transfer.internalId), {
+        transferId: transfer.internalId.toString(),
+        transferPublicId: transfer.id,
         transferNo: transfer.transferNo,
         fromWarehouseId: transfer.fromWarehouseId,
         toWarehouseId: transfer.toWarehouseId,
+        totalCostAmount: dispatchCostAmount.toString(),
+        businessDate: todayIso(),
+        ledgerIds,
         status: 'dispatched',
-        ledgerIds,
-      };
-      await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.transferDispatched, 'inventory_transfer', toBigInt(transfer.internalId), {
-        transferId: transfer.id,
-        ledgerIds,
       });
-      await this.emitDomain(tx, ctx, INVENTORY_EVENTS.transferDispatched, 'inventory_transfer', toBigInt(transfer.internalId), payload);
       return this.getTransferInTx(tx, ctx, publicId);
     });
   }
@@ -1220,6 +1223,7 @@ export class InventoryService {
       assertState(transfer.status, ['dispatched', 'partially_received'], 'transfer_receive');
       const lines = await this.repo.listTransferLines(tx, toBigInt(transfer.internalId));
       const ledgerIds: string[] = [];
+      let receiveCostAmount = 0n;
       let allReceived = true;
       for (const received of body.lines) {
         const line = lines.find((candidate) => candidate.id === received.lineId);
@@ -1232,12 +1236,14 @@ export class InventoryService {
           variantId: line.variantId,
           type: 'transfer_in',
           quantity: received.receivedQuantity,
+          unitCostAmount: BigInt(line.unitCostAmount ?? '0'),
           referenceType: 'inventory_transfer',
           referenceId: transfer.id,
           referenceInternalId: toBigInt(transfer.internalId),
           idempotencyKey: `trf-in:${transfer.id}:line:${line.id}`,
         });
         ledgerIds.push(movement.transaction.id);
+        receiveCostAmount += movement.totalCostAmount;
         const receivedTotal = addQuantity(line.receivedQuantity, received.receivedQuantity);
         if (compareQuantity(receivedTotal, line.dispatchedQuantity) < 0) allReceived = false;
         await this.repo.updateTransferLine(tx, toBigInt(line.internalId), {
@@ -1272,10 +1278,17 @@ export class InventoryService {
         status,
         received: allReceived,
       });
-      if (allReceived) {
+      if (allReceived && receiveCostAmount > 0n) {
         await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.transferReceived, 'inventory_transfer', toBigInt(transfer.internalId), {
-          transferId: transfer.id,
+          transferId: transfer.internalId.toString(),
+          transferPublicId: transfer.id,
+          transferNo: transfer.transferNo,
+          fromWarehouseId: transfer.fromWarehouseId,
+          toWarehouseId: transfer.toWarehouseId,
+          totalCostAmount: receiveCostAmount.toString(),
+          businessDate: todayIso(),
           ledgerIds,
+          status,
         });
       }
       return this.getTransferInTx(tx, ctx, publicId);
@@ -1668,7 +1681,17 @@ export class InventoryService {
         costLayerCount: completed.costLayerCount,
         status: completed.status,
       };
-      await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.valuationPosted, 'inventory_valuation_run', toBigInt(completed.internalId), payload);
+      // The posting rule requires a non-zero variance; a pure revaluation with no
+      // GL difference produces no journal (documented in ROADMAP TD-29).
+      const valuationVariance = BigInt(completed.glInventoryAmount) - BigInt(completed.totalValueAmount);
+      if (valuationVariance !== 0n) {
+        await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.valuationPosted, 'inventory_valuation_run', toBigInt(completed.internalId), {
+          ...payload,
+          valuationRunId: completed.internalId.toString(),
+          varianceAmount: valuationVariance.toString(),
+          businessDate: todayIso(),
+        });
+      }
       await this.record(tx, ctx, 'inventory.valuation.run', 'inventory_valuation_run', completed.id, null, valuationRunView(completed));
       return valuationRunView(completed);
     });

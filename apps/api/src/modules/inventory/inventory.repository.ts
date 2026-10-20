@@ -1239,13 +1239,19 @@ export class InventoryRepository {
   async updateTransferLine(
     tx: Db,
     lineInternalId: bigint,
-    patch: { dispatchedQuantity: string; receivedQuantity: string; toLocationInternalId?: bigint | null },
+    patch: {
+      dispatchedQuantity: string;
+      receivedQuantity: string;
+      toLocationInternalId?: bigint | null;
+      unitCostAmount?: string | undefined;
+    },
   ): Promise<void> {
     await tx`
       update erp.inventory_transfer_lines
       set dispatched_qty = ${patch.dispatchedQuantity}::numeric,
           received_qty = ${patch.receivedQuantity}::numeric,
-          to_location_id = coalesce(${patch.toLocationInternalId ?? null}, to_location_id)
+          to_location_id = coalesce(${patch.toLocationInternalId ?? null}, to_location_id),
+          unit_cost_amount = coalesce(${patch.unitCostAmount ?? null}::bigint, unit_cost_amount)
       where id = ${lineInternalId}
     `;
   }

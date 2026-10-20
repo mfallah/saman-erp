@@ -5,6 +5,7 @@ import type { FastifyRequest } from 'fastify';
 
 import type { AuthenticatedActor } from '../../common/auth/authenticated-actor';
 import type { RequestWithContext } from '../../common/decorators/current-context.decorator';
+import { RequireStepUp } from '../../common/decorators/require-step-up.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { getRequestId } from '../../common/request-id/request-id';
 // AdminService is a DI value (constructor metadata), not only a type.
@@ -117,6 +118,7 @@ export class UsersAdminController {
     return this.admin.updateUser(actorOf(request), parse(idSchema, id), parse(updateUserSchema, body), metaOf(request));
   }
 
+  @RequireStepUp('admin.user.reset_password')
   @Post(':id/reset-password')
   @Permissions('user.reset_password')
   resetPassword(
@@ -133,6 +135,7 @@ export class UsersAdminController {
     );
   }
 
+  @RequireStepUp('admin.user.roles')
   @Put(':id/roles')
   @Permissions('role.assign')
   setRoles(@Param('id') id: string, @Body() body: unknown, @Req() request: FastifyRequest) {
@@ -276,6 +279,7 @@ export class SystemAdminController {
     return this.admin.settings(actorOf(request), group);
   }
 
+  @RequireStepUp('admin.settings.update')
   @Put('settings/:group')
   @Permissions('setting.update')
   updateSettings(@Param('group') group: string, @Body() body: unknown, @Req() request: FastifyRequest) {

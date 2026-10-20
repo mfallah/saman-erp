@@ -4,6 +4,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppConfigModule } from './config/config.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { PermissionsGuard } from './common/guards/permissions.guard';
+import { StepUpGuard } from './common/guards/step-up.guard';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingModule } from './common/logging/logging.module';
@@ -84,6 +85,8 @@ import { AutomationModule } from './modules/automation/automation.module';
     // and publishes the tenant context; PermissionsGuard is the second fail-closed layer.
     { provide: APP_GUARD, useClass: IdentityGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // Step-up third: only routes decorated with @RequireStepUp are affected.
+    { provide: APP_GUARD, useClass: StepUpGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor },
     { provide: APP_INTERCEPTOR, useClass: HttpMetricsInterceptor },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },

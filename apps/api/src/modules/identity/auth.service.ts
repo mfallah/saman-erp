@@ -277,7 +277,8 @@ export class AuthService {
       });
       throw new AppError('OTP_INVALID');
     }
-    await this.repository.updateOtpChallenge(challenge.id, { status: 'verified', consumed: true });
+    const consumed = await this.repository.consumeOtpChallenge(challenge.id);
+    if (!consumed) throw new AppError('OTP_INVALID');
 
     const user =
       challenge.userId === null ? null : await this.repository.findUserById(challenge.userId);
@@ -472,7 +473,7 @@ export class AuthService {
           attempts <= challenge.maxAttempts &&
           this.otpService.matches(challenge.codeHash, challenge.mobile, challenge.purpose, input.code);
         if (verified) {
-          await this.repository.updateOtpChallenge(challenge.id, { status: 'verified', consumed: true });
+          if (!(await this.repository.consumeOtpChallenge(challenge.id))) throw new AppError('STEP_UP_REQUIRED');
         }
       }
     }

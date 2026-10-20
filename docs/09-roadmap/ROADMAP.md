@@ -108,7 +108,9 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-26 | ~~Accounting DTOs accept internal numeric ids~~ | — | **CLOSED (v1.2.0)**: accounting DTO `Id` + journal/account resolution accept public uuid; legacy numeric accepted only internally |
 | TD-27 | ~~Full order→pick→ship E2E~~ | — | **PARTIAL (v1.2.0)**: order→confirm→reserve→wave→pick verified; packing/shipping endpoints absent (**TD-30**) |
 | TD-28 | Automatic journal posting from outbox events was not wired in the worker | core accounting | **CLOSED (v1.2.0)**: worker posts inventory events transactionally; journal JV-1405-000001 verified |
-| TD-29 | `inventory.transfer.*` / `inventory.valuation.posted` accounting payloads still have the RT-E2E-18 shape (domain payload, same event type) | accounting completeness | v1.2.x emitter parity + E2E |
+| TD-29 | ~~Transfer accounting payload parity~~ | — | **CLOSED (v1.2.1)**: dispatch/receive post JV-1405-000003/4 with cost from the line |
+| TD-31 | Valuation posting needs a prior-GL snapshot; a zero variance is rejected by the rule | valuation completeness | v1.3 snapshot-based variance |
+| TD-32 | No ScopeGuard: branch/warehouse scope is stored but not enforced on every route | row-level security | v1.2.x guard + query filters |
 | TD-30 | Packing / shipping / label modules not implemented (pick is the last warehouse step) | fulfillment completeness | v1.3 modules |
 
 ## Release process

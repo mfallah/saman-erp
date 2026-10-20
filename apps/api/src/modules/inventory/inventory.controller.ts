@@ -11,6 +11,7 @@ import type { TenantContext } from '../../common/contracts';
 import { CurrentTenant } from '../../common/decorators/current-context.decorator';
 import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
+import { RequireStepUp } from '../../common/decorators/require-step-up.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './inventory.pg-support';
@@ -167,6 +168,7 @@ export class InventoryController {
     return apiData(await this.service.submitAdjustment(ctx, id));
   }
 
+  @RequireStepUp('inventory.adjustment.approve')
   @Post('adjustments/:id/approve')
   @HttpCode(200)
   @Permissions('inventory.adjust.approve')
@@ -180,6 +182,7 @@ export class InventoryController {
     return apiData(await this.service.approveAdjustment(ctx, id, parseWith(ApproveBody, body)));
   }
 
+  @RequireStepUp('inventory.adjustment.post')
   @Post('adjustments/:id/post')
   @HttpCode(200)
   @Permissions('inventory.adjust.post')
@@ -189,6 +192,7 @@ export class InventoryController {
     return apiData(await this.service.postAdjustment(ctx, id));
   }
 
+  @RequireStepUp('inventory.adjustment.void')
   @Post('adjustments/:id/void')
   @HttpCode(200)
   @Permissions('inventory.adjust.post')

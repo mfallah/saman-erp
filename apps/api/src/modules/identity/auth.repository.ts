@@ -555,6 +555,21 @@ export class AuthRepository {
     return row === undefined ? 0 : Number(row['attempt_count']);
   }
 
+  /**
+   * Single-use consumption: the UPDATE only wins when the challenge is still
+   * unconsumed, so two concurrent verifications cannot both succeed.
+   */
+  async consumeOtpChallenge(challengeId: bigint): Promise<boolean> {
+    const rows = await this.sql`
+      update erp.otp_challenges
+         set status = 'consumed', verified_at = coalesce(verified_at, now()), consumed_at = now()
+       where id = ${challengeId} and consumed_at is null
+         and status in ('pending', 'verified')
+      returning id
+    `;
+    return rows[0] !== undefined;
+  }
+
   async updateOtpChallenge(
     challengeId: bigint,
     input: { status?: string; codeHash?: string; expiresAt?: Date; consumed?: boolean },

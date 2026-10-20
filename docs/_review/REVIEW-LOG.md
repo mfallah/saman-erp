@@ -129,6 +129,19 @@ static review could catch (all fixed except the last):
 | TD-29 | transfer/valuation accounting payload parity | open |
 | TD-30 | packing/shipping modules missing | open |
 
+### Round 5 — security hardening + transfer accounting (2026-10-20)
+
+| ID | Finding | Status |
+|---|---|---|
+| RT-SEC-01 | step-up tokens existed but were not enforced on sensitive routes | **fixed**: global `StepUpGuard` + decorator on 9 routes |
+| RT-SEC-02 | OTP verification read-then-update (replay window) | **fixed**: atomic `consumeOtpChallenge` |
+| RT-E2E-20 | transfer accounting events lacked amounts / duplicated event type | **fixed** (TD-29 transfers) |
+| RT-E2E-21 | transfer receipt rejected zero inbound cost | **fixed**: dispatch cost persisted on the line |
+| RT-E2E-22 | valuation rule rejects a zero variance | emit only when variance ≠ 0 (TD-31) |
+| TD-16 | OTP atomic consumption | **closed** |
+| TD-29 | transfer payload parity | **closed** (valuation part -> TD-31) |
+| TD-32 | ScopeGuard missing | open |
+
 ## Standing rules
 
 - A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning
