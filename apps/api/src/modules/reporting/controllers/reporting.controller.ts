@@ -2,7 +2,7 @@
 import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { ReportingService } from '../reporting.service';
+import type { ReportingService } from '../reporting.service';
 import { parseDto, toBigInt, RunReportSchema, CreateDefinitionSchema, CreateExportSchema } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
 

@@ -92,6 +92,17 @@ Status: ✅ shipped & machine-verified · 🟡 built, runtime-verification pendi
 | TD-10 | `payments.purpose` inferred from linked ids; cheque cancel/return reuse bounce accounting | domain fidelity | v1.2 |
 | TD-11 | Permission registry has no `export.create` / `accounting.journal.post_high_value` in some modules (threshold enforced via approval state) | authz fidelity | align in v1.1 |
 | TD-12 | Read-only cross-module projection joins in commerce repositories | boundary purity | reporting read models |
+| TD-13 | Remaining INSTALL-FA doc drift (env appendix subset, minio health expectation text, uid parity note) | installer friction | docs pass on first host run |
+| TD-14 | `@Audited` decorator has no interceptor consumer in some modules; audit rows are written explicitly by services only | audit completeness | wire a global audit interceptor in v1.1 |
+| TD-15 | OTP verify consumes code non-atomically (replay window) and device-secret rotation is not atomic | auth risk | `UPDATE … WHERE consumed_at IS NULL RETURNING` + tests |
+| TD-16 | Step-up token is issued but not enforced by a global guard on the sensitive-action list | authz risk | `StepUpGuard` + route matrix (ADR-0004 rev) |
+| TD-17 | No global ScopeGuard; branch/warehouse scoping is applied inside repositories only | cross-scope IDOR risk | ScopeGuard + repository scope audit |
+| TD-18 | Maker-checker threshold read from `system_settings` at post time; no `approval.config.manage` route and no DB `approval_id` constraint | financial-control risk | approval module + DB constraint (R1 B-04) |
+| TD-19 | Closed-period guard can be bypassed with a body-supplied post date | accounting integrity | derive period from `entry_date` + reject locked periods |
+| TD-20 | Audit hash chain covers ids/timestamps only; worker grants still allow audit lifecycle UPDATE | tamper-evidence gap | include content hash + tighten grants |
+| TD-21 | All DB roles share one password in the default compose init | least privilege | per-role password secrets |
+| TD-22 | Channel admin surface incomplete (no `/channels`, `/channel-accounts`, `/channel-sync-jobs` controllers); SPA channel page reports «در حال توسعه» | omnichannel operability | channels admin controllers (v1.1) |
+| TD-23 | BullMQ not installed; worker uses DB `job_runs` fallback queue | throughput | add BullMQ + Redis adapter (documented topology) |
 
 ## Release process
 

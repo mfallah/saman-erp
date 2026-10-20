@@ -20,7 +20,7 @@ import type { FastifyRequest } from 'fastify';
 
 import { AppError } from '@saman/shared';
 import { Public } from '../../../common/decorators/public.decorator';
-import { ChannelWebhookService } from '../services/channel-webhook.service';
+import type { ChannelWebhookService } from '../services/channel-webhook.service';
 
 export const RAW_BODY_ROUTE_KEY = 'saman:raw-body';
 

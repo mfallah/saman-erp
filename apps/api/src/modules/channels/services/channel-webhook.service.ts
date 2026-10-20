@@ -20,8 +20,8 @@ import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import type { KeyValueStore } from '../ports/key-value.port';
 import { KEY_VALUE } from '../channels.tokens';
-import { AdapterRegistry } from './adapter.registry';
-import { ChannelAccountService } from './channel-accounts.service';
+import type { AdapterRegistry } from './adapter.registry';
+import type { ChannelAccountService } from './channel-accounts.service';
 import {
   SqlChannelWebhookRepository,
   type WebhookEventRow,

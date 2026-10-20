@@ -414,7 +414,6 @@ export class JournalRepository {
     await tx`
       select id from erp.account_balances
        where period_id = ${input.periodId.toString()}
-         and dimension_value_id is null
          and account_id = any(${accountIds}::bigint[])
        order by account_id
        for update`;
@@ -427,8 +426,7 @@ export class JournalRepository {
                opening_credit_amount::text as opening_credit_amount
           from erp.account_balances
          where period_id = ${input.periodId.toString()}
-           and account_id = ${row.accountId.toString()}
-           and dimension_value_id is null`;
+           and account_id = ${row.accountId.toString()}`;
       const current = existing[0];
       const periodDebit = BigInt(current?.period_debit_amount ?? '0') + row.debit;
       const periodCredit = BigInt(current?.period_credit_amount ?? '0') + row.credit;
@@ -439,12 +437,12 @@ export class JournalRepository {
       if (current === undefined) {
         await tx`
           insert into erp.account_balances
-            (organization_id, fiscal_year_id, period_id, account_id, dimension_value_id,
+            (organization_id, fiscal_year_id, period_id, account_id,
              opening_debit_amount, opening_credit_amount, period_debit_amount, period_credit_amount,
              closing_debit_amount, closing_credit_amount, last_journal_line_id)
           values
             (${input.orgId.toString()}, ${input.fiscalYearId.toString()}, ${input.periodId.toString()},
-             ${row.accountId.toString()}, null, 0, 0, ${moneyParam(periodDebit)}, ${moneyParam(periodCredit)},
+             ${row.accountId.toString()}, 0, 0, ${moneyParam(periodDebit)}, ${moneyParam(periodCredit)},
              ${moneyParam(closingDebit)}, ${moneyParam(closingCredit)},
              ${input.lastJournalLineId === undefined ? null : input.lastJournalLineId.toString()}::bigint)`;
       } else {

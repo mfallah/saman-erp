@@ -7,9 +7,9 @@ import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../common/contracts';
 import { asDb, notFound, validation } from '../treasury/persistence/sql-support';
-import { ReportingRepository } from './reporting.repository';
+import type { ReportingRepository } from './reporting.repository';
 import type { ExportRecord, ReportDefinitionRecord, ReportRunRecord, WidgetRecord } from './reporting.repository';
-import { ReportingReadModel } from './read-model.repository';
+import type { ReportingReadModel } from './read-model.repository';
 import {
   assertReportPermissions,
   dashboardRequiredPermissions,

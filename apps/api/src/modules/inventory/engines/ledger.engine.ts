@@ -196,7 +196,7 @@ export function applyMovementToBalance(
 ): BalanceDelta {
   const signed = assertMovementDirection(input.type, input.quantity);
   const magnitude = absQuantity(signed);
-  let onHand = addQuantity(balance.onHand, signed);
+  const onHand = addQuantity(balance.onHand, signed);
   let damaged = balance.damaged;
   const inTransit = balance.inTransit;
   if (DAMAGE_TYPES.includes(input.type)) {

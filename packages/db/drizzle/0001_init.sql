@@ -5552,7 +5552,7 @@ CREATE TRIGGER trg_user_dashboard_widgets_version BEFORE UPDATE ON erp."user_das
 -- ============================================================================
 -- Hand-shaped integrity objects (journal balance, period derivation, partitioning, numbering)
 -- ============================================================================
-CREATE OR REPLACE FUNCTION erp.assert_journal_entry_balance() RETURNS void LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION erp.assert_journal_entry_balance() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE v_l int; v_d bigint; v_c bigint; v_h record;
 BEGIN
   SELECT total_debit_amount, total_credit_amount, status INTO v_h FROM erp.journal_entries WHERE id = NEW.id;
@@ -5565,6 +5565,7 @@ BEGIN
     IF v_d <> v_h.total_debit_amount OR v_c <> v_h.total_credit_amount THEN
       RAISE EXCEPTION 'JOURNAL_UNBALANCED: entry % header totals mismatch', NEW.id; END IF;
   END IF;
+  RETURN NEW;
 END $$;
 
 CREATE OR REPLACE FUNCTION erp.assert_journal_lines_balance() RETURNS trigger LANGUAGE plpgsql AS $$

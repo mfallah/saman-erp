@@ -26,7 +26,7 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './inventory.pg-support';
-import { InventoryService } from './inventory.service';
+import type { InventoryService } from './inventory.service';
 import {
   AdjustmentListQuery,
   ApproveBody,

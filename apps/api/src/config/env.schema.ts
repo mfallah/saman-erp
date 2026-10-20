@@ -134,10 +134,13 @@ const EnvSchema = z.object({
   databaseUrl: z.string().refine(isPostgresUrl, 'postgres:// URL expected').default(
     'postgres://saman_app:CHANGE_ME@postgres:5432/saman',
   ),
-  migrationDatabaseUrl: z
-    .string()
-    .refine(isPostgresUrl, 'postgres:// URL expected')
-    .default('postgres://saman_migrator:CHANGE_ME@postgres:5432/saman'),
+  migrationDatabaseUrl: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z
+      .string()
+      .refine(isPostgresUrl, 'postgres:// URL expected')
+      .default('postgres://saman_migrator:CHANGE_ME@postgres:5432/saman'),
+  ),
   dbSsl: boolFromEnv(false),
   dbSslCaPath: optionalString(),
   dbPoolMax: intFromEnv(20, 1, 500),

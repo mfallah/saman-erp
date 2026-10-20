@@ -11,7 +11,7 @@ import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
-import { WarehouseService } from './warehouse.service';
+import type { WarehouseService } from './warehouse.service';
 import {
   AssignTaskBody,
   BulkCreateLocationsBody,

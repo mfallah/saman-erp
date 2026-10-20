@@ -2,9 +2,9 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { PartnersService } from '../partners.service';
-import { ProfitDistributionService } from '../profit-distribution.service';
-import { SettlementsService } from '../settlements.service';
+import type { PartnersService } from '../partners.service';
+import type { ProfitDistributionService } from '../profit-distribution.service';
+import type { SettlementsService } from '../settlements.service';
 import {
   AdjustShareSchema,
   ConfirmSettlementSchema,

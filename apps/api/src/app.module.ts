@@ -15,6 +15,7 @@ import { HttpMetricsInterceptor } from './modules/metrics/http-metrics.intercept
 import { MetricsModule } from './modules/metrics/metrics.module';
 
 /* identity & access */
+import { IdentityGuard } from './modules/identity/identity.guard';
 import { IdentityModule } from './modules/identity/identity.module';
 
 /* commerce spine (catalog → inventory → sales → warehouse) */
@@ -79,6 +80,9 @@ import { AutomationModule } from './modules/automation/automation.module';
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    // Authentication first: verifies the access token, loads the session/permissions
+    // and publishes the tenant context; PermissionsGuard is the second fail-closed layer.
+    { provide: APP_GUARD, useClass: IdentityGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestLoggingInterceptor },
     { provide: APP_INTERCEPTOR, useClass: HttpMetricsInterceptor },

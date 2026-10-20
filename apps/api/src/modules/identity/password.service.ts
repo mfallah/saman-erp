@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Algorithm, hash, verify } from '@node-rs/argon2';
+import { scryptSync, timingSafeEqual } from 'node:crypto';
 
 /** Argon2id parameters from `SECURITY.md` (64 MB, 3 iterations, 1 lane). */
 const ARGON2_OPTIONS = {
@@ -48,6 +49,12 @@ export class PasswordService {
   }
 
   async verifyPassword(passwordHash: string, plaintext: string): Promise<boolean> {
+    // Bootstrap/admin seed hashes are dependency-free scrypt (`scrypt$N$r$p$salt$hash`)
+    // because the DB package must run without native modules. Argon2id is used for
+    // every password written by the API; both formats verify here.
+    if (passwordHash.startsWith('scrypt$')) {
+      return verifyScryptHash(passwordHash, plaintext);
+    }
     try {
       return await verify(passwordHash, plaintext, ARGON2_OPTIONS);
     } catch {
@@ -89,4 +96,18 @@ export class PasswordService {
     }
     return false;
   }
+}
+
+/** scrypt fallback for bootstrap-seeded passwords (see packages/db/src/crypto.ts). */
+function verifyScryptHash(stored: string, plaintext: string): boolean {
+  const parts = stored.split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+  const N = Number(parts[1]);
+  const r = Number(parts[2]);
+  const p = Number(parts[3]);
+  const salt = Buffer.from(parts[4] ?? '', 'base64');
+  const expected = Buffer.from(parts[5] ?? '', 'base64');
+  if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p) || expected.length === 0) return false;
+  const actual = scryptSync(plaintext, salt, expected.length, { N, r, p });
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }

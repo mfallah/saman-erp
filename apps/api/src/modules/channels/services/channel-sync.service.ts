@@ -26,7 +26,7 @@ import { withTransaction, asNumber, asString } from '../infrastructure/sql';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import { CHANNEL_PRICE_SOURCE, type ChannelPriceSourcePort } from '../ports/channel-price.port';
-import { ChannelAccountService } from './channel-accounts.service';
+import type { ChannelAccountService } from './channel-accounts.service';
 import {
   SqlChannelSyncRepository,
   type SyncJobRow,

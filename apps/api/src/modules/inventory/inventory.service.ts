@@ -27,10 +27,12 @@ import {
   type EventPort,
   type TenantContext,
 } from '../../common/contracts';
-import { CatalogLookupService, type VariantLookup } from '../catalog/product.service';
+import type { CatalogLookupService} from '../catalog/product.service';
+import { type VariantLookup } from '../catalog/product.service';
 import type { Db } from './inventory.pg-support';
 import { notFound, parseIfMatch, toBigInt, versionConflict } from './inventory.pg-support';
-import { InventoryRepository, type AdjustmentRow, type BalanceRow, type LedgerRow, type ReservationRow } from './inventory.repository';
+import type { InventoryRepository} from './inventory.repository';
+import { type AdjustmentRow, type BalanceRow, type LedgerRow, type ReservationRow } from './inventory.repository';
 import {
   INVENTORY_ACCOUNTING_EVENTS,
   INVENTORY_EVENTS,

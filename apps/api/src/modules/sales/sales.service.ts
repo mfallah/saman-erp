@@ -18,12 +18,14 @@ import {
   type EventPort,
   type TenantContext,
 } from '../../common/contracts';
-import { CatalogLookupService, type VariantLookup } from '../catalog/product.service';
-import { InventoryService } from '../inventory/inventory.service';
+import type { CatalogLookupService} from '../catalog/product.service';
+import { type VariantLookup } from '../catalog/product.service';
+import type { InventoryService } from '../inventory/inventory.service';
 import type { Db } from './sales.pg-support';
 import { notFound, parseIfMatch, toBigInt, versionConflict } from './sales.pg-support';
+import type {
+  SalesRepository} from './sales.repository';
 import {
-  SalesRepository,
   type AddressRow,
   type CustomerRow,
   type InvoiceRow,

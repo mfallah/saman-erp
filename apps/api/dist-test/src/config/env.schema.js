@@ -119,10 +119,10 @@ const EnvSchema = zod_1.z.object({
     loginLockMinutes: intFromEnv(15, 1, 24 * 60),
     // --- Database ------------------------------------------------------------
     databaseUrl: zod_1.z.string().refine(isPostgresUrl, 'postgres:// URL expected').default('postgres://saman_app:CHANGE_ME@postgres:5432/saman'),
-    migrationDatabaseUrl: zod_1.z
+    migrationDatabaseUrl: zod_1.z.preprocess((value) => (value === '' ? undefined : value), zod_1.z
         .string()
         .refine(isPostgresUrl, 'postgres:// URL expected')
-        .default('postgres://saman_migrator:CHANGE_ME@postgres:5432/saman'),
+        .default('postgres://saman_migrator:CHANGE_ME@postgres:5432/saman')),
     dbSsl: boolFromEnv(false),
     dbSslCaPath: optionalString(),
     dbPoolMax: intFromEnv(20, 1, 500),

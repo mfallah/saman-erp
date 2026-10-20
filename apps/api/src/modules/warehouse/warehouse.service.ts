@@ -16,14 +16,15 @@ import {
   type EventPort,
   type TenantContext,
 } from '../../common/contracts';
-import { CatalogLookupService } from '../catalog/product.service';
-import { InventoryService } from '../inventory/inventory.service';
+import type { CatalogLookupService } from '../catalog/product.service';
+import type { InventoryService } from '../inventory/inventory.service';
 import { addQuantity, compareQuantity, subQuantity } from '../inventory/engines/quantity.engine';
-import { SalesService } from '../sales/sales.service';
+import type { SalesService } from '../sales/sales.service';
 import type { Db } from './warehouse.pg-support';
 import { notFound, toBigInt } from './warehouse.pg-support';
+import type {
+  WarehouseRepository} from './warehouse.repository';
 import {
-  WarehouseRepository,
   type LocationRow,
   type PickTaskRow,
   type PickWaveRow,

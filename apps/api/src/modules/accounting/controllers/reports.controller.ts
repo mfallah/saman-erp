@@ -2,7 +2,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { AccountingReportsService } from '../reports/accounting-reports.service';
+import type { AccountingReportsService } from '../reports/accounting-reports.service';
 import {
   BalanceQuerySchema,
   JournalBookQuerySchema,

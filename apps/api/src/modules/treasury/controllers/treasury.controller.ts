@@ -2,10 +2,10 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { PaymentService } from '../payments/payment.service';
-import { ChequeService } from '../cheque/cheque.service';
-import { BankService } from '../bank/bank.service';
-import { CashService } from '../cash/cash.service';
+import type { PaymentService } from '../payments/payment.service';
+import type { ChequeService } from '../cheque/cheque.service';
+import type { BankService } from '../bank/bank.service';
+import type { CashService } from '../cash/cash.service';
 import {
   AllocatePaymentSchema,
   CloseCashSessionSchema,

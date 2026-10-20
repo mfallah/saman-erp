@@ -43,3 +43,6 @@ playwright-report/
 test-results/
 blob-report/
 .dsh/
+
+dist-check/
+tsconfig.check.*

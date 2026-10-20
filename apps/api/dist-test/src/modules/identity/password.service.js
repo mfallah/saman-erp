@@ -9,6 +9,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PasswordService = void 0;
 const common_1 = require("@nestjs/common");
 const argon2_1 = require("@node-rs/argon2");
+const node_crypto_1 = require("node:crypto");
 /** Argon2id parameters from `SECURITY.md` (64 MB, 3 iterations, 1 lane). */
 const ARGON2_OPTIONS = {
     algorithm: 2 /* Algorithm.Argon2id */,
@@ -37,6 +38,12 @@ let PasswordService = class PasswordService {
         return (0, argon2_1.hash)(plaintext, ARGON2_OPTIONS);
     }
     async verifyPassword(passwordHash, plaintext) {
+        // Bootstrap/admin seed hashes are dependency-free scrypt (`scrypt$N$r$p$salt$hash`)
+        // because the DB package must run without native modules. Argon2id is used for
+        // every password written by the API; both formats verify here.
+        if (passwordHash.startsWith('scrypt$')) {
+            return verifyScryptHash(passwordHash, plaintext);
+        }
         try {
             return await (0, argon2_1.verify)(passwordHash, plaintext, ARGON2_OPTIONS);
         }
@@ -83,3 +90,18 @@ exports.PasswordService = PasswordService;
 exports.PasswordService = PasswordService = __decorate([
     (0, common_1.Injectable)()
 ], PasswordService);
+/** scrypt fallback for bootstrap-seeded passwords (see packages/db/src/crypto.ts). */
+function verifyScryptHash(stored, plaintext) {
+    const parts = stored.split('$');
+    if (parts.length !== 6 || parts[0] !== 'scrypt')
+        return false;
+    const N = Number(parts[1]);
+    const r = Number(parts[2]);
+    const p = Number(parts[3]);
+    const salt = Buffer.from(parts[4] ?? '', 'base64');
+    const expected = Buffer.from(parts[5] ?? '', 'base64');
+    if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p) || expected.length === 0)
+        return false;
+    const actual = (0, node_crypto_1.scryptSync)(plaintext, salt, expected.length, { N, r, p });
+    return actual.length === expected.length && (0, node_crypto_1.timingSafeEqual)(actual, expected);
+}

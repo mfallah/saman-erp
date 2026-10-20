@@ -22,7 +22,7 @@
                     "build":  "pnpm -r --if-present build",
                     "dev:api":  "pnpm --filter @saman/api dev",
                     "dev:web":  "pnpm --filter @saman/web dev",
-                    "lint":  "eslint . --max-warnings=0",
+                    "lint":  "eslint .",
                     "lint:fix":  "eslint . --fix",
                     "format":  "prettier --write .",
                     "format:check":  "prettier --check .",

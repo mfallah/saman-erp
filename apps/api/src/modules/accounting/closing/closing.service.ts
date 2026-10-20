@@ -16,9 +16,9 @@ import { ACCOUNTS } from '../posting/accounts';
 import { computeClosing } from '../posting/closing.rules';
 import { buildDraft, credit, debit } from '../posting/types';
 import type { PostingDraft } from '../posting/types';
-import { PostingService } from '../posting/posting.service';
-import { FiscalCalendarRepository } from '../periods/fiscal-calendar.repository';
-import { ClosingRepository } from './closing.repository';
+import type { PostingService } from '../posting/posting.service';
+import type { FiscalCalendarRepository } from '../periods/fiscal-calendar.repository';
+import type { ClosingRepository } from './closing.repository';
 import type { ClosingRunRecord } from './closing.repository';
 
 export interface ClosingRunResult {

@@ -49,7 +49,7 @@ export async function migrate(url = process.env.DATABASE_URL): Promise<{ applied
   }
 }
 
-/* eslint-disable @typescript-eslint/no-var-requires */
+ 
 declare const require: NodeJS.Require;
 declare const module: NodeJS.Module;
 

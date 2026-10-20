@@ -1,45 +1,79 @@
 # Design Review Log — Saman ERP
 
-This directory is the audit trail for the mandatory design-review gate. Nothing is
-"approved" without a recorded round, findings, and resolution. Reviews are run by
-independent reviewers (fresh context, adversarial stance) who did not author the docs.
+This directory is the audit trail for the review gates. Nothing is "approved" without a
+recorded round, findings, and resolution. Reviews are run by independent reviewers (fresh
+context, adversarial stance) who did not author the artifacts.
 
 ## Process
 
-1. **Round 1 — correctness & domain truth** (DB shape, accounting/inventory logic, security/authz).
-2. **Round 2 — implementability & scale** (API↔DB↔tests consistency, performance/concurrency, ops/deploy).
-3. **Round 3 — red team & requirements gap** (exploitation attempts, source-document coverage, "fresh engineer can implement").
-After each round: findings are triaged (fix / defer with reason), docs are patched to the next version, and the disposition is recorded below. Only after Round 3 with zero open blockers does implementation of that area continue (foundation work may proceed in parallel where reviews cannot invalidate it).
+1. **Round 1 — design correctness & domain truth** (DB, accounting/inventory, security).
+   Findings are triaged (fix / defer with reason); docs are patched to the next version.
+2. **Round 2 — design implementability & scale** (performance/concurrency; operational feasibility).
+3. **Round 3 — adversarial code & handover review** (red-team of the delivered code; owner
+   requirements + installability dry-run).
+Implementation then proceeds only for areas whose design has no open blocker; implementation
+defects found in Round 3 are tracked in §"Round 3 remediation" and the roadmap debt ledger.
 
-## Round 1 — 2026-10-19
+## Round 1 — 2026-10-19 (design, three reviewers)
 
 | Reviewer | Focus | File | Findings | Verdict |
 |---|---|---|---|---|
-| R1-A | Data model / PostgreSQL correctness | [`round-1/R1-datamodel.md`](round-1/R1-datamodel.md) | 48 (10 Blocker, 19 High, 14 Medium, 5 Low) | reject |
-| R1-B | Accounting, treasury, inventory costing | [`round-1/R1-accounting.md`](round-1/R1-accounting.md) | 57 (16 Blocker, 14 High, 21 Medium, 6 Low) | not releasable |
-| R1-C | Security & authorization (adversarial) | [`round-1/R1-security.md`](round-1/R1-security.md) | 33 (6 Blocker, 12 High, 10 Medium, 5 Low) | not releasable |
+| R1-A | Data model / PostgreSQL correctness | [`round-1/R1-datamodel.md`](round-1/R1-datamodel.md) | 48 (10 Blocker, 19 High, 14 Medium, 5 Low) | reject → fixed in DATA-MODEL v1.1 |
+| R1-B | Accounting, treasury, inventory costing | [`round-1/R1-accounting.md`](round-1/R1-accounting.md) | 57 (16 Blocker, 14 High, 21 Medium, 6 Low) | not releasable → fixed in v1.1 |
+| R1-C | Security & authorization (adversarial) | [`round-1/R1-security.md`](round-1/R1-security.md) | 33 (6 Blocker, 12 High, 10 Medium, 5 Low) | not releasable → fixed in v1.1 |
 
-**Round-1 total: 138 findings, 32 blockers.** All 32 blockers are design-fixed in v1.1; non-blocker deferrals are recorded in each owning document's `## Revision log`.
+**Round-1 total: 138 findings, 32 blockers.** All 32 blockers were resolved in design v1.1
+(`docs/02-data-model`, `docs/03-api-contract`, `docs/04-security`, ADRs 0004/0006/0008/0009/0012).
+Non-blocker deferrals are recorded in each owning document's `## Revision log`.
 
-### Disposition summary
+## Round 2 — 2026-10-19 (design, performance/scale)
 
-| Finding group | Resolution | Patched in |
+| Reviewer | Focus | File | Findings |
+|---|---|---|---|
+| R2-A | Performance, concurrency, capacity envelope | [`round-2/R2-performance.md`](round-2/R2-performance.md) | 41 (7 Blocker, 11 High, 10 Medium, 6 observability, 7 Low) |
+
+Key accepted design changes: ordered B-tree on partitioned ledgers (`created_at DESC, id DESC`) and a
+7-day default ledger window; canonical `UPDATE … WHERE available >= qty` + `lock_timeout` for allocation;
+two-phase outbox claim with parallel handlers; sampled request logging; split Redis queue/cache memory
+budgets; channel-sync job batching; streaming exports with row caps. Capacity verdict: the single-host
+OLTP envelope is feasible once those are implemented.
+**R2 operational-feasibility review was folded into Round 3's install dry-run** (no separate file).
+
+## Round 3 — 2026-10-20 (delivered code + handover)
+
+| Reviewer | Focus | File | Findings | Verdict |
+|---|---|---|---|---|
+| R3-A | Red-team of delivered code | [`round-3/R3-redteam.md`](round-3/R3-redteam.md) | 40 (10 Blocker, 11 High, 12 Medium, 7 Low) | not releasable at review time |
+| R3-B | Owner requirements + installability dry-run | [`round-3/R3-requirements-install.md`](round-3/R3-requirements-install.md) | 12 requirement rows, 16 false/unsupported claims, 9 install blockers | not handover-ready at review time |
+
+### Round 3 remediation (applied on top of the reviewed commit)
+
+| Finding | Status | Change |
 |---|---|---|
-| R1-B B-01…B-07 (sale/purchase VAT & COGS, GRNI, settlement, contra accounts, CoA manifest, negative available, FIFO layers) | fixed in design: versioned posting rule sets + complete Dr/Cr matrix, GRNI/clearing/VAT accounts, exact CoA manifest with asserted count, balance check constraint, cost-layer ledger | DATA-MODEL v1.1 |
-| R1-B B-08…B-14 (closing entries, period ranges, posting DSL, return VAT credit notes, invoice rounding, cheque FSM, payment allocation/clearing) | fixed in design | DATA-MODEL v1.1 |
-| R1-C B-01 (phase status claimed shipped) | fixed: ARCHITECTURE §17 statuses are now honest; SECURITY §9 requires per-control evidence links | ARCHITECTURE v1.1 |
-| R1-C B-02…B-04 (device trust keyed on client fingerprint, password-reset policy, maker-checker bypass) | fixed in API + DB + SECURITY | API v1.1, DATA-MODEL v1.1, SECURITY v1.1 |
-| R1-C B-05 (audit not tamper-evident) | fixed: hash chain, SECURITY DEFINER chain function, grant manifest, 10-year retention | DATA-MODEL/SECURITY v1.1 |
-| R1-C B-06 (permission registry drift 314 vs 412) | fixed: single generated registry in `packages/shared/permissions.ts`, docs reference it | API/DATA-MODEL v1.1 |
-| R1-C High/Medium (H-01…H-12, M-01…M-08) | fixed or explicitly deferred with compensating control (see security doc revision log) | SECURITY v1.1, API v1.1 |
-| R1-B High/Medium/Low | fixed where schema/posting-relevant; UX/report polish items deferred to roadmap | DATA-MODEL v1.1 |
+| R3-A B-01 IdentityGuard not registered → all authenticated routes 401 | **fixed** | `app.module.ts` registers `IdentityGuard` as the first `APP_GUARD` (tenant context + session check), `PermissionsGuard` second |
+| R3-A B-02 migration rejected: journal-balance function `RETURNS void` bound as constraint trigger | **fixed** | generator emits `RETURNS trigger` + `RETURN NEW;`; `0001_init.sql` regenerated |
+| R3-A B-03 journal post fails: `account_balances.dimension_value_id` does not exist | **fixed** | dimension filters/inserts removed from `journal.repository.ts` |
+| R3-A B-04 seeded admin cannot log in (scrypt seed vs Argon2-only verify) | **fixed** | `password.service.ts` verifies seeded `scrypt$…` hashes and Argon2id for new passwords |
+| R3-B B1 `gen-secrets.sh` broken escape (unmatched backtick) | **fixed** | script repaired; production mode now also sets `SMS_MODE=limo` and a real `CORS_ORIGINS` |
+| R3-B B2 boot guards reject blanked `MIGRATION_DATABASE_URL` | **fixed** | env schema accepts empty value (file-based `*_FILE` in compose); API no longer requires DDL URL |
+| R3-B B3 `migrate` service runs nonexistent `pnpm db:migrate` | **fixed** | service runs `node /app/packages/db/dist/migrate.js`; API image ships `@saman/db` |
+| R3-B B4 production image lacks `packages/db` / migrations in wrong path | **fixed** | Dockerfile copies + builds `packages/db`, ships `dist/` + `drizzle/`; `migrate`/`seed` resolve migrations relative to the package |
+| R3-B B5 DDL runs with the runtime role | **fixed** | `migrate`/`seed` prefer `MIGRATION_DATABASE_URL(_FILE)`; compose passes the migrator secret |
+| R3-B B6 no git tag | **fixed** | `v1.0.0` tag published with this commit |
+| R3-B B7 env appendix/var drift, B8 health expectations, B9 uid parity | **partially fixed / documented** | `.env.example` is canonical; remaining doc drift listed in `09-roadmap` TD-01/TD-13 |
+| R3-B F11 missing user guide | **fixed** | `docs/08-user-guide/GUIDE-FA.md` added |
+| R3-B F1-F10 false ROADMAP claims | **fixed** | `09-roadmap/ROADMAP.md` rewritten with truthful per-area statuses |
+| R3-A B-05 `@Audited` no consumer; B-06 OTP replay race; B-07 step-up guard absent; B-08 maker-checker threshold race; B-09 no ScopeGuard (cross-warehouse IDOR); B-10 closed-period via body date; H-01 audit chain content; H-02 shared DB passwords; H-06 SMS delivery path | **open — v1.1 release blockers** | tracked in `09-roadmap` TD-14…TD-20; do **not** treat the system as production-ready until closed |
 
-## Round 2 — pending
-
-## Round 3 — pending
+**Round-3 verdict after remediation:** the reviewed blockers that prevented *schema creation, login and
+basic journal posting* are fixed; the remaining open items above are security/financial-control defects
+that must be closed before real money moves. This repository is a **v1.0 engineering baseline**, not a
+certified production system.
 
 ## Standing rules
 
-- A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning document with a compensating control, and it appears in `09-roadmap/ROADMAP.md` technical-debt ledger.
-- Any change to an accepted ADR is recorded as a dated revision in that ADR, never silently.
-- Re-review triggers: schema change to journal/audit/inventory/auth tables, new integration, new role class, any security incident.
+- A finding may be **deferred** only if: it is not a blocker, the deferral is written in the owning
+  document with a compensating control, and it appears in the roadmap debt ledger.
+- Changes to accepted ADRs are recorded as dated revisions in that ADR, never silently.
+- Re-review triggers: schema change to journal/audit/inventory/auth tables, new integration, new role
+  class, any security incident, or a production incident postmortem.

@@ -14,7 +14,7 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './sales.pg-support';
-import { SalesService } from './sales.service';
+import type { SalesService } from './sales.service';
 import {
   AllocateOrderBody,
   CancelOrderBody,

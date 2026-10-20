@@ -20,12 +20,18 @@
 
 ```bash
 git clone https://github.com/mfallah/saman-erp.git && cd saman-erp
-cp .env.example .env          # then edit: secrets, DOMAIN, DB_PASSWORD
-docker compose up -d --build  # postgres, redis, minio, api, worker, web
-docker compose exec api pnpm db:migrate
-docker compose exec api pnpm db:seed
-# open http://localhost:8080  (default admin: see .env / docs/06-deployment/INSTALL-FA.md)
+git checkout v1.0.0
+cp .env.example .env
+./scripts/gen-secrets.sh        # builds ./secrets/* and fills .env (then edit DOMAIN/Limo/channel keys)
+docker compose up -d --build   # postgres, redis, minio, api, worker, web
+docker compose --profile tools run --rm migrate                    # schema (migrator role)
+docker compose --profile tools run --rm migrate node /app/packages/db/dist/seed.js  # roles, permissions, CoA, admin
+# open http://127.0.0.1:8080 — admin credentials are printed by the seed (BOOTSTRAP_ADMIN_*)
 ```
+
+> **Docker was not runnable in the build environment** — this quick start is the first thing to verify
+> on a real host. Full Persian guide: [`docs/06-deployment/INSTALL-FA.md`](docs/06-deployment/INSTALL-FA.md);
+> exact evidence of what was machine-verified: [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
 Full Persian installation guide — database setup, TLS, backups, upgrades:
 [`docs/06-deployment/INSTALL-FA.md`](docs/06-deployment/INSTALL-FA.md)

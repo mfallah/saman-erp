@@ -7,14 +7,14 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../common/contracts';
-import { PostingService } from '../accounting/posting/posting.service';
-import { JournalService } from '../accounting/journal/journal.service';
-import { FiscalCalendarRepository } from '../accounting/periods/fiscal-calendar.repository';
-import { ClosingRepository } from '../accounting/closing/closing.repository';
+import type { PostingService } from '../accounting/posting/posting.service';
+import type { JournalService } from '../accounting/journal/journal.service';
+import type { FiscalCalendarRepository } from '../accounting/periods/fiscal-calendar.repository';
+import type { ClosingRepository } from '../accounting/closing/closing.repository';
 import { asDb, notFound, validation } from '../treasury/persistence/sql-support';
 import type { SqlSession } from '../accounting/persistence/sql-support';
 import { computeDistribution } from './profit-distribution';
-import { ProfitRepository } from './profit.repository';
+import type { ProfitRepository } from './profit.repository';
 import type { ProfitLineRecord, ProfitRunRecord } from './profit.repository';
 
 export interface RunDistributionInput {

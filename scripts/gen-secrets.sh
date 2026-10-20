@@ -123,12 +123,19 @@ if [[ "$DEV" -eq 1 ]]; then
 else
   # Production: crown secrets are files only; blank them in .env so they never
   # sit in the Compose environment or `docker inspect` output.
-  replace_key JWT_ACCESS_SECRET              ""`n  replace_key MIGRATION_DATABASE_URL          ""
+  replace_key JWT_ACCESS_SECRET              ""
+  replace_key MIGRATION_DATABASE_URL          ""
   replace_key APP_ENCRYPTION_KEY             ""
   replace_key REDIS_PASSWORD                 ""
   replace_key BACKUP_ENCRYPTION_PASSPHRASE   ""
   replace_key OTP_PEPPER                     ""
   replace_key REFRESH_PEPPER                 ""
+  # Production must use the real SMS provider and a real origin; otherwise the
+  # API boot-guards refuse to start (see docs/06-deployment/INSTALL-FA.md).
+  replace_key SMS_MODE "limo"
+  if grep -q "^CORS_ORIGINS=https://erp.example.com" "$ENV_FILE"; then
+    replace_key CORS_ORIGINS "https://erp.carexy.shop"
+  fi
 fi
 
 chmod 600 "$ENV_FILE"

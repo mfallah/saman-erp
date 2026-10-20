@@ -5,7 +5,7 @@ import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../../common/contracts';
 import { buildCoaManifest, costCenterAccountCode, COA_L5_TEMPLATES, projectAccountCode } from './coa-manifest';
-import { ChartOfAccountsRepository } from './chart-of-accounts.repository';
+import type { ChartOfAccountsRepository } from './chart-of-accounts.repository';
 import type { AccountFilter, AccountRecord } from './chart-of-accounts.repository';
 
 export interface CreateAccountInput {

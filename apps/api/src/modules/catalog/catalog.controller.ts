@@ -26,8 +26,8 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import type { TenantContext } from '../../common/contracts';
-import { CatalogService } from './catalog.service';
-import { ProductService } from './product.service';
+import type { CatalogService } from './catalog.service';
+import type { ProductService } from './product.service';
 import { parseIfMatch } from './pg-support';
 import { IdParam, parseWith } from './dto/common';
 import {

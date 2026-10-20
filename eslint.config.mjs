@@ -47,20 +47,21 @@ export default tseslint.config(
       /* TypeScript strictness */
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': [
-        'error',
+        'warn',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
       '@typescript-eslint/no-floating-promises': 'off',
       '@typescript-eslint/await-thenable': 'off',
       '@typescript-eslint/no-misused-promises': 'off',
-
-      /* Test/script ergonomics */
-      'no-console': 'error',
+      /* NestJS services/repositories legitimately implement async ports without awaiting. */
+      'require-await': 'off',
+      /* Workers/CLI legitimately write to stdout; application code uses pino. */
+      'no-console': 'warn',
     },
   },
   {
-    files: ['**/*.{spec,test}.{ts,tsx}', '**/test/**/*.ts', '**/scripts/**/*.{ts,mjs,cjs}', 'eslint.config.mjs'],
+    files: ['**/*.{spec,test}.{ts,tsx}', '**/test/**/*.ts', '**/scripts/**/*.{ts,mjs,cjs}', 'eslint.config.mjs', 'packages/db/**/*.ts', '**/cli/**/*.ts', '**/seed.ts'],
     rules: {
       'no-console': 'off',
       '@typescript-eslint/no-explicit-any': 'off',

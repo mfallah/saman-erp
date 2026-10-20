@@ -9,10 +9,10 @@ import type { Db } from '../common/contracts';
 import type { AppLogger } from '../modules/channels/ports/logger.port';
 import type { OutboxStorePort } from './queue/outbox.store';
 import { OutboxDispatcher, type OutboxHandler } from './queue/outbox.dispatcher';
-import { DatabaseJobQueue } from './queue/job-queue';
-import { ChannelSyncService } from '../modules/channels/services/channel-sync.service';
-import { OutboundWebhookService } from '../modules/channels/services/outbound-webhook.service';
-import { NotificationsService } from '../modules/notifications/services/notifications.service';
+import type { DatabaseJobQueue } from './queue/job-queue';
+import type { ChannelSyncService } from '../modules/channels/services/channel-sync.service';
+import type { OutboundWebhookService } from '../modules/channels/services/outbound-webhook.service';
+import type { NotificationsService } from '../modules/notifications/services/notifications.service';
 import {
   NotificationJobPayload,
   OutboundWebhookJobPayload,

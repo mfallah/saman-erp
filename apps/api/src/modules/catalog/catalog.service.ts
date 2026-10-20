@@ -20,7 +20,8 @@ import {
 } from '../../common/contracts';
 import type { Db } from './pg-support';
 import { CATALOG_EVENTS, type CategoryEventPayload } from './catalog.events';
-import { CatalogRepository, type AttributeRow, type BrandRow, type CategoryRow, type UnitRow } from './catalog.repository';
+import type { CatalogRepository} from './catalog.repository';
+import { type AttributeRow, type BrandRow, type CategoryRow, type UnitRow } from './catalog.repository';
 import {
   assertReciprocalPair,
   assertValidPrecision,

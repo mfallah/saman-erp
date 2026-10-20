@@ -13,7 +13,8 @@ import {
   VOICE_OTP_PER_DAY,
 } from '../limo/limo.constants';
 import { LimoError } from '../limo/limo.errors';
-import { LimoSmsClient, estimateSmsSegments } from '../limo/limo.client';
+import type { LimoSmsClient} from '../limo/limo.client';
+import { estimateSmsSegments } from '../limo/limo.client';
 import type { KeyValueStore } from '../infrastructure/key-value';
 import type { Logger } from '../infrastructure/logger';
 import type { SmsRepositoryPort } from './sms.repository';

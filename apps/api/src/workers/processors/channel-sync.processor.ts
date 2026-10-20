@@ -7,7 +7,7 @@ import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@ne
 import { DB, type Db } from '../../common/contracts';
 import type { AppLogger } from '../../modules/channels/ports/logger.port';
 import { LOGGER } from '../../modules/channels/ports/logger.port';
-import { ChannelSyncService } from '../../modules/channels/services/channel-sync.service';
+import type { ChannelSyncService } from '../../modules/channels/services/channel-sync.service';
 import { getWorkerMetrics } from '../metrics';
 
 @Injectable()

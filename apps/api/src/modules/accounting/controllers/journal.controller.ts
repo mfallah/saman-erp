@@ -2,7 +2,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { JournalService } from '../journal/journal.service';
+import type { JournalService } from '../journal/journal.service';
 import type { JournalLineDto } from '../journal/journal.service';
 import {
   AppendJournalLineSchema,

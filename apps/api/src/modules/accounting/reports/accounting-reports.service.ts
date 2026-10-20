@@ -2,10 +2,10 @@
 import { Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import type { TenantContext } from '../../../common/contracts';
-import { JournalRepository } from '../journal/journal.repository';
+import type { JournalRepository } from '../journal/journal.repository';
 import { ACCOUNTS } from '../posting/accounts';
-import { AccountingReportsRepository, signedBalanceOf } from './accounting-reports.repository';
-import type { BalanceRow, CashFlowRow, JournalBookRow, LedgerLineRow } from './accounting-reports.repository';
+import { signedBalanceOf } from './accounting-reports.repository';
+import type { BalanceRow, CashFlowRow, JournalBookRow, LedgerLineRow , AccountingReportsRepository} from './accounting-reports.repository';
 
 export interface TrialBalanceRow {
   readonly accountCode: string;

@@ -68,3 +68,36 @@ docker compose --profile backup up -d backup && ./scripts/restore-drill.sh
 
 A green result of §4 on the target host is the acceptance criterion for v1.0 deployment; §1 is what has
 been machine-verified so far.
+
+
+---
+
+## 5. Post-review remediation (2026-10-20, after Round-3)
+
+Round-3 found four code-level release blockers. Fixes applied and re-verified:
+
+| Fix | Change | Evidence |
+|---|---|---|
+| R3-A B-01 | `IdentityGuard` registered as the first global `APP_GUARD` (session/permission-version check + tenant context); `PermissionsGuard` second | `apps/api/src/app.module.ts`; full API typecheck/build **0 errors** |
+| R3-A B-02 | Journal-balance function now `RETURNS trigger` (`RETURN NEW;`), SQL regenerated | `packages/db/drizzle/0001_init.sql`; generator deterministic |
+| R3-A B-03 | Removed nonexistent `account_balances.dimension_value_id` from journal posting SQL | `journal.repository.ts`; grep count 0 |
+| R3-A B-04 | Password verification accepts seeded `scrypt$…` hashes **and** Argon2id | `password.service.ts` |
+| R3-B B1–B5 | `gen-secrets.sh` parse error fixed; production `SMS_MODE=limo`/real origin; API image ships `@saman/db`; `migrate` service runs compiled runner; `migrate`/`seed` resolve `MIGRATION_DATABASE_URL(_FILE)` and the package-relative `drizzle/` dir | `scripts/gen-secrets.sh`, `infra/docker/api.Dockerfile`, `docker-compose.yml`, `packages/db/src/{migrate,seed}.ts` |
+| R3-B F11 | Persian user guide added | `docs/08-user-guide/GUIDE-FA.md` |
+| R3-B F1–F10 | Roadmap statuses rewritten truthfully; 11 new debt entries (TD-13…TD-23) for remaining gaps | `docs/09-roadmap/ROADMAP.md` |
+
+Final machine-verified state after remediation (commands from §1, re-run):
+
+```text
+shared typecheck/build ........ exit 0
+db typecheck/build ............ exit 0
+api typecheck ................. 0 errors
+api production build .......... exit 0 (dist/main.js, dist/worker.js)
+web typecheck ................. 0 errors
+shared unit tests ............. 43 pass / 0 fail
+api platform tests ............ 20 pass / 0 fail
+sql generation ................ deterministic (1,348-line migration, 414 permission keys)
+```
+
+**Still not verified here:** Docker stack boot, PostgreSQL migration/seed execution, E2E, load tests.
+**Open release blockers (not security-certified):** TD-14…TD-21 in `09-roadmap/ROADMAP.md`.

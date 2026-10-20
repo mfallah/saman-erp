@@ -6,6 +6,7 @@
  * - Account settings can never override signature headers/algorithm (H-03).
  */
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 
 import { AppError } from '@saman/shared';
 import {
@@ -20,7 +21,8 @@ import { IntegrationError } from '../domain/channel.types';
 import type { AdapterAccount } from '../domain/channel.types';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
-import { AdapterRegistry, type ResolvedAdapterAccount } from './adapter.registry';
+import type { AdapterRegistry} from './adapter.registry';
+import { type ResolvedAdapterAccount } from './adapter.registry';
 import {
   SqlChannelAccountRepository,
   type ChannelAccountRow,
@@ -90,6 +92,7 @@ export class ChannelAccountService {
   ): Promise<ResolvedAdapterAccount> {
     const row = await this.get(organizationId, accountId);
     const credentials = await this.decryptActive(row.id);
+    await this.auditCredentialRead(row, Object.keys(credentials));
     return this.registry.resolve(row, credentials);
   }
 
@@ -99,7 +102,25 @@ export class ChannelAccountService {
   ): Promise<ResolvedAdapterAccount> {
     const row = await this.accounts.findByPublicId(organizationId, accountPublicId);
     if (row === null) throw new AppError('NOT_FOUND');
-    return this.registry.resolve(row, await this.decryptActive(row.id));
+    const credentials = await this.decryptActive(row.id);
+    await this.auditCredentialRead(row, Object.keys(credentials));
+    return this.registry.resolve(row, credentials);
+  }
+
+  /** Credential reads are a `critical` security event (ADR-0008 §5). */
+  private async auditCredentialRead(
+    row: ChannelAccountRow,
+    keyNames: readonly string[],
+  ): Promise<void> {
+    await this.audit?.record(this.db, {
+      action: 'channel.credential.read',
+      entityType: 'channel_account',
+      entityId: row.id,
+      orgId: BigInt(row.organizationId),
+      actorId: null,
+      requestId: randomUUID(),
+      meta: { keys: keyNames },
+    });
   }
 
   /** Decrypted secrets, valid only for the duration of an adapter call. */

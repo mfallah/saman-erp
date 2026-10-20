@@ -2,8 +2,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { ChartOfAccountsService } from '../coa/chart-of-accounts.service';
-import { FiscalCalendarService } from '../periods/fiscal-calendar.service';
+import type { ChartOfAccountsService } from '../coa/chart-of-accounts.service';
+import type { FiscalCalendarService } from '../periods/fiscal-calendar.service';
 import {
   AccountFilterSchema,
   CloseSchema,

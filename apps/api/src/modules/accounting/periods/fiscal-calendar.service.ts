@@ -11,7 +11,7 @@ import {
   generateMonthlyPeriods,
   isPostingBlocked,
 } from './fiscal-calendar';
-import { FiscalCalendarRepository } from './fiscal-calendar.repository';
+import type { FiscalCalendarRepository } from './fiscal-calendar.repository';
 import type { FiscalYearRecord, PeriodRecord } from './fiscal-calendar.repository';
 
 export interface CreateFiscalYearInput {

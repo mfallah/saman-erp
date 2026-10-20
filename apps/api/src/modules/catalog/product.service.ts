@@ -30,8 +30,9 @@ import {
   type ProductEventPayload,
   type VariantEventPayload,
 } from './catalog.events';
-import { CatalogRepository } from './catalog.repository';import {
-  ProductRepository,
+import type { CatalogRepository } from './catalog.repository';import type {
+  ProductRepository} from './product.repository';
+import {
   type BarcodeRow,
   type CostHistoryRow,
   type PriceHistoryRow,

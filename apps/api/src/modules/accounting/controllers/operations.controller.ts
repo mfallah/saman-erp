@@ -2,9 +2,9 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
-import { ClosingService } from '../closing/closing.service';
-import { TaxService } from '../tax/tax.service';
-import { ValuationService } from '../valuation/valuation.service';
+import type { ClosingService } from '../closing/closing.service';
+import type { TaxService } from '../tax/tax.service';
+import type { ValuationService } from '../valuation/valuation.service';
 import {
   CloseSchema,
   CreateTaxDocumentSchema,
