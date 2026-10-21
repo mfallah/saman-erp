@@ -65,7 +65,7 @@ COPY --from=build /app/packages/db/package.json ./packages/db/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY infra/docker/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 RUN mkdir -p /app/apps/api/tmp && chown -R node:node /app
 USER 1000:1000
 WORKDIR /app/apps/api
