@@ -242,7 +242,7 @@ export class ReportingRepository {
       module: string; config: unknown; required_permission_key: string | null; cache_seconds: number; is_active: boolean;
     }[]>`
       select id::text as id, public_id::text as public_id, code, name_fa, widget_type, module,
-             config, required_permission_key, cache_seconds, is_active
+             config, required_permissions[1] as required_permission_key, cache_seconds, is_active
         from erp.dashboard_widgets
        where organization_id = ${orgId.toString()}
          and (${filter.module ?? null}::text is null or module = ${filter.module ?? null})
