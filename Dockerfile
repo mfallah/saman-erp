@@ -17,7 +17,8 @@ ARG PNPM_VERSION=11.6.0
 FROM node:${NODE_VERSION}-alpine AS base
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
-    CI=false
+    CI=false \
+    VITE_API_BASE=/api/v1
 RUN corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate \
  && apk add --no-cache tini libcap \
@@ -44,7 +45,8 @@ COPY packages/db ./packages/db
 COPY apps/api ./apps/api
 RUN pnpm --filter @saman/shared build \
  && pnpm --filter @saman/db build \
- && pnpm --filter @saman/api build
+ && pnpm --filter @saman/api build \
+ && pnpm --filter @saman/web build
 
 # -----------------------------------------------------------------------------
 # prod: minimal runtime, production dependencies only, non-root
@@ -63,6 +65,7 @@ COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/packages/db ./packages/db
 RUN rm -rf ./packages/shared/src ./packages/db/src
 COPY --from=build /app/apps/api/dist ./apps/api/dist
+COPY --from=build /app/apps/web/dist ./web-dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY infra/docker/entrypoint.sh /app/entrypoint.sh
 RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh

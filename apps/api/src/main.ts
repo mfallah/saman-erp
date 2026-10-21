@@ -6,6 +6,7 @@ import type { FastifyServerOptions } from 'fastify';
 
 import { AppModule } from './app.module';
 import { configureApp, JSON_BODY_LIMIT_BYTES } from './bootstrap';
+import { registerWebUi } from './common/web-ui';
 import { loadConfig, type AppConfig } from './config/env.schema';
 import { LOGGER, type AppLogger } from './common/logging/logger.token';
 import { PinoNestLogger } from './common/logging/nest-logger.service';
@@ -36,6 +37,11 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks(); // closes the postgres pool and redis client (onModuleDestroy)
   process.once('SIGTERM', () => shutdown(logger, 'SIGTERM'));
   process.once('SIGINT', () => shutdown(logger, 'SIGINT'));
+
+  // The admin SPA is bundled into the image; serve it from the same origin.
+  const webRoot = process.env['WEB_DIST'] ?? '/app/web-dist';
+  const served = registerWebUi(app.getHttpAdapter().getInstance(), webRoot);
+  if (served) logger.info({ webRoot }, 'web_ui_registered');
 
   await app.listen(config.port, config.host);
   const version = getAppVersion();
