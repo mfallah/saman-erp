@@ -21,7 +21,8 @@ ENV PNPM_HOME=/pnpm \
     CI=false
 RUN corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate \
- && apk add --no-cache tini
+ && apk add --no-cache tini libcap
+ && setcap cap_net_bind_service=+ep /usr/local/bin/node
 WORKDIR /app
 
 # -----------------------------------------------------------------------------
