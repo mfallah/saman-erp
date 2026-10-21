@@ -17,7 +17,7 @@ ARG PNPM_VERSION=11.6.0
 FROM node:${NODE_VERSION}-alpine AS base
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
-    CI=true
+    CI=false
 RUN corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate \
  && apk add --no-cache tini
