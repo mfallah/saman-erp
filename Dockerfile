@@ -28,7 +28,7 @@ WORKDIR /app
 # deps: full workspace install (cache-friendly, lockfile enforced)
 # -----------------------------------------------------------------------------
 FROM base AS deps
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
@@ -51,7 +51,7 @@ RUN pnpm --filter @saman/shared build \
 # -----------------------------------------------------------------------------
 FROM base AS prod
 ENV NODE_ENV=production
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
 COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
