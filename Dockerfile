@@ -43,6 +43,7 @@ FROM deps AS build
 COPY packages/shared ./packages/shared
 COPY packages/db ./packages/db
 COPY apps/api ./apps/api
+COPY apps/web ./apps/web
 RUN pnpm --filter @saman/shared build \
  && pnpm --filter @saman/db build \
  && pnpm --filter @saman/api build \
