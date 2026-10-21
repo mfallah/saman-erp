@@ -41,5 +41,13 @@
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f --tail=200",
     "docker:ps": "docker compose ps"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "ignoredBuiltDependencies": [
+      "@scarf/scarf"
+    ]
   }
 }
