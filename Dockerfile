@@ -74,13 +74,3 @@ LABEL org.opencontainers.image.title="saman-erp-api" \
       org.opencontainers.image.description="Saman ERP API and worker (NestJS + Fastify)" \
       org.opencontainers.image.licenses="UNLICENSED"
 ENTRYPOINT ["/sbin/tini", "--", "/app/entrypoint.sh"]
-
-# -----------------------------------------------------------------------------
-# dev: hot-reload target for docker-compose.dev.yml (source is bind-mounted)
-# -----------------------------------------------------------------------------
-FROM build AS dev
-ENV NODE_ENV=development
-USER 1000:1000
-WORKDIR /app
-EXPOSE 4000 9229
-CMD ["pnpm", "dev:api"]
