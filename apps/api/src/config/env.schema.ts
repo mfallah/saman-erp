@@ -93,6 +93,8 @@ const EnvSchema = z.object({
   appEnv: z.enum(['development', 'test', 'staging', 'production']).default('production'),
   appName: z.string().min(1).default('Saman ERP'),
   port: intFromEnv(4000, 1, 65535),
+  /** Managed DB (Chabakan/RDS): one owner user runs both runtime and DDL. */
+  dbManaged: boolFromEnv(false),
   host: z.string().min(1).default('0.0.0.0'),
   appUrl: z.string().url().default('https://erp.carexy.shop'),
   apiPrefix: z
@@ -378,6 +380,7 @@ export function assertProductionSafety(config: AppConfig): void {
     problems.push('CORS_ORIGINS contains a wildcard or placeholder origin.');
   }
 
+  if (!config.dbManaged) {
   const runtimeUser = parsePostgresUser(config.databaseUrl);
   if (runtimeUser === undefined) {
     problems.push('DATABASE_URL must contain a runtime role user.');
@@ -392,6 +395,7 @@ export function assertProductionSafety(config: AppConfig): void {
     if (migrationUser !== undefined && migrationUser === runtimeUser) {
       problems.push('DATABASE_URL and MIGRATION_DATABASE_URL must use different roles.');
     }
+  }
   }
 
   if (problems.length > 0) {

@@ -16,6 +16,10 @@
 
 </p>
 
+## Deployment on Chabakan (Docker PaaS)
+
+Full Persian guide: [docs/06-deployment/CHABAKAN-FA.md](docs/06-deployment/CHABAKAN-FA.md).
+
 ## Quick start (production, Docker)
 
 ```bash

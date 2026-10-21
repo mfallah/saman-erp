@@ -66,15 +66,16 @@ COPY --from=build /app/packages/db/drizzle ./packages/db/drizzle
 COPY --from=build /app/packages/db/package.json ./packages/db/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
+COPY infra/docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 RUN mkdir -p /app/apps/api/tmp && chown -R node:node /app
 USER 1000:1000
 WORKDIR /app/apps/api
-EXPOSE 4000
+EXPOSE 3000
 LABEL org.opencontainers.image.title="saman-erp-api" \
       org.opencontainers.image.description="Saman ERP API and worker (NestJS + Fastify)" \
       org.opencontainers.image.licenses="UNLICENSED"
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/main.js"]
+ENTRYPOINT ["/sbin/tini", "--", "/app/entrypoint.sh"]
 
 # -----------------------------------------------------------------------------
 # dev: hot-reload target for docker-compose.dev.yml (source is bind-mounted)
