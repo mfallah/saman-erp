@@ -60,11 +60,11 @@ COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
 RUN --mount=type=cache,id=saman-pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --prod --filter "@saman/api..."
+# Keep workspace node_modules: pnpm links runtime deps (zod/postgres) per package,
+# so stripping them makes shared/db unloadable in the prod image.
 COPY --from=build /app/packages/shared ./packages/shared
-RUN rm -rf ./packages/shared/node_modules ./packages/shared/src
-COPY --from=build /app/packages/db/dist ./packages/db/dist
-COPY --from=build /app/packages/db/drizzle ./packages/db/drizzle
-COPY --from=build /app/packages/db/package.json ./packages/db/package.json
+COPY --from=build /app/packages/db ./packages/db
+RUN rm -rf ./packages/shared/src ./packages/db/src
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY infra/docker/entrypoint.sh /app/entrypoint.sh
