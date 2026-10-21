@@ -33,7 +33,7 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # -----------------------------------------------------------------------------
 # build: compile api + shared
@@ -56,7 +56,7 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
-RUN pnpm install --frozen-lockfile --prod --filter "@saman/api..."
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod --filter "@saman/api..."
 COPY --from=build /app/packages/shared ./packages/shared
 RUN rm -rf ./packages/shared/node_modules ./packages/shared/src
 COPY --from=build /app/packages/db/dist ./packages/db/dist
