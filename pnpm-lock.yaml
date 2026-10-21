@@ -130,7 +130,7 @@ importers:
         specifier: ^3.10.0
         version: 3.10.0(react-hook-form@7.90.0(@types/react@19.3.0)(react@19.3.1))
       '@tanstack/history':
-        specifier: ^1.120.0
+        specifier: 1.162.5
         version: 1.162.5
       '@tanstack/query-core':
         specifier: ^5.66.0
@@ -141,12 +141,18 @@ importers:
       '@tanstack/react-router':
         specifier: ^1.120.0
         version: 1.170.45(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@tanstack/react-store':
+        specifier: ^0.11.2
+        version: 0.11.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@tanstack/react-table':
         specifier: ^8.21.0
         version: 8.21.3(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@tanstack/router-core':
-        specifier: ^1.120.0
+        specifier: 1.171.38
         version: 1.171.38
+      '@tanstack/store':
+        specifier: 0.11.2
+        version: 0.11.2
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -165,6 +171,9 @@ importers:
       recharts:
         specifier: ^2.15.1
         version: 2.15.4(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      use-sync-external-store:
+        specifier: ^1.6.0
+        version: 1.7.0(react@19.3.1)
       zod:
         specifier: ^3.24.1
         version: 3.25.76

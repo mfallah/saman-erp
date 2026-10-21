@@ -14,18 +14,21 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
-    "@tanstack/history": "^1.120.0",
+    "@tanstack/history": "1.162.5",
     "@tanstack/query-core": "^5.66.0",
     "@tanstack/react-query": "^5.66.0",
     "@tanstack/react-router": "^1.120.0",
+    "@tanstack/react-store": "^0.11.2",
     "@tanstack/react-table": "^8.21.0",
-    "@tanstack/router-core": "^1.120.0",
+    "@tanstack/router-core": "1.171.38",
+    "@tanstack/store": "0.11.2",
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.54.2",
     "recharts": "^2.15.1",
+    "use-sync-external-store": "^1.6.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
