@@ -22,7 +22,7 @@ Saman ERP از سه فرآیند تشکیل شده است:
 |---|---|
 | **PostgreSQL** | دیتابیس اصلی (۲۲۶ جدول، مایگریشن‌ها) |
 | **Redis** | صف/کش/نرخ‌محدودیت و `health/ready` |
-| **MinIO (S3)** | فایل‌ها، پیوست‌ها، خروجی گزارش‌ها |
+| **MinIO / S3** | فایل‌ها، پیوست‌ها، خروجی گزارش‌ها (اگر MinIO آماده نبود، Docker یا S3 بیرونی — بخش ۴) |
 
 **سبد خرید پیشنهادی (برای شروع واقعی، نه تست):**
 
@@ -32,7 +32,7 @@ Saman ERP از سه فرآیند تشکیل شده است:
 | ۲ | هاست ابری Docker — `saman-worker` | **برنز** (۱GB RAM، ۰٫۷۵ هسته، ۷GB) | ۶۷۶٬۴۷۶ |
 | ۳ | دیتابیس PostgreSQL — `saman-db` | **نقره** (۲GB RAM، ۱۰GB) | ۱٬۰۵۴٬۷۲۸ |
 | ۴ | دیتابیس Redis | **اقتصادی** | ۲۰۲٬۴۶۴ |
-| ۵ | MinIO (برنامه آماده) | **اقتصادی** | ~۲۰۲٬۴۶۴ (در پنل چک کنید) |
+| ۵ | MinIO: اگر «برنامه آماده» موجود نبود، یک سرویس **Docker** اقتصادی برای MinIO | **اقتصادی** | ۲۰۲٬۴۶۴ (یا S3 بیرونی) |
 | ۶ | هاست Static — `saman-web` | ارزان‌ترین پلن | در پنل چک کنید |
 
 \* قیمت‌ها از صفحهٔ محصولات چابکان (اکتبر ۲۰۲۶) و **پیش از مالیات** هستند؛ مبلغ نهایی در هاب/سبد خرید نشان داده می‌شود:
@@ -100,31 +100,91 @@ redis://:PASSWORD@HOST:PORT/0
 
 ---
 
-## ۴) ساخت MinIO (S3) و باکت
+## ۴) فضای ذخیره‌سازی (S3) — وقتی MinIO آماده در دسترس نیست
 
-1. **ساخت سرویس جدید ← برنامه‌های آماده ← Minio**.
-2. از داشبورد: `Endpoint`، `Access Key`، `Secret Key` (و در صورت وجود، دامنهٔ عمومی).
-3. یک باکت به نام **`saman-files`** بسازید (از کنسول MinIO یا `mc`):
+سرویس آمادهٔ **Minio** در چابکان همیشه موجود نیست. سه گزینه دارید؛ به ترتیب اولویت:
 
-```bash
-mc alias set chabakan https://MINIO_HOST ACCESS_KEY SECRET_KEY
-mc mb chabakan/saman-files
+### گزینهٔ ۱ (توصیه‌شده): MinIO را خودتان روی یک سرویس Docker اجرا کنید
+
+همان پنل Docker که برای API استفاده می‌کنید، هر ایمیجی را اجرا می‌کند — پس MinIO را خودتان بسازید:
+
+1. **ساخت سرویس جدید ← هاست ابری ← Docker** → نام `saman-minio` → پلن **اقتصادی/پایه**.
+2. روش استقرار: «Dockerfile شخصی» و محتوای فایل [`deploy/chabakan/minio.Dockerfile`](../../deploy/chabakan/minio.Dockerfile) را بگذارید (کلیدها را عوض کنید):
+
+```dockerfile
+FROM minio/minio:latest
+ENV MINIO_ROOT_USER=CHANGE_ME_ACCESS_KEY
+ENV MINIO_ROOT_PASSWORD=CHANGE_ME_SECRET_KEY
+EXPOSE 9000 9001
+CMD ["server", "/data", "--console-address", ":9001"]
 ```
 
-4. مقادیر برای اپ:
+3. **دیسک‌ها ← افزودن دیسک** → مقصد `/data` (فضای MinIO اینجا پایدار می‌ماند).
+4. **پورت‌ها**: داخلی `9000` (S3 API) و داخلی `9001` (کنسول) را باز کنید و به هرکدام یک دامنه/ساب‌دامنه بدهید:
+   - `minio-api.carexy.shop` → پورت 9000
+   - `minio-console.carexy.shop` → پورت 9001
+5. وارد کنسول (`https://minio-console...`) شوید، با `MINIO_ROOT_USER/PASSWORD` لاگین کنید و باکت **`saman-files`** را بسازید (یا از `mc`).
+6. مقادیر اپ:
 
 ```text
-S3_ENDPOINT=https://MINIO_HOST
+S3_ENDPOINT=https://minio-api.carexy.shop
+S3_REGION=us-east-1
+S3_BUCKET=saman-files
+S3_ACCESS_KEY=<MINIO_ROOT_USER>
+S3_SECRET_KEY=<MINIO_ROOT_PASSWORD>
+S3_FORCE_PATH_STYLE=true
+```
+
+> ✅ مزیت: همه‌چیز داخل چابکان می‌ماند، بدون وابستگی به سرویس آمادهٔ MinIO.
+> پورت ۹۰۰۰ باید از سرویس API قابل دسترسی باشد (اینترنت/دامنهٔ عمومی کافی است).
+
+### گزینهٔ ۲: سرویس «فایل S3» چابکان (اگر در پنل دیده می‌شود)
+
+مستندات چابکان برای Django/Laravel از «سرویس فایل S3» با `Bucket-Endpoint` / `Access-Key` / `Secret-Key` صحبت می‌کند.
+اگر در پنل شما زیر **فضای ذخیره‌سازی** یا **برنامه‌های آماده** گزینهٔ S3 وجود داشت، همان را بسازید و:
+
+```text
+S3_ENDPOINT=https://<Bucket-Endpoint>
+S3_BUCKET=<Bucket-Name>
+S3_ACCESS_KEY=<Access-Key>
+S3_SECRET_KEY=<Secret-Key>
+S3_FORCE_PATH_STYLE=true
+```
+
+📚 [مستند اتصال S3 چابکان (Django)](https://docs.chabokan.net/simple-hosting/django/cloud-storage/)
+
+### گزینهٔ ۳: Object Storage بیرونی سازگار با S3
+
+اگر خواستید از چابکان خارج شوید، هر سرویس S3-compatible کار می‌کند؛ دو گزینهٔ رایج ایرانی:
+
+**آروان‌کلاد** (Endpoint بر اساس منطقه):
+
+```text
+S3_ENDPOINT=https://s3.ir-thr-at1.arvanstorage.ir   # یا https://s3.ir-tbz-sh1.arvanstorage.ir
+S3_REGION=ir-thr-at1
+S3_BUCKET=saman-files
+S3_ACCESS_KEY=...
+S3_SECRET_KEY=...
+S3_FORCE_PATH_STYLE=true
+```
+
+📚 [SDK فضای ابری آروان](https://docs.arvancloud.ir/fa/developer-tools/sdk/object-storage/) · [محدودیت‌ها](https://docs.arvancloud.ir/fa/object-storage/limits)
+
+**لیارا** (سازگار کامل با S3):
+
+```text
+S3_ENDPOINT=https://storage.iran.liara.space
 S3_REGION=us-east-1
 S3_BUCKET=saman-files
 S3_ACCESS_KEY=...
 S3_SECRET_KEY=...
 S3_FORCE_PATH_STYLE=true
-# اختیاری: اگر فایل‌ها باید مستقیم از دامنهٔ MinIO سرو شوند
-# S3_PUBLIC_BASE_URL=https://MINIO_HOST/saman-files
 ```
 
-📚 مرجع: [MinIO در چابکان](https://docs.chabokan.net/storage/minio/install/)
+📚 [Object Storage لیارا](https://docs.liara.ir/object-storage/about/)
+
+> قبل از استقرار، با `mc` یا AWS CLI یک `put`/`get` ساده روی باکت بزنید تا Endpoint/کلید/Path-Style درست باشد.
+> بعد از تغییر `S3_*` سرویس API و Worker را Restart کنید.
 
 ---
 
