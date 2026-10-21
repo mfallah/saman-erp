@@ -8,6 +8,9 @@
 set -eu
 
 ROLE="${APP_ROLE:-api}"
+if [ -n "${DATABASE_URL:-}" ]; then echo "[entrypoint] DATABASE_URL is set"; else echo "[entrypoint] DATABASE_URL is MISSING" >&2; fi
+if [ -n "${MIGRATION_DATABASE_URL:-}" ]; then echo "[entrypoint] MIGRATION_DATABASE_URL is set"; else echo "[entrypoint] MIGRATION_DATABASE_URL is empty (fallback to DATABASE_URL)"; fi
+if [ -n "${REDIS_URL:-}" ]; then echo "[entrypoint] REDIS_URL is set"; else echo "[entrypoint] REDIS_URL is MISSING" >&2; fi
 cd /app/apps/api
 
 if [ "${RUN_MIGRATIONS_ON_START:-0}" = "1" ]; then

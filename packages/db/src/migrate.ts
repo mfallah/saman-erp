@@ -39,8 +39,20 @@ export function stripManagedDdl(sqlText: string): string {
 function adminUrl(): string | undefined {
   const file = process.env.MIGRATIONS_DIR_URL_FILE ?? process.env.MIGRATION_DATABASE_URL_FILE;
   if (file) return readFileSync(file, 'utf8').trim();
-  const direct = process.env.MIGRATION_DATABASE_URL;
-  if (direct && direct.length > 0) return direct;
+  const direct = (process.env.MIGRATION_DATABASE_URL ?? '').trim();
+  const valid = (v: string | undefined): v is string => {
+    if (!v) return false;
+    try {
+      const u = new URL(v);
+      return u.protocol === 'postgres:' || u.protocol === 'postgresql:';
+    } catch {
+      return false;
+    }
+  };
+  if (valid(direct)) return direct;
+  if (direct.length > 0) {
+    console.warn('[migrate] MIGRATION_DATABASE_URL is malformed; falling back to DATABASE_URL');
+  }
   return process.env.DATABASE_URL;
 }
 
