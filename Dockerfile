@@ -19,6 +19,7 @@ ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     CI=false \
     VITE_API_BASE=/api/v1
+COPY infra/docker/npmrc /app/.npmrc
 RUN corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate \
  && apk add --no-cache tini libcap \

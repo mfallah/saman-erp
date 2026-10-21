@@ -1,0 +1,6 @@
+# Image install layout: hoisted node_modules so bundlers (Vite/Rollup) can
+# resolve transitive packages inside pnpm's isolated store.
+node-linker=hoisted
+ignore-scripts=true
+strict-peer-dependencies=false
+auto-install-peers=true
