@@ -7,6 +7,19 @@
 #   APP_ROLE=migrate  -> run SQL migrations once, then exit
 set -eu
 
+
+# Panels sometimes store the whole "KEY=value" line (or quotes/CRLF) in the value.
+clean_env() {
+  printf '%s' "${1:-}" | tr -d '\r\n' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+          -e 's/^[A-Za-z_][A-Za-z0-9_]*=//' \
+          -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+DATABASE_URL="$(clean_env "${DATABASE_URL:-}")"; export DATABASE_URL
+MIGRATION_DATABASE_URL="$(clean_env "${MIGRATION_DATABASE_URL:-}")"; export MIGRATION_DATABASE_URL
+REDIS_URL="$(clean_env "${REDIS_URL:-}")"; export REDIS_URL
+APP_PORT="$(clean_env "${APP_PORT:-}")"; export APP_PORT
+
 ROLE="${APP_ROLE:-api}"
 if [ -n "${DATABASE_URL:-}" ]; then echo "[entrypoint] DATABASE_URL is set"; else echo "[entrypoint] DATABASE_URL is MISSING" >&2; fi
 if [ -n "${MIGRATION_DATABASE_URL:-}" ]; then echo "[entrypoint] MIGRATION_DATABASE_URL is set"; else echo "[entrypoint] MIGRATION_DATABASE_URL is empty (fallback to DATABASE_URL)"; fi
