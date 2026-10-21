@@ -11,6 +11,15 @@ ROLE="${APP_ROLE:-api}"
 if [ -n "${DATABASE_URL:-}" ]; then echo "[entrypoint] DATABASE_URL is set"; else echo "[entrypoint] DATABASE_URL is MISSING" >&2; fi
 if [ -n "${MIGRATION_DATABASE_URL:-}" ]; then echo "[entrypoint] MIGRATION_DATABASE_URL is set"; else echo "[entrypoint] MIGRATION_DATABASE_URL is empty (fallback to DATABASE_URL)"; fi
 if [ -n "${REDIS_URL:-}" ]; then echo "[entrypoint] REDIS_URL is set"; else echo "[entrypoint] REDIS_URL is MISSING" >&2; fi
+# Normalise a malformed migration URL to the runtime URL (managed DBs use one role).
+case "${MIGRATION_DATABASE_URL:-}" in
+  postgres://*|postgresql://*) : ;;
+  *) echo "[entrypoint] MIGRATION_DATABASE_URL is malformed; using DATABASE_URL"; export MIGRATION_DATABASE_URL="${DATABASE_URL:-}" ;;
+esac
+case "${REDIS_URL:-}" in
+  redis://*|rediss://*) : ;;
+  *) echo "[entrypoint] REDIS_URL is malformed (must start with redis:// or rediss://; length=${#REDIS_URL})" >&2 ;;
+esac
 cd /app/apps/api
 
 if [ "${RUN_MIGRATIONS_ON_START:-0}" = "1" ]; then
