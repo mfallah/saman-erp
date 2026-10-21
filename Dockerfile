@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # =============================================================================
 # Saman ERP — API/worker image (multi-stage)
 #   build -> prod : runtime image (api + worker share this image)
@@ -33,8 +32,7 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
-RUN --mount=type=cache,id=saman-pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 # -----------------------------------------------------------------------------
 # build: compile api + shared
@@ -57,8 +55,7 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
-RUN --mount=type=cache,id=saman-pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --prod --filter "@saman/api..."
+RUN pnpm install --frozen-lockfile --prod --filter "@saman/api..."
 COPY --from=build /app/packages/shared ./packages/shared
 RUN rm -rf ./packages/shared/node_modules ./packages/shared/src
 COPY --from=build /app/packages/db/dist ./packages/db/dist
