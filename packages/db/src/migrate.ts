@@ -40,7 +40,7 @@ function adminUrl(): string | undefined {
   const file = process.env.MIGRATIONS_DIR_URL_FILE ?? process.env.MIGRATION_DATABASE_URL_FILE;
   if (file) return readFileSync(file, 'utf8').trim();
   const direct = (process.env.MIGRATION_DATABASE_URL ?? '').trim();
-  const valid = (v: string | undefined): v is string => {
+  const valid = (v: string | undefined): boolean => {
     if (!v) return false;
     try {
       const u = new URL(v);
