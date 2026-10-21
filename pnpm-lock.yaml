@@ -156,6 +156,12 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      cookie-es:
+        specifier: ^3.0.0
+        version: 3.1.1
+      isbot:
+        specifier: ^5.1.22
+        version: 5.2.2
       lucide-react:
         specifier: ^0.475.0
         version: 0.475.0(react@19.3.1)
@@ -171,6 +177,12 @@ importers:
       recharts:
         specifier: ^2.15.1
         version: 2.15.4(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      seroval:
+        specifier: ^1.6.7
+        version: 1.6.11
+      seroval-plugins:
+        specifier: ^1.6.7
+        version: 1.6.11(seroval@1.6.11)
       use-sync-external-store:
         specifier: ^1.6.0
         version: 1.7.0(react@19.3.1)
