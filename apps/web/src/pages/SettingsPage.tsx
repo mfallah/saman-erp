@@ -364,27 +364,35 @@ function BrandingTab({ editable }: { readonly editable: boolean }) {
 
   const query = useQuery({
     queryKey: ['branding'],
-    queryFn: () => api.get<Record<string, unknown>>('/settings/branding'),
+    queryFn: () => api.get<{ items: readonly { key: string; value: unknown }[] }>('/settings/branding'),
     retry: false,
   });
 
   useEffect(() => {
-    if (query.data !== undefined) {
-      setLogo(typeof query.data['logoDataUrl'] === 'string' ? (query.data['logoDataUrl'] as string) : undefined);
-      setFavicon(typeof query.data['faviconDataUrl'] === 'string' ? (query.data['faviconDataUrl'] as string) : undefined);
-      setAppName(typeof query.data['appName'] === 'string' ? (query.data['appName'] as string) : '');
-    }
+    if (query.data === undefined) return;
+    const map = new Map(query.data.items.map((item) => [item.key, item.value]));
+    const pick = (key: string): string | undefined => {
+      const value = map.get(key);
+      if (typeof value !== 'string') return undefined;
+      try {
+        const parsed: unknown = JSON.parse(value);
+        return typeof parsed === 'string' ? parsed : value;
+      } catch {
+        return value;
+      }
+    };
+    setLogo(pick('branding.logo'));
+    setFavicon(pick('branding.favicon'));
+    setAppName(pick('branding.app_name') ?? '');
   }, [query.data]);
 
   const save = useMutation({
-    mutationFn: () => {
-      const version = query.data?.['version'];
-      return api.put<Record<string, unknown>>(
-        '/settings/branding',
-        { logoDataUrl: logo ?? '', faviconDataUrl: favicon ?? '', appName },
-        { ...(typeof version === 'number' ? { ifMatch: version } : {}) },
-      );
-    },
+    mutationFn: () =>
+      api.put<Record<string, unknown>>('/settings/branding', {
+        'branding.logo': logo ?? '',
+        'branding.favicon': favicon ?? '',
+        'branding.app_name': appName,
+      }),
     onSuccess: () => {
       toast.success('برندینگ ذخیره شد');
       applyFavicon(favicon ?? logo);

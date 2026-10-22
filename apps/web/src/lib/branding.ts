@@ -14,10 +14,23 @@ export function useBranding() {
     queryKey: ['branding'],
     queryFn: async (): Promise<Branding> => {
       try {
-        const data = await api.get<Record<string, unknown>>('/settings/branding');
-        const pick = (key: string): string | undefined =>
-          typeof data[key] === 'string' && (data[key] as string).length > 0 ? (data[key] as string) : undefined;
-        return { logoDataUrl: pick('logoDataUrl'), faviconDataUrl: pick('faviconDataUrl'), appName: pick('appName') };
+        const data = await api.get<{ items: readonly { key: string; value: unknown }[] }>('/settings/branding');
+        const map = new Map(data.items.map((item) => [item.key, item.value]));
+        const pick = (key: string): string | undefined => {
+          const value = map.get(key);
+          if (typeof value !== 'string' || value.length === 0) return undefined;
+          try {
+            const parsed: unknown = JSON.parse(value);
+            return typeof parsed === 'string' && parsed.length > 0 ? parsed : undefined;
+          } catch {
+            return value;
+          }
+        };
+        return {
+          logoDataUrl: pick('branding.logo'),
+          faviconDataUrl: pick('branding.favicon'),
+          appName: pick('branding.app_name'),
+        };
       } catch {
         return {};
       }

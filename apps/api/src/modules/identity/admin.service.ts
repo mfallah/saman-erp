@@ -19,7 +19,7 @@ export interface AdminMutationMeta {
   readonly userAgent?: string;
 }
 
-const SETTINGS_GROUPS = ['general', 'inventory', 'sales', 'purchasing', 'accounting', 'treasury', 'channels', 'security', 'notifications', 'pricing'];
+const SETTINGS_GROUPS = ['general', 'inventory', 'sales', 'purchasing', 'accounting', 'treasury', 'channels', 'security', 'notifications', 'pricing', 'branding'];
 const SETTING_KEY = /^[a-z][a-z0-9_]*\.[a-z0-9_.]+$/;
 const CODE_PATTERN = /^[a-z][a-z0-9_]{1,49}$/;
 

@@ -72,19 +72,19 @@ export class ChannelsAdminController {
   @ApiOperation({ summary: 'List channels with account counts' })
   async list(@CurrentTenant() ctx: TenantContext) {
     const rows = await this.sql`
-      select c.public_id::text as id, c.code, c.name_fa, c.is_active,
+      select c.public_id::text as id, c.code, c.name, c.is_active,
              (select count(*)::int from erp.channel_accounts a
                where a.channel_id = c.id and a.organization_id = ${ctx.orgId} and a.deleted_at is null) as account_count
       from erp.sales_channels c
       where c.organization_id = ${ctx.orgId}
-      order by c.sort_order nulls last, c.id
+      order by c.id
     `;
     return apiData(
       rows.map((row: Row) => ({
         id: String(row['id']),
         code: String(row['code']),
-        name: String(row['name_fa']),
-        nameFa: String(row['name_fa']),
+        name: String(row['name']),
+        nameFa: String(row['name']),
         isActive: row['is_active'] === true,
         accountCount: Number(row['account_count'] ?? 0),
       })),
@@ -97,7 +97,8 @@ export class ChannelsAdminController {
   async health(@CurrentTenant() ctx: TenantContext) {
     const rows = await this.sql`
       select distinct on (h.channel_account_id)
-             h.channel_account_id::text as account_id, h.status, h.latency_ms, h.checked_at, h.message
+             h.channel_account_id::text as account_id,
+             case when h.auth_ok then 'ok' else 'fail' end as status, h.latency_ms, h.checked_at, h.error_message as message
       from erp.channel_health_checks h
       join erp.channel_accounts a on a.id = h.channel_account_id
       where a.organization_id = ${ctx.orgId}
@@ -189,7 +190,7 @@ export class ChannelsAdminController {
          ${Number(payload['rateLimitPerMin'] ?? 60)}, ${payload['stockPushEnabled'] === false ? false : true},
          ${Number(payload['stockSafetyQty'] ?? 0)}, ${JSON.stringify(payload['settings'] ?? {})}::jsonb, true,
          ${ctx.actorId}, ${ctx.actorId})
-      returning public_id::text as id
+      returning id::text as id, public_id::text as public_id
     `;
 
     const credentials = credentialsFrom(payload);
@@ -205,7 +206,7 @@ export class ChannelsAdminController {
       });
     }
 
-    return apiData({ id: inserted[0]!['id'], name, credentialsStored: Object.keys(credentials) });
+    return apiData({ id: inserted[0]!['public_id'], name, credentialsStored: Object.keys(credentials) });
   }
 
   @Put('channel-accounts/:accountId/credentials')
@@ -295,7 +296,7 @@ export class ChannelsAdminController {
       set status = 'queued', next_run_at = now(), locked_at = null, locked_by = null,
           attempts = 0, last_error = null, updated_at = now(), updated_by = ${ctx.actorId}
       where public_id = ${jobId} and organization_id = ${ctx.orgId}
-      returning public_id::text as id
+      returning id::text as id, public_id::text as public_id
     `;
     if (rows.length === 0) {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'job not found' });

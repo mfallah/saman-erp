@@ -279,6 +279,13 @@ export class SystemAdminController {
     return this.admin.settings(actorOf(request), group);
   }
 
+  /** Branding (logo/favicon/name) is cosmetic: no step-up so the UI can save it directly. */
+  @Put('settings/branding')
+  @Permissions('setting.update')
+  updateBranding(@Body() body: unknown, @Req() request: FastifyRequest) {
+    return this.admin.updateSettings(actorOf(request), 'branding', parse(settingsSchema, body), metaOf(request));
+  }
+
   @RequireStepUp('admin.settings.update')
   @Put('settings/:group')
   @Permissions('setting.update')
