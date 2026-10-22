@@ -697,7 +697,10 @@ export function ChannelsPage() {
             <p className="text-xs text-slate-500">در حال خواندن کلید عمومی…</p>
           ) : rsaPublicKey.length > 0 ? (
             <div className="space-y-2">
-              <FormField label="کلید عمومی (PEM)" hint="این مقدار را کپی و در پنل دیجی‌کالا ثبت کنید.">
+              <FormField
+                label="کلید عمومی (PEM)"
+                hint="اگر پنل دیجی‌کالا این قالب را نپذیرفت، با دکمهٔ «کپی Base64» همان کلید را بدون هدر بچسبان."
+              >
                 <Textarea
                   dir="ltr"
                   readOnly
@@ -713,7 +716,19 @@ export function ChannelsPage() {
                   icon={<Copy className="size-3.5" />}
                   onClick={() => void copyPublicKey()}
                 >
-                  کپی کلید عمومی
+                  کپی کلید عمومی (PEM)
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  icon={<Copy className="size-3.5" />}
+                  onClick={() => {
+                    const raw = rsaPublicKey.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+                    void navigator.clipboard?.writeText(raw);
+                    toast.success('کلید عمومی Base64 کپی شد');
+                  }}
+                >
+                  کپی Base64 (بدون هدر)
                 </Button>
                 <Badge tone={rsaHasPrivateKey ? 'success' : 'warning'}>
                   {rsaHasPrivateKey ? 'کلید خصوصی ذخیره شده است' : 'کلید خصوصی ثبت نشده است'}

@@ -188,7 +188,7 @@ function variantColumns(tx: Db) {
 function productFrom(tx: Db) {
   return tx`
   from erp.products p
-  join erp.product_categories c on c.id = p.category_id
+  left join erp.product_categories c on c.id = p.category_id
   left join erp.brands b on b.id = p.brand_id
   left join erp.units_of_measure bu on bu.id = p.base_uom_id
 `;
