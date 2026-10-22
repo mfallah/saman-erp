@@ -1,35 +1,36 @@
-﻿# Chabakan deployment record — 2026-10-21
+﻿# Chabakan deployment record — 2026-10-21 (updated 2026-10-22)
 
 ## Services (hourly billing)
 | service | plan | role |
 |---|---|---|
-| `docker-0ga2pf` | 0.15 RAM / 0.15 CPU / 1GB (hourly) | API + Worker (`APP_ROLE=all`) on port 80 |
+| `docker-0ga2pf` | 0.15 RAM / 0.15 CPU / 1GB (hourly) | API + Worker + admin SPA (`APP_ROLE=all`) on port 80 |
 | `postgresql-49y6qs` | 0.25 RAM / 2GB (hourly) | PostgreSQL 16.14, db `benjamin` |
 | `redis-xoefwl` | 0.25 RAM / 2GB (hourly) | Redis (queue/cache/rate-limit) |
 
+Public URL: https://docker-0ga2pf.chbkn.dev
+
 ## Result
-- Image built from this repo (root `Dockerfile`, prod stage) and deployed via `services/docker-0ga2pf/deploy/`.
-- `migrate`: 226 tables (schema `erp`) applied.
+- Image built from the repo root `Dockerfile` (production stage, pnpm hoisted layout) and deployed with `POST services/docker-0ga2pf/deploy/`.
+- `migrate`: 226 tables in schema `erp`.
 - `seed`: 414 permissions, 169 CoA accounts, 6 channels, settings, superadmin.
-- API started on `0.0.0.0:80`, env `production`; worker booted and outbox dispatcher registered 9 handlers.
-- `/health/ready` (verified against the same DB/Redis from a local API instance): `db up`, `redis up`, `s3 skipped`.
-- Auth: login 202 → OTP verify 200 → JWT; `/auth/me`, `/products`, `/inventory/balances`, `/roles`, `/settings`, `/audit-logs`, `/dashboard/summary` all 200.
-- Write path: create customer 201, create category 201, audit +2, outbox +2 (test rows cleaned up).
+- API started on `0.0.0.0:80` (`env=production`); worker booted; outbox dispatcher registered 9 handlers.
+- Admin SPA (prebuilt `apps/web/dist`) is copied into the image and served from the same origin: `webRoot=/app/web-dist`, SPA fallback, `/api/*` still JSON.
+- `/health/ready` verified against the same DB/Redis from a local API instance: `db up`, `redis up`, `s3 skipped`.
+- Auth (login 202 → OTP 200 → JWT) and `/auth/me`, `/products`, `/inventory/balances`, `/roles`, `/settings`, `/audit-logs`, `/dashboard/summary` all 200.
+- Write path: customer 201, category 201, audit +2, outbox +2 (test rows removed).
 
 ## Superadmin
-- username `admin`
-- mobile `09999907902`
-- password reset during deployment (change after first login)
+- username `admin`, mobile `09999907902` (`superadmin` role).
+- Password set during deployment — change after first login.
+
+## Build gotchas fixed here
+- `pnpm install --frozen-lockfile --ignore-scripts` (pnpm 10+ errors on ignored builds unless the flag is explicit).
+- copy `tsconfig.base.json` into the image (otherwise TS targets ES5 and BigInt literals fail).
+- keep workspace `node_modules` for `shared`/`db` (zod/postgres were missing at runtime).
+- `node-linker=hoisted` + explicit TanStack peer deps for the SPA build.
+- `.dockerignore` must re-include `apps/web/dist`; the root Dockerfile must end with the production stage and must not leave a trailing `\` on the build `RUN`.
 
 ## Open items
-- Limo SMS env still needs real values (`LIMO_API_KEY`, `LIMO_SENDER`, `LIMO_OTP_PATTERN_ID`) — currently placeholder; OTP delivery will fail until set.
-- Object storage (S3/MinIO) not configured: `s3: skipped`, uploads/exports disabled.
-- Web SPA not deployed yet (static service or nginx image).
-- Custom domain not connected; using the platform default URL.
-- `.env` values must be stored without the `KEY=` prefix (the container sanitises it, but keep them clean).
-
-## Ops notes
-- Deploy: `POST https://apihub.chabokan.net/api/v1/services/docker-0ga2pf/deploy/` (multipart `file` + `options`).
-- Logs: `GET …/services/docker-0ga2pf/logs/`; restart: `GET …/restart/`.
-- Migrations/seed run automatically at container start (`RUN_MIGRATIONS_ON_START=1`, `RUN_SEED_ON_START=1`).
-- Managed PostgreSQL mode: `DB_MANAGED=true`, `MANAGED_PG=1` (single owner role; cluster-role DDL stripped).
+- Limo SMS credentials saved by the operator (sender `9998620687`, pattern `3401`).
+- S3/MinIO not configured (`s3: skipped`): uploads/exports disabled.
+- Custom domain `erp.carexy.shop` not connected yet.
