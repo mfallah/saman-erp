@@ -320,16 +320,19 @@ export class ChannelsAdminController {
       });
     }
     const clientCode = text(payload['clientCode']) || credentials['client_code'] || credentials['client_id'] || '';
+    const clientSecret = text(payload['clientSecret']) || credentials['client_secret'] || '';
     try {
       const result = await activateDigikalaToken({
         validationCode,
         privateKeyPem: privateKey,
         ...(clientCode.length > 0 ? { clientCode } : {}),
+        ...(clientSecret.length > 0 ? { clientSecret } : {}),
         ...(credentials['base_url'] === undefined ? {} : { baseUrl: credentials['base_url'] }),
       });
       const toStore: Record<string, string> = { access_token: result.accessToken };
       if (result.refreshToken !== null) toStore['refresh_token'] = result.refreshToken;
       if (clientCode.length > 0) toStore['client_code'] = clientCode;
+      if (clientSecret.length > 0) toStore['client_secret'] = clientSecret;
       await this.accounts.setCredentials({
         organizationId: ctx.orgId.toString(),
         accountId: accountInternal,
@@ -339,6 +342,8 @@ export class ChannelsAdminController {
         ip: ctx.ip,
         userAgent: ctx.userAgent,
       });
+      // eslint-disable-next-line no-console
+      console.log(`[digikala] token activated via ${result.payloadVariant} (${result.decryption}), refresh=${result.refreshToken !== null}`);
       return apiData({
         ok: true,
         decryption: result.decryption,
@@ -347,6 +352,8 @@ export class ChannelsAdminController {
         hasRefreshToken: result.refreshToken !== null,
       });
     } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('[digikala] token activation failed:', error instanceof Error ? error.message : String(error));
       throw new BadRequestException({
         code: 'DIGIKALA_TOKEN_FAILED',
         message: error instanceof Error ? error.message : String(error),

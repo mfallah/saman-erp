@@ -14,6 +14,7 @@ import { constants, privateDecrypt } from 'node:crypto';
 export interface DigikalaActivationInput {
   readonly validationCode: string;
   readonly clientCode?: string;
+  readonly clientSecret?: string;
   readonly privateKeyPem: string;
   readonly baseUrl?: string;
 }
@@ -76,6 +77,22 @@ export async function activateDigikalaToken(input: DigikalaActivationInput): Pro
 
   const variants: Array<{ name: string; body: Record<string, unknown>; headers?: Record<string, string> }> = [];
   if (input.clientCode !== undefined && input.clientCode.length > 0) {
+    if (input.clientSecret !== undefined && input.clientSecret.length > 0) {
+      const basic = Buffer.from(`${input.clientCode}:${input.clientSecret}`).toString('base64');
+      variants.push({
+        name: 'basic+client_secret+code',
+        body: { client_id: input.clientCode, client_secret: input.clientSecret, code },
+        headers: { authorization: `Basic ${basic}` },
+      });
+      variants.push({
+        name: 'client_secret+code',
+        body: { client_id: input.clientCode, client_secret: input.clientSecret, code },
+      });
+      variants.push({
+        name: 'authorization_code+secret',
+        body: { grant_type: 'authorization_code', client_id: input.clientCode, client_secret: input.clientSecret, code },
+      });
+    }
     variants.push({ name: 'client_id+code', body: { client_id: input.clientCode, code } });
     variants.push({ name: 'client_code+code', body: { client_code: input.clientCode, code } });
     variants.push({

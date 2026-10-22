@@ -120,6 +120,7 @@ export function ChannelsPage() {
   const [rsaLoading, setRsaLoading] = useState(false);
   const [rsaError, setRsaError] = useState('');
   const [dkClientCode, setDkClientCode] = useState('');
+  const [dkClientSecret, setDkClientSecret] = useState('');
   const [dkValidationCode, setDkValidationCode] = useState('');
   const [dkBusy, setDkBusy] = useState(false);
   const [dkResult, setDkResult] = useState('');
@@ -235,7 +236,7 @@ export function ChannelsPage() {
     try {
       const result = await api.post<{ ok: boolean; decryption: string; expiresIn?: number | null; hasRefreshToken?: boolean }>(
         `/channel-accounts/${rsaAccount.id}/digikala/token`,
-        { validationCode: dkValidationCode, clientCode: dkClientCode },
+        { validationCode: dkValidationCode, clientCode: dkClientCode, clientSecret: dkClientSecret },
         { idempotencyKey: newRequestId() },
       );
       setDkResult(
@@ -674,6 +675,13 @@ export function ChannelsPage() {
                   placeholder="Client code"
                   value={dkClientCode}
                   onChange={(event) => setDkClientCode(event.target.value)}
+                />
+                <Input
+                  dir="ltr"
+                  type="password"
+                  placeholder="Client secret (اگر دیجی‌کالا داده)"
+                  value={dkClientSecret}
+                  onChange={(event) => setDkClientSecret(event.target.value)}
                 />
                 <Textarea
                   dir="ltr"
