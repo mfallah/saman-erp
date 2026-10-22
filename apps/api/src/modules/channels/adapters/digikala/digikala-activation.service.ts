@@ -46,11 +46,25 @@ export function decryptValidationCode(validationCode: string, privateKeyPem: str
   const ciphertext = Buffer.from(cleaned, 'base64');
   if (ciphertext.length === 0) throw new Error('validation code is empty or not valid base64');
 
+  const unwrap = (plain: string, decryption: 'pkcs1' | 'oaep'): { code: string; decryption: 'pkcs1' | 'oaep' } => {
+    const trimmed = plain.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        const inner = parsed['code'] ?? parsed['validation_code'] ?? parsed['token'] ?? parsed['authorization_code'];
+        if (typeof inner === 'string' && inner.length > 0) return { code: inner, decryption };
+      } catch {
+        /* not JSON — use the raw plaintext */
+      }
+    }
+    return { code: plain, decryption };
+  };
+
   const pkcs1 = tryDecrypt(ciphertext, privateKeyPem, constants.RSA_PKCS1_PADDING);
-  if (pkcs1 !== null) return { code: pkcs1, decryption: 'pkcs1' };
+  if (pkcs1 !== null) return unwrap(pkcs1, 'pkcs1');
 
   const oaep = tryDecrypt(ciphertext, privateKeyPem, constants.RSA_PKCS1_OAEP_PADDING);
-  if (oaep !== null) return { code: oaep, decryption: 'oaep' };
+  if (oaep !== null) return unwrap(oaep, 'oaep');
 
   throw new Error('RSA decryption failed: the validation code does not match this private key');
 }
@@ -75,10 +89,21 @@ export async function activateDigikalaToken(input: DigikalaActivationInput): Pro
   const base = (input.baseUrl ?? 'https://seller.digikala.com/open-api/v1').replace(/\/$/, '');
   const endpoint = `${base}/auth/token`;
 
-  const variants: Array<{ name: string; body: Record<string, unknown>; headers?: Record<string, string> }> = [];
+  const variants: Array<{ name: string; body: Record<string, unknown>; headers?: Record<string, string>; form?: boolean }> = [];
   if (input.clientCode !== undefined && input.clientCode.length > 0) {
     if (input.clientSecret !== undefined && input.clientSecret.length > 0) {
       const basic = Buffer.from(`${input.clientCode}:${input.clientSecret}`).toString('base64');
+      variants.push({
+        name: 'basic+form',
+        body: { grant_type: 'authorization_code', code },
+        headers: { authorization: `Basic ${basic}` },
+        form: true,
+      });
+      variants.push({
+        name: 'form+client_secret+code',
+        body: { grant_type: 'authorization_code', client_id: input.clientCode, client_secret: input.clientSecret, code },
+        form: true,
+      });
       variants.push({
         name: 'basic+client_secret+code',
         body: { client_id: input.clientCode, client_secret: input.clientSecret, code },
@@ -105,10 +130,12 @@ export async function activateDigikalaToken(input: DigikalaActivationInput): Pro
   const errors: string[] = [];
   for (const variant of variants) {
     try {
+      const payload = variant.form === true ? new URLSearchParams(Object.entries(variant.body).map(([k, v]): [string, string] => [k, String(v)])) : JSON.stringify(variant.body);
+      const contentType = variant.form === true ? 'application/x-www-form-urlencoded' : 'application/json';
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json', ...(variant.headers ?? {}) },
-        body: JSON.stringify(variant.body),
+        headers: { 'content-type': contentType, accept: 'application/json', ...(variant.headers ?? {}) },
+        body: payload,
       });
       const text = await response.text();
       let parsed: Record<string, unknown> = {};
