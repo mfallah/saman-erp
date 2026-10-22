@@ -299,6 +299,11 @@ export class CarexyAdapter implements ChannelAdapter {
         idempotent: true,
       });
       const items = listPayload(response.json);
+      // Diagnostics: Carexy's list shape varies between deployments; log the envelope keys once per page.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[carexy] products page=${page} items=${items.length} envelopeKeys=${Object.keys((response.json ?? {}) as Record<string, unknown>).join(',')} firstItemKeys=${items.length > 0 && isRecord(items[0]) ? Object.keys(items[0] as Record<string, unknown>).slice(0, 20).join(',') : '-'}`,
+      );
       for (const raw of items) {
         if (!isRecord(raw)) continue;
         const externalProductId = scalar(pick(raw, ['uuid', 'product_uuid', 'id', 'product_id']));
