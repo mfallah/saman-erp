@@ -33,9 +33,10 @@ import {
   ChannelWebhookController,
   WebhookHealthController,
 } from './webhook/channel-webhook.controller';
+import { ChannelsAdminController } from './admin/channels-admin.controller';
 
 @Module({
-  controllers: [ChannelWebhookController, WebhookHealthController],
+  controllers: [ChannelsAdminController, ChannelWebhookController, WebhookHealthController],
   providers: [
     { provide: LOGGER, useFactory: (): AppLogger => createPinoLogger() },
     {

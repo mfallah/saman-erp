@@ -22,6 +22,7 @@ import { Combobox } from '../components/ui/Combobox';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { FormField } from '../components/ui/FormField';
+import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Select } from '../components/ui/Select';
@@ -98,6 +99,12 @@ export function ChannelsPage() {
   const [tab, setTab] = useState('health');
   const [selectedChannelId, setSelectedChannelId] = useState('');
   const [syncOpen, setSyncOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountName, setAccountName] = useState('');
+  const [externalAccountId, setExternalAccountId] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [apiSecret, setApiSecret] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
   const [syncType, setSyncType] = useState('inventory_push');
 
   const channelsQuery = useQuery({
@@ -156,6 +163,36 @@ export function ChannelsPage() {
       void queryClient.invalidateQueries({ queryKey: ['channel-sync-jobs'] });
     },
     onError: (error) => toast.error('تلاش مجدد ناموفق بود', toFaErrorMessage(error)),
+  });
+
+  const createAccountMutation = useMutation({
+    mutationFn: () => {
+      const credentials: Record<string, string> = {};
+      if (apiKey.trim().length > 0) credentials['api_key'] = apiKey.trim();
+      if (apiSecret.trim().length > 0) credentials['api_secret'] = apiSecret.trim();
+      if (webhookSecret.trim().length > 0) credentials['webhook_secret'] = webhookSecret.trim();
+      return api.post<{ id: string; credentialsStored: readonly string[] }>(
+        `/channels/${selectedChannelId}/accounts`,
+        {
+          name: accountName.trim(),
+          externalAccountId: externalAccountId.trim() || undefined,
+          credentials,
+        },
+        { idempotencyKey: newRequestId() },
+      );
+    },
+    onSuccess: (result) => {
+      toast.success('حساب کانال ساخته شد', `کلیدهای ذخیره‌شده: ${result.credentialsStored.join('، ') || 'بدون کلید'}`);
+      setAccountOpen(false);
+      setAccountName('');
+      setExternalAccountId('');
+      setApiKey('');
+      setApiSecret('');
+      setWebhookSecret('');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channels.accounts(selectedChannelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channels.list });
+    },
+    onError: (error) => toast.error('ساخت حساب ناموفق بود', toFaErrorMessage(error)),
   });
 
   const testAccountMutation = useMutation({
@@ -268,6 +305,12 @@ export function ChannelsPage() {
         {tab === 'accounts' && (
           <Card>
             <CardHeader title="حساب‌های فروشنده" description="اعتبارنامه‌ها هرگز به‌صورت متن کامل نمایش داده نمی‌شوند." />
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-slate-500">کلیدهای دیجی‌کالا / کِرَکسی اینجا ذخیره و رمزنگاری می‌شوند.</span>
+              <Button size="sm" disabled={selectedChannelId === ''} onClick={() => setAccountOpen(true)}>
+                افزودن حساب و کلیدها
+              </Button>
+            </div>
             <div className="mb-3 max-w-sm">
               <Combobox
                 options={channelOptions}
@@ -338,6 +381,44 @@ export function ChannelsPage() {
           </>
         )}
       </TabPanel>
+
+      <Modal
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        title="افزودن حساب کانال"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setAccountOpen(false)}>
+              انصراف
+            </Button>
+            <Button
+              loading={createAccountMutation.isPending}
+              disabled={accountName.trim().length === 0}
+              onClick={() => createAccountMutation.mutate()}
+            >
+              ذخیره حساب
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <FormField label="نام حساب" required>
+            <Input value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="مثلاً فروشگاه دیجی‌کالا" />
+          </FormField>
+          <FormField label="شناسه فروشنده / Seller ID">
+            <Input dir="ltr" value={externalAccountId} onChange={(event) => setExternalAccountId(event.target.value)} />
+          </FormField>
+          <FormField label="API Key">
+            <Input dir="ltr" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+          </FormField>
+          <FormField label="API Secret">
+            <Input dir="ltr" type="password" value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} />
+          </FormField>
+          <FormField label="Webhook Secret (اختیاری)">
+            <Input dir="ltr" type="password" value={webhookSecret} onChange={(event) => setWebhookSecret(event.target.value)} />
+          </FormField>
+        </div>
+      </Modal>
 
       <Modal
         open={syncOpen}
