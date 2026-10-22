@@ -10,7 +10,7 @@
  * The live endpoint validates `authorization_code`; older/alternate payload
  * shapes are kept as fallbacks because Digikala's public documentation is thin.
  */
-import { constants, privateDecrypt } from 'node:crypto';
+import { constants, createHash, privateDecrypt } from 'node:crypto';
 
 export type DigikalaDecryption = 'pkcs1' | 'oaep-sha1' | 'oaep-sha256';
 
@@ -121,6 +121,69 @@ function tryManualPkcs1(ciphertext: Buffer, keyPem: string): string | null {
   } catch {
     return null;
   }
+}
+
+
+/** MGF1 mask generation (OAEP) with a configurable hash. */
+function mgf1(seed: Buffer, length: number, hash: 'sha1' | 'sha256'): Buffer {
+  const hLen = hash === 'sha256' ? 32 : 20;
+  const out = Buffer.alloc(length);
+  let counter = 0;
+  let offset = 0;
+  while (offset < length) {
+    const counterBuf = Buffer.alloc(4);
+    counterBuf.writeUInt32BE(counter, 0);
+    const digest = createHash(hash).update(seed).update(counterBuf).digest();
+    digest.copy(out, offset, 0, Math.min(hLen, length - offset));
+    offset += hLen;
+    counter += 1;
+  }
+  return out;
+}
+
+function xor(a: Buffer, b: Buffer): Buffer {
+  const out = Buffer.alloc(a.length);
+  for (let i = 0; i < a.length; i += 1) out[i] = a[i]! ^ b[i]!;
+  return out;
+}
+
+/**
+ * OAEP decode with independent digest and MGF1 hashes.
+ * Java's `RSA/ECB/OAEPWithSHA-256AndMGF1Padding` defaults MGF1 to SHA-1, which
+ * Node's `oaepHash` option cannot express (it uses one hash for both).
+ */
+export function oaepDecode(em: Buffer, digestHash: 'sha1' | 'sha256', mgf1Hash: 'sha1' | 'sha256'): string | null {
+  const hLen = digestHash === 'sha256' ? 32 : 20;
+  if (em.length < 2 * hLen + 2 || em[0] !== 0x00) return null;
+  const maskedSeed = em.subarray(1, 1 + hLen);
+  const maskedDB = em.subarray(1 + hLen);
+  const seed = xor(maskedSeed, mgf1(maskedDB, hLen, mgf1Hash));
+  const db = xor(maskedDB, mgf1(seed, maskedDB.length, mgf1Hash));
+  const lHash = createHash(digestHash).update(Buffer.alloc(0)).digest();
+  if (!db.subarray(0, hLen).equals(lHash)) return null;
+  let index = hLen;
+  while (index < db.length && db[index] === 0x00) index += 1;
+  if (index >= db.length || db[index] !== 0x01) return null;
+  return db.subarray(index + 1).toString('utf8');
+}
+
+function tryOaepVariants(ciphertext: Buffer, keyPem: string): { code: string; method: 'oaep-sha256' | 'oaep-sha1' } | null {
+  let em: Buffer;
+  try {
+    em = privateDecrypt({ key: keyPem, padding: constants.RSA_NO_PADDING }, ciphertext);
+  } catch {
+    return null;
+  }
+  const variants: Array<{ digest: 'sha1' | 'sha256'; mgf1: 'sha1' | 'sha256'; method: 'oaep-sha256' | 'oaep-sha1' }> = [
+    { digest: 'sha256', mgf1: 'sha1', method: 'oaep-sha256' },
+    { digest: 'sha1', mgf1: 'sha1', method: 'oaep-sha1' },
+    { digest: 'sha256', mgf1: 'sha256', method: 'oaep-sha256' },
+  ];
+  for (const variant of variants) {
+    const plain = oaepDecode(em, variant.digest, variant.mgf1);
+    if (plain !== null) return { code: plain, method: variant.method };
+  }
+  return null;
 }
 
 export function decryptValidationCode(

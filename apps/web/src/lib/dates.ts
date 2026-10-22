@@ -167,11 +167,18 @@ export function isValidJalali(year: number, month: number, day: number): boolean
 
 /** Formats a civil date as `۱۴۰۵/۰۴/۲۷` (Jalali). */
 export function formatJalali(value: string | Date): string {
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
-    return instantFormatter.format(new Date(value));
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}[T ]/.test(value)) {
+    // PostgreSQL `::text` timestamps use a space separator; normalize before parsing.
+    const instant = new Date(value.replace(' ', 'T'));
+    if (!Number.isNaN(instant.getTime())) return instantFormatter.format(instant);
+    return '—';
   }
-  const date = typeof value === 'string' ? parseISODate(value) : value;
-  return dayFormatter.format(date);
+  try {
+    const date = typeof value === 'string' ? parseISODate(value) : value;
+    return dayFormatter.format(date);
+  } catch {
+    return '—';
+  }
 }
 
 /** Formats a civil date as `شنبه ۲۷ تیر ۱۴۰۵`. */
