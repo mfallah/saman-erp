@@ -17,6 +17,8 @@ export const CREDENTIAL_KEY_NAMES = [
   'signing_key',
   'basic_user',
   'basic_password',
+  'public_key',
+  'private_key',
 ] as const;
 export type CredentialKeyName = (typeof CREDENTIAL_KEY_NAMES)[number];
 

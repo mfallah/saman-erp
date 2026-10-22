@@ -64,6 +64,7 @@ export const TBD_DIGIKALA = {
 export const DIGIKALA_CAPABILITIES = [
   'stock.push',
   'price.push',
+  'product.push',
   'order.pull',
   'order.ack',
   'shipment.update',

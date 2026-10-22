@@ -23,6 +23,18 @@ export interface ExternalVariantRef {
   readonly externalProductId?: string;
 }
 
+/** A product as read from a channel during first-sync import. */
+export interface ExternalProduct {
+  readonly externalProductId: string;
+  readonly externalVariantId?: string;
+  readonly title: string;
+  readonly sku?: string;
+  readonly barcode?: string;
+  readonly price?: string;
+  readonly available?: string;
+  readonly raw?: unknown;
+}
+
 export interface ChannelAdapter {  readonly code: ChannelCode;
   readonly capabilities: ReadonlySet<Capability>;
   /** Code-declared hosts only (production/sandbox), asserted at boot. */
@@ -47,6 +59,9 @@ export interface ChannelAdapter {  readonly code: ChannelCode;
   updateShipment(account: AdapterAccount, update: ShipmentUpdate): Promise<void>;
 
   pullSettlements?(account: AdapterAccount, since: Date): AsyncIterable<SettlementSummary>;
+
+  /** First-sync catalogue read used to seed products, variants and mappings. */
+  pullProducts?(account: AdapterAccount): AsyncIterable<ExternalProduct>;
 
   /** Reconciliation-only stock read; never used as a write source of truth. */
   pullInventory?(

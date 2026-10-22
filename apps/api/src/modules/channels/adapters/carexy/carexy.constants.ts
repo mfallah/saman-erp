@@ -32,6 +32,7 @@ export const CAREXY_TBD = {
 export const CAREXY_CAPABILITIES = [
   'stock.push',
   'price.push',
+  'product.push',
   'webhook.verify',
   'health.check',
 ] as const;

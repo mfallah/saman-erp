@@ -16,6 +16,7 @@ export const SYNC_JOB_TYPES = [
   'pull_attributes',
   'fulfill_order',
   'full_reconcile',
+  'product_import',
   'token_refresh',
   'health_check',
 ] as const;

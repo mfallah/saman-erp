@@ -21,6 +21,7 @@ import { withTransaction, asNumber, asString } from '../infrastructure/sql';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import { CHANNEL_PRICE_SOURCE, type ChannelPriceSourcePort } from '../ports/channel-price.port';
+import type { ExternalProduct } from '../ports/channel-adapter.port';
 import { ChannelAccountService } from './channel-accounts.service';
 import { SqlChannelSyncRepository, type SyncJobRow, type SyncJobType } from '../repositories/channel-sync.repository';
 import { SqlChannelMappingRepository, type ChannelMappingRepositoryPort } from '../repositories/channel-mapping.repository';
@@ -32,6 +33,7 @@ export const SYNC_TRIGGER_TYPES = [
   'order_pull',
   'full_reconcile',
   'product_push',
+  'product_import',
   'settlement_pull',
 ] as const;
 export type SyncTriggerType = (typeof SYNC_TRIGGER_TYPES)[number];
@@ -106,7 +108,9 @@ export class ChannelSyncService {
           ? debounceKey(`price:${input.accountId}`, debounceSeconds * 1000, this.now().getTime())
           : input.type === 'order_pull'
             ? `orders:${input.accountId}`
-            : `reconcile:${input.accountId}:${this.now().toISOString().slice(0, 10)}`;
+            : input.type === 'product_import' || input.type === 'product_push'
+              ? `products:${input.accountId}:${this.now().toISOString().slice(0, 10)}`
+              : `reconcile:${input.accountId}:${this.now().toISOString().slice(0, 10)}`;
 
     const job = await this.sync.enqueue({
       organizationId: input.organizationId,
@@ -146,6 +150,9 @@ export class ChannelSyncService {
           break;
         case 'full_reconcile':
           summary = await this.reconcile(resolved, job);
+          break;
+        case 'product_import':
+          summary = await this.importProducts(resolved, job);
           break;
         default:
           throw new IntegrationError('NOT_IMPLEMENTED', {
@@ -378,6 +385,202 @@ export class ChannelSyncService {
     });
   }
 
+  /**
+   * First-sync catalogue import (Carexy/Digikala): reads the channel's product
+   * list, deduplicates by external product id and upserts product → variant →
+   * channel mapping. Counts are reported in the job summary.
+   */
+  private async importProducts(
+    resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
+    job: SyncJobRow,
+  ): Promise<Record<string, unknown>> {
+    if (resolved.adapter.pullProducts === undefined) {
+      throw new IntegrationError('NOT_IMPLEMENTED', {
+        messageFa: 'ورود محصولات برای این کانال پیاده‌سازی نشده است.',
+        details: { channel: resolved.adapter.code },
+      });
+    }
+
+    // The pull is bounded per adapter call, but still deduplicate by external id
+    // so a paging overlap or a product with several inventory rows counts once.
+    const products = new Map<string, ExternalProduct>();
+    for await (const item of resolved.adapter.pullProducts(resolved.account)) {
+      const externalId = item.externalProductId.trim();
+      if (externalId.length === 0) continue;
+      products.set(externalId, item);
+    }
+
+    const uomRows = await this.db<{ id: unknown }[]>`
+      select id from erp.units_of_measure
+      where organization_id = ${resolved.row.organizationId}::bigint
+        and deleted_at is null
+      order by id asc
+      limit 1`;
+    const baseUomId = uomRows[0] === undefined ? null : asString(uomRows[0].id);
+    if (baseUomId === null) {
+      return {
+        imported: 0,
+        updated: 0,
+        skipped: products.size,
+        reason: 'no_base_uom',
+        jobId: job.id,
+      };
+    }
+
+    const prefix = this.productPrefix(resolved.adapter.code);
+    let imported = 0;
+    let updated = 0;
+    let skipped = 0;
+    for (const [externalId, item] of products) {
+      try {
+        const outcome = await this.importProduct(resolved, item, externalId, baseUomId, prefix);
+        if (outcome === 'imported') imported += 1;
+        else if (outcome === 'updated') updated += 1;
+        else skipped += 1;
+      } catch (error) {
+        skipped += 1;
+        this.logger.warn(
+          {
+            accountId: resolved.row.id,
+            externalProductId: externalId,
+            error: error instanceof Error ? error.message : 'import_failed',
+          },
+          'channel product import row skipped',
+        );
+      }
+    }
+    return { imported, updated, skipped, jobId: job.id };
+  }
+
+  private async importProduct(
+    resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
+    item: ExternalProduct,
+    externalId: string,
+    baseUomId: string,
+    prefix: string,
+  ): Promise<'imported' | 'updated' | 'skipped'> {
+    const organizationId = resolved.row.organizationId;
+    const accountId = resolved.row.id;
+    const title = (item.title.trim() || externalId).slice(0, 300);
+    const externalVariantId = (item.externalVariantId ?? '').trim().slice(0, 150) || null;
+    const externalSku = (item.sku ?? '').trim().slice(0, 150) || null;
+    const barcode = (item.barcode ?? '').trim().slice(0, 50) || null;
+    const productNo = `${prefix}-${externalId}`.slice(0, 40);
+    const sku = (externalSku ?? `${prefix}-${externalId}`).slice(0, 100);
+
+    // A mapping for this external product already exists: refresh it and the
+    // local title/barcode without creating duplicate products.
+    const existing = await this.db<{ id: unknown; product_variant_id: unknown }[]>`
+      select id, product_variant_id
+      from erp.channel_product_mappings
+      where channel_account_id = ${accountId}::bigint
+        and external_product_id = ${externalId}
+        and deleted_at is null
+      order by id desc
+      limit 1`;
+    const existingMapping = existing[0];
+    if (existingMapping !== undefined) {
+      const variantId = asString(existingMapping.product_variant_id);
+      await this.db`
+        update erp.channel_product_mappings
+        set external_variant_id = coalesce(${externalVariantId}::text, external_variant_id),
+            external_sku = coalesce(${externalSku}::text, external_sku),
+            sync_status = 'synced',
+            last_synced_at = now(),
+            last_error = null
+        where id = ${asString(existingMapping.id)}::bigint`;
+      await this.refreshProductText(organizationId, variantId, title, barcode);
+      return 'updated';
+    }
+
+    const productRows = await this.db<{ id: unknown }[]>`
+      insert into erp.products (organization_id, product_no, name, base_uom_id)
+      values (${organizationId}::bigint, ${productNo}, ${title}, ${baseUomId}::bigint)
+      on conflict (organization_id, product_no) where deleted_at is null
+      do update set name = excluded.name, updated_at = now()
+      returning id`;
+    const productId = productRows[0] === undefined ? null : asString(productRows[0].id);
+    if (productId === null) return 'skipped';
+
+    // `product_variants.sku` is globally unique; reuse an existing variant only
+    // when it already belongs to this product, otherwise leave it untouched.
+    const variantRows = await this.db<{ id: unknown; product_id: unknown }[]>`
+      insert into erp.product_variants as pv (product_id, sku, title, barcode)
+      values (${productId}::bigint, ${sku}, ${title}, ${barcode})
+      on conflict (sku) do update set
+        title = excluded.title,
+        barcode = coalesce(excluded.barcode, pv.barcode),
+        updated_at = now()
+      returning id, product_id`;
+    const variant = variantRows[0];
+    if (variant === undefined) return 'skipped';
+    const variantId = asString(variant.id);
+    if (asString(variant.product_id) !== productId) return 'skipped';
+
+    // There is no unique index on (channel_account_id, external_product_id), but
+    // one variant can only have one live mapping: update that row instead of
+    // hitting the (channel_account_id, product_variant_id) unique index.
+    const byVariant = await this.db<{ id: unknown }[]>`
+      select id from erp.channel_product_mappings
+      where channel_account_id = ${accountId}::bigint
+        and product_variant_id = ${variantId}::bigint
+        and deleted_at is null
+      limit 1`;
+    const variantMapping = byVariant[0];
+    if (variantMapping !== undefined) {
+      await this.db`
+        update erp.channel_product_mappings
+        set external_product_id = ${externalId},
+            external_variant_id = coalesce(${externalVariantId}::text, external_variant_id),
+            external_sku = coalesce(${externalSku}::text, external_sku),
+            sync_status = 'synced',
+            last_synced_at = now(),
+            last_error = null
+        where id = ${asString(variantMapping.id)}::bigint`;
+      return 'updated';
+    }
+
+    await this.db`
+      insert into erp.channel_product_mappings (
+        channel_account_id, product_variant_id, external_product_id,
+        external_variant_id, external_sku, sync_status, last_synced_at
+      ) values (
+        ${accountId}::bigint, ${variantId}::bigint, ${externalId},
+        ${externalVariantId}, ${externalSku}, 'synced', now()
+      )`;
+    return 'imported';
+  }
+
+  private async refreshProductText(
+    organizationId: string,
+    variantId: string,
+    title: string,
+    barcode: string | null,
+  ): Promise<void> {
+    await this.db`
+      update erp.product_variants
+      set title = ${title}, barcode = coalesce(${barcode}::text, barcode), updated_at = now()
+      where id = ${variantId}::bigint`;
+    await this.db`
+      update erp.products p
+      set name = ${title}, updated_at = now()
+      from erp.product_variants v
+      where v.id = ${variantId}::bigint
+        and p.id = v.product_id
+        and p.organization_id = ${organizationId}::bigint`;
+  }
+
+  private productPrefix(code: string): string {
+    switch (code) {
+      case 'carexy':
+        return 'CH';
+      case 'digikala':
+        return 'DK';
+      default:
+        return code.slice(0, 2).toUpperCase() || 'CH';
+    }
+  }
+
   private async reconcile(
     resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
     job: SyncJobRow,
@@ -483,6 +686,8 @@ export class ChannelSyncService {
       case 'full_reconcile':
         return 'full_reconcile';
       case 'product_push':
+      case 'product_import':
+        return 'product_import';
       case 'settlement_pull':
         throw new IntegrationError('NOT_IMPLEMENTED', {
           messageFa: 'این نوع همگام‌سازی در نسخهٔ فعلی فعال نیست.',
@@ -491,13 +696,18 @@ export class ChannelSyncService {
     }
   }
 
-  private capabilityFor(type: SyncTriggerType): 'stock.push' | 'price.push' | 'order.pull' {
+  private capabilityFor(
+    type: SyncTriggerType,
+  ): 'stock.push' | 'price.push' | 'order.pull' | 'product.push' {
     switch (type) {
       case 'inventory_push':
       case 'full_reconcile':
         return 'stock.push';
       case 'price_push':
         return 'price.push';
+      case 'product_push':
+      case 'product_import':
+        return 'product.push';
       default:
         return 'order.pull';
     }

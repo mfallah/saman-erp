@@ -13,6 +13,13 @@ import { AUDIT, CRYPTO, type AuditPort, type CryptoPort, type Db } from '../../.
 import { DB } from '../../../common/contracts';
 import { IntegrationError } from '../domain/channel.types';
 import type { AdapterAccount } from '../domain/channel.types';
+import {
+  generateRsaKeypair,
+  importRsaKeypair,
+  publicKeyFingerprint,
+  publicKeyFromPrivate,
+  type RsaKeypair,
+} from '../domain/rsa-keypair';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import { AdapterRegistry } from './adapter.registry';
@@ -125,6 +132,78 @@ export class ChannelAccountService {
       }
     }
     return result;
+  }
+
+  /**
+   * Public half of the stored RSA key-pair. The private key is decrypted only
+   * to prove it exists and never leaves the service.
+   */
+  async rsaKeypair(
+    organizationId: string,
+    accountId: string,
+  ): Promise<{ publicKeyPem: string; fingerprint: string; hasPrivateKey: boolean }> {
+    const row = await this.get(organizationId, accountId);
+    const credentials = await this.decryptActive(row.id);
+    const privateKeyPem = credentials['private_key'];
+    let publicKeyPem = credentials['public_key'];
+    if (publicKeyPem === undefined && privateKeyPem !== undefined) {
+      try {
+        publicKeyPem = publicKeyFromPrivate(privateKeyPem);
+      } catch {
+        publicKeyPem = undefined;
+      }
+    }
+    if (publicKeyPem === undefined) {
+      throw new AppError('NOT_FOUND', {
+        message: 'کلید RSA برای این حساب ثبت نشده است.',
+      });
+    }
+    return {
+      publicKeyPem,
+      fingerprint: publicKeyFingerprint(publicKeyPem),
+      hasPrivateKey: privateKeyPem !== undefined,
+    };
+  }
+
+  /** Generate a 4096-bit pair, or import an existing private key. */
+  async setRsaKeypair(input: {
+    organizationId: string;
+    accountId: string;
+    privateKeyPem?: string;
+    actorId: string | null;
+    requestId: string;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<{ publicKeyPem: string; fingerprint: string; keyBits: number }> {
+    const row = await this.get(input.organizationId, input.accountId);
+    let keypair: RsaKeypair;
+    if (input.privateKeyPem !== undefined && input.privateKeyPem.trim().length > 0) {
+      try {
+        keypair = importRsaKeypair(input.privateKeyPem.trim());
+      } catch {
+        throw new AppError('VALIDATION_ERROR', {
+          message: 'کلید خصوصی ارسال‌شده معتبر نیست (RSA PEM انتظار می‌رود).',
+          details: [{ field: 'privateKeyPem', code: 'invalid_private_key' }],
+        });
+      }
+    } else {
+      keypair = generateRsaKeypair();
+    }
+
+    await this.setCredentials({
+      organizationId: input.organizationId,
+      accountId: row.id,
+      credentials: { private_key: keypair.privateKeyPem, public_key: keypair.publicKeyPem },
+      actorId: input.actorId,
+      requestId: input.requestId,
+      ...(input.ip === undefined ? {} : { ip: input.ip }),
+      ...(input.userAgent === undefined ? {} : { userAgent: input.userAgent }),
+    });
+    return {
+      publicKeyPem: keypair.publicKeyPem,
+      fingerprint: keypair.fingerprint,
+      keyBits: keypair.keyBits,
+    };
   }
 
   async credentialMetadata(
@@ -298,6 +377,12 @@ export class ChannelAccountService {
     if (entries.size === 0) {
       throw new AppError('VALIDATION_ERROR', { message: 'هیچ اعتبارنامه‌ای ارسال نشده است.' });
     }
+    // RSA key material is standalone: it must not require the channel's
+    // primary auth keys in the same request.
+    const keyMaterialOnly = [...entries.keys()].every(
+      (key) => key === 'private_key' || key === 'public_key',
+    );
+    if (keyMaterialOnly) return entries;
     const required =
       row.authType === 'oauth2_client_credentials'
         ? ['client_id', 'client_secret']

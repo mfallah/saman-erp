@@ -25,8 +25,9 @@ import type {
 } from '../../domain/channel.types';
 import { IntegrationError } from '../../domain/channel.types';
 import { hashPii } from '../../domain/pii';
+import { decryptRsaOaep } from '../../domain/rsa-keypair';
 import { verifyWebhook, WEBHOOK_SIGNATURE_CONFIG } from '../../domain/webhook-signature';
-import type { ChannelAdapter } from '../../ports/channel-adapter.port';
+import type { ChannelAdapter, ExternalProduct } from '../../ports/channel-adapter.port';
 import type { AppLogger } from '../../ports/logger.port';
 import type { KeyValueStore } from '../../ports/key-value.port';
 import type { PartnerHttpClient, PartnerResponse } from '../../infrastructure/partner-http.client';
@@ -59,6 +60,21 @@ function stringValue(value: unknown): string | null {
   if (typeof value === 'string' && value.length > 0) return value;
   if (typeof value === 'number') return String(value);
   return null;
+}
+
+/** Finds the first product/items array in the common seller-list envelopes. */
+function productArrayPayload(json: unknown): unknown[] {
+  const walk = (value: unknown, depth: number): unknown[] | null => {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== 'object' || value === null || depth > 2) return null;
+    const body = value as Record<string, unknown>;
+    for (const key of ['products', 'items', 'data', 'results']) {
+      const found = walk(body[key], depth + 1);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  return walk(json, 0) ?? [];
 }
 
 export class DigikalaAdapter implements ChannelAdapter {
@@ -126,7 +142,7 @@ export class DigikalaAdapter implements ChannelAdapter {
         maxAttempts: 2,
         idempotent: true,
       });
-      return this.readToken(response, null);
+      return this.readToken(response, null, account);
     });
   }
 
@@ -145,7 +161,7 @@ export class DigikalaAdapter implements ChannelAdapter {
         authHeaders: {},
         maxAttempts: 1,
       });
-      const token = this.readToken(response, current.refreshToken);
+      const token = this.readToken(response, current.refreshToken, account);
       await this.tokens.set(account.id, token);
       return token;
     } catch (error) {
@@ -157,8 +173,12 @@ export class DigikalaAdapter implements ChannelAdapter {
     }
   }
 
-  private readToken(response: PartnerResponse, previousRefresh: string | null): DigikalaTokenSet {
-    const body = record(response.json);
+  private readToken(
+    response: PartnerResponse,
+    previousRefresh: string | null,
+    account: AdapterAccount,
+  ): DigikalaTokenSet {
+    const body = this.decryptTokenBody(record(response.json), account);
     const accessToken = stringValue(body['access_token']);
     const expiresIn = Number(body['expires_in'] ?? 3600);
     if (accessToken === null) {
@@ -172,6 +192,52 @@ export class DigikalaAdapter implements ChannelAdapter {
       refreshToken: stringValue(body['refresh_token']) ?? previousRefresh,
       expiresAt: Date.now() + (Number.isFinite(expiresIn) ? expiresIn : 3600) * 1000,
     };
+  }
+
+  /**
+   * Digikala may return the token encrypted with the seller's RSA public key
+   * (`encrypted_token` / `access_token_encrypted`). Decrypt with the stored
+   * private key; on any failure fall back to the plain `access_token`.
+   */
+  private decryptTokenBody(
+    body: Record<string, unknown>,
+    account: AdapterAccount,
+  ): Record<string, unknown> {
+    const encrypted =
+      stringValue(body['encrypted_token']) ?? stringValue(body['access_token_encrypted']);
+    if (encrypted === null) return body;
+    const privateKeyPem = account.credentials['private_key'];
+    if (privateKeyPem === undefined) {
+      this.deps.logger.warn(
+        { accountId: account.id },
+        'digikala returned an encrypted token but no RSA private key is stored; using plain token',
+      );
+      return body;
+    }
+    try {
+      const plaintext = decryptRsaOaep(privateKeyPem, encrypted).trim();
+      if (plaintext.startsWith('{')) {
+        const nested = record(JSON.parse(plaintext) as unknown);
+        const nestedToken = stringValue(nested['access_token']) ?? stringValue(nested['token']);
+        if (nestedToken !== null) {
+          return {
+            ...body,
+            access_token: nestedToken,
+            ...(stringValue(nested['refresh_token']) === null
+              ? {}
+              : { refresh_token: stringValue(nested['refresh_token']) }),
+          };
+        }
+      }
+      if (plaintext.length > 0) return { ...body, access_token: plaintext };
+      return body;
+    } catch (error) {
+      this.deps.logger.warn(
+        { accountId: account.id, error: error instanceof Error ? error.message : 'decrypt_failed' },
+        'digikala token decryption failed; falling back to plain token',
+      );
+      return body;
+    }
   }
 
   /** Runs a request with a token, refreshing once on 401 (API.md §8.3). */
@@ -411,6 +477,91 @@ export class DigikalaAdapter implements ChannelAdapter {
         stringValue(body['available']) ??
         stringValue(record(body['data'])['stock']);
       if (available !== null) yield { variantId: ref.variantId, available };
+    }
+  }
+
+  /**
+   * First-sync catalogue import from `GET /products/seller`. The seller-list
+   * payload is not fully documented, so the mapping accepts the common shapes
+   * (`id`/`product_id`, `title`/`name`, `variants[]`, `price`/`selling_price`,
+   * `stock`/`available`) and skips anything without an external product id.
+   */
+  async *pullProducts(account: AdapterAccount): AsyncIterable<ExternalProduct> {
+    const perPage = 50;
+    const maxPages = 3;
+    for (let page = 1; page <= maxPages; page += 1) {
+      const response = await this.withAuth(account, (authHeaders) =>
+        this.deps.http.request(account, {
+          operation: 'digikala.products.list',
+          method: 'GET',
+          path: DIGIKALA_PATHS.sellerProducts,
+          query: { page, per_page: perPage },
+          authHeaders,
+          idempotent: true,
+        }),
+      );
+      const items = productArrayPayload(response.json);
+      for (const raw of items) {
+        const body = record(raw);
+        const product = record(body['product']);
+        const externalProductId =
+          stringValue(body['id']) ??
+          stringValue(body['product_id']) ??
+          stringValue(body['uuid']) ??
+          stringValue(product['id']) ??
+          stringValue(product['product_id']);
+        if (externalProductId === null) continue;
+
+        const variants = Array.isArray(body['variants'])
+          ? body['variants']
+          : Array.isArray(product['variants'])
+            ? product['variants']
+            : [];
+        const firstVariant = variants[0];
+        const variant = record(firstVariant);
+
+        const externalVariantId =
+          stringValue(body['variant_id']) ??
+          stringValue(variant['id']) ??
+          stringValue(variant['variant_id']);
+        const title =
+          stringValue(body['title']) ??
+          stringValue(body['name']) ??
+          stringValue(product['title']) ??
+          stringValue(product['name']) ??
+          externalProductId;
+        const sku =
+          stringValue(body['sku']) ??
+          stringValue(body['seller_sku']) ??
+          stringValue(variant['sku']) ??
+          stringValue(variant['seller_sku']);
+        const barcode =
+          stringValue(body['barcode']) ?? stringValue(body['ean']) ?? stringValue(variant['barcode']);
+        const price =
+          stringValue(body['price']) ??
+          stringValue(body['selling_price']) ??
+          stringValue(body['sale_price']) ??
+          stringValue(variant['price']) ??
+          stringValue(variant['selling_price']);
+        const available =
+          stringValue(body['stock']) ??
+          stringValue(body['available']) ??
+          stringValue(body['inventory']) ??
+          stringValue(variant['stock']) ??
+          stringValue(variant['available']);
+
+        yield {
+          externalProductId,
+          ...(externalVariantId === null ? {} : { externalVariantId }),
+          title,
+          ...(sku === null ? {} : { sku }),
+          ...(barcode === null ? {} : { barcode }),
+          ...(price === null ? {} : { price }),
+          ...(available === null ? {} : { available }),
+          raw,
+        };
+      }
+      if (items.length < perPage) break;
     }
   }
 

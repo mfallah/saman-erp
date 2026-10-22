@@ -407,6 +407,13 @@ export interface ChannelAccount extends Ref {
   readonly credentialMeta?: { readonly last4?: string; readonly rotatedAt?: string; readonly expiresAt?: string };
 }
 
+export interface ChannelAccountRsaKeypair {
+  readonly publicKeyPem: string;
+  readonly fingerprint: string;
+  readonly keyBits?: number;
+  readonly hasPrivateKey?: boolean;
+}
+
 export interface SyncJob {
   readonly id: string;
   readonly type: string;

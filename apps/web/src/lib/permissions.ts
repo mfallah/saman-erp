@@ -53,6 +53,7 @@ export const PERM = {
   mappingRead: 'channel.mapping.read',
   accountRead: 'channel.account.read',
   accountTest: 'channel.account.test',
+  credentialWrite: 'channel.credential.write',
   // identity
   userRead: 'user.read',
   userCreate: 'user.create',

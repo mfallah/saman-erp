@@ -13,6 +13,11 @@ import { CurrentTenant } from '../../../common/decorators/current-context.decora
 import { Permissions } from '../../..//common/decorators/permissions.decorator';
 import { apiData } from '../../../common/interceptors/response.interceptor';
 import { ChannelAccountService } from '../services/channel-accounts.service';
+import {
+  ChannelSyncService,
+  SYNC_TRIGGER_TYPES,
+  type SyncTriggerType,
+} from '../services/channel-sync.service';
 import { CREDENTIAL_KEY_NAMES, type CredentialKeyName } from '../repositories/channel-credential.repository';
 
 type Row = Record<string, unknown>;
@@ -46,6 +51,7 @@ export class ChannelsAdminController {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly accounts: ChannelAccountService,
+    private readonly sync: ChannelSyncService,
   ) {}
 
   private get sql(): Raw {
@@ -238,6 +244,50 @@ export class ChannelsAdminController {
     return apiData({ stored: Object.keys(credentials), metadata });
   }
 
+  @Get('channel-accounts/:accountId/rsa-keypair')
+  @Permissions('channel.account.read')
+  @ApiOperation({ summary: 'Public half of the account RSA key-pair (private key never returned)' })
+  async rsaKeypair(@CurrentTenant() ctx: TenantContext, @Param('accountId') accountId: string) {
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    return apiData(await this.accounts.rsaKeypair(ctx.orgId.toString(), accountInternal));
+  }
+
+  @Post('channel-accounts/:accountId/rsa-keypair')
+  @Permissions('channel.credential.write')
+  @ApiOperation({ summary: 'Generate (4096-bit) or import the Digikala RSA key-pair' })
+  async setRsaKeypair(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const privateKeyPem = payload['privateKeyPem'];
+    if (privateKeyPem !== undefined && privateKeyPem !== null && typeof privateKeyPem !== 'string') {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'privateKeyPem must be a string' });
+    }
+    const privateKeyText = typeof privateKeyPem === 'string' ? privateKeyPem : '';
+    if (privateKeyText.length > 65_536) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'privateKeyPem is too large' });
+    }
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const result = await this.accounts.setRsaKeypair({
+      organizationId: ctx.orgId.toString(),
+      accountId: accountInternal,
+      ...(privateKeyText.trim().length > 0 ? { privateKeyPem: privateKeyText } : {}),
+      actorId: ctx.actorId === null ? null : ctx.actorId.toString(),
+      requestId: ctx.requestId,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+    return apiData(result);
+  }
+
   @Post('channel-accounts/:accountId/test')
   @Permissions('channel.account.test')
   @ApiOperation({ summary: 'Authenticate against the channel with stored credentials' })
@@ -307,8 +357,16 @@ export class ChannelsAdminController {
         message: 'type is too long',
       });
     }
+    if (!(SYNC_TRIGGER_TYPES as readonly string[]).includes(type)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'unsupported sync type',
+      });
+    }
 
-    const accounts = await this.sql`
+    // Prefer an account that actually has credentials; the first account of a
+    // channel is often an empty placeholder created before the API keys.
+    let accounts = await this.sql`
       select a.id::text as id
       from erp.channel_accounts a
       join erp.sales_channels c on c.id = a.channel_id
@@ -317,9 +375,27 @@ export class ChannelsAdminController {
         and a.organization_id = ${ctx.orgId}
         and a.is_active = true
         and a.deleted_at is null
+        and exists (
+          select 1 from erp.channel_credentials cr
+          where cr.channel_account_id = a.id and cr.is_active = true
+        )
       order by a.id
       limit 1
     `;
+    if (accounts.length === 0) {
+      accounts = await this.sql`
+        select a.id::text as id
+        from erp.channel_accounts a
+        join erp.sales_channels c on c.id = a.channel_id
+        where c.public_id = ${channelId}
+          and c.organization_id = ${ctx.orgId}
+          and a.organization_id = ${ctx.orgId}
+          and a.is_active = true
+          and a.deleted_at is null
+        order by a.id
+        limit 1
+      `;
+    }
     const account = accounts[0];
     if (account === undefined) {
       throw new AppError('NOT_FOUND', {
@@ -327,16 +403,20 @@ export class ChannelsAdminController {
       });
     }
 
-    const inserted = await this.sql`
-      insert into erp.channel_sync_jobs
-        (organization_id, channel_account_id, job_type, status, next_run_at)
-      values
-        (${ctx.orgId}, ${String(account['id'])}::bigint, ${type}, 'queued', now())
-      returning public_id::text as id
-    `;
-    const job = inserted[0];
-    if (job === undefined) throw new Error('channel_sync_job_insert_failed');
-    return apiData({ id: String(job['id']), status: 'queued' });
+    // The service owns debouncing, capability checks and the mirrored job row;
+    // `product_push` from the SPA is normalised to the product_import job type.
+    const triggered = await this.sync.trigger({
+      organizationId: ctx.orgId.toString(),
+      accountId: String(account['id']),
+      type: type as SyncTriggerType,
+    });
+
+    // Execute after the HTTP response: the caller gets the job id immediately.
+    setImmediate(() => {
+      void this.sync.runJob(triggered.jobId).catch(() => undefined);
+    });
+
+    return apiData({ id: triggered.jobId, status: triggered.status });
   }
 
   @Post('channel-sync-jobs/:jobId/retry')

@@ -21,7 +21,7 @@ import type {
 } from '../../domain/channel.types';
 import { IntegrationError } from '../../domain/channel.types';
 import { verifyWebhook, WEBHOOK_SIGNATURE_CONFIG } from '../../domain/webhook-signature';
-import type { ChannelAdapter } from '../../ports/channel-adapter.port';
+import type { ChannelAdapter, ExternalProduct } from '../../ports/channel-adapter.port';
 import type { AppLogger } from '../../ports/logger.port';
 import type { PartnerHttpClient, PartnerResponse } from '../../infrastructure/partner-http.client';
 import type { ChannelMappingRepositoryPort } from '../../repositories/channel-mapping.repository';
@@ -38,6 +38,30 @@ import {
   type CarexyInventoryResponse,
   type CarexyInventorySnapshot,
 } from './carexy.types';
+
+function scalar(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+function productListPayload(json: unknown): unknown[] {
+  const direct = listPayload(json);
+  if (direct.length > 0) return direct;
+  if (typeof json === 'object' && json !== null) {
+    const data = (json as Record<string, unknown>)['data'];
+    if (typeof data === 'object' && data !== null) {
+      const nested = data as Record<string, unknown>;
+      for (const key of ['data', 'products', 'items', 'result']) {
+        if (Array.isArray(nested[key])) return nested[key] as unknown[];
+      }
+    }
+  }
+  return [];
+}
 
 function listPayload(json: unknown): unknown[] {
   if (Array.isArray(json)) return json;
@@ -222,6 +246,80 @@ export class CarexyAdapter implements ChannelAdapter {
       for (const variantId of variantIds) {
         yield { variantId, available: single.available };
       }
+    }
+  }
+
+  /**
+   * First-sync catalogue import. Reads `GET /api/v1/products` page by page and
+   * maps only fields that the contract exposes, tolerating the common Laravel
+   * envelope shapes (`{data: [...]}`, `{data: {data: [...]}}`).
+   */
+  async *pullProducts(account: AdapterAccount): AsyncIterable<ExternalProduct> {
+    const perPage = 50;
+    const maxPages = 3;
+    for (let page = 1; page <= maxPages; page += 1) {
+      const response = await this.deps.http.request(account, {
+        operation: 'carexy.products.list',
+        method: 'GET',
+        path: CAREXY_PATHS.products,
+        query: { per_page: perPage, page },
+        authHeaders: this.auth(account),
+        idempotent: true,
+      });
+      const items = productListPayload(response.json);
+      for (const raw of items) {
+        if (typeof raw !== 'object' || raw === null) continue;
+        const item = raw as Record<string, unknown>;
+        const externalProductId =
+          scalar(item['product_uuid']) ??
+          scalar(item['uuid']) ??
+          scalar(item['id']) ??
+          scalar(item['product_id']);
+        if (externalProductId === undefined) continue;
+
+        const inventories = Array.isArray(item['inventories'])
+          ? item['inventories']
+          : Array.isArray(item['inventory'])
+            ? item['inventory']
+            : [];
+        const firstInventory = inventories[0];
+        const inventory =
+          typeof firstInventory === 'object' && firstInventory !== null
+            ? (firstInventory as Record<string, unknown>)
+            : {};
+
+        const externalVariantId =
+          scalar(inventory['inventory_uuid']) ?? scalar(item['variant_uuid']);
+        const sku =
+          scalar(item['sku']) ??
+          scalar(item['product_code']) ??
+          scalar(item['code']) ??
+          scalar(inventory['sku']);
+        const barcode = scalar(item['barcode']) ?? scalar(inventory['barcode']);
+        const price = scalar(item['price']) ?? scalar(inventory['price']);
+        const available =
+          scalar(inventory['count']) ??
+          scalar(inventory['stock']) ??
+          scalar(item['stock']) ??
+          scalar(item['available']);
+        const title =
+          scalar(item['title']) ??
+          scalar(item['name']) ??
+          scalar(item['product_name']) ??
+          externalProductId;
+
+        yield {
+          externalProductId,
+          ...(externalVariantId === undefined ? {} : { externalVariantId }),
+          title,
+          ...(sku === undefined ? {} : { sku }),
+          ...(barcode === undefined ? {} : { barcode }),
+          ...(price === undefined ? {} : { price }),
+          ...(available === undefined ? {} : { available }),
+          raw,
+        };
+      }
+      if (items.length < perPage) break;
     }
   }
 
