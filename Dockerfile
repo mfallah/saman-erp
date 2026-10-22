@@ -47,8 +47,7 @@ COPY apps/api ./apps/api
 COPY apps/web ./apps/web
 RUN pnpm --filter @saman/shared build \
  && pnpm --filter @saman/db build \
- && pnpm --filter @saman/api build \
-
+ && pnpm --filter @saman/api build
 
 # -----------------------------------------------------------------------------
 # prod: minimal runtime, production dependencies only, non-root
