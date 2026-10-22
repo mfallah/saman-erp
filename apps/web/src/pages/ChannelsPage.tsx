@@ -119,6 +119,8 @@ export function ChannelsPage() {
   const [rsaBusy, setRsaBusy] = useState(false);
   const [rsaLoading, setRsaLoading] = useState(false);
   const [rsaError, setRsaError] = useState('');
+  const [rsaResetNotice, setRsaResetNotice] = useState('');
+  const [rsaResetArmed, setRsaResetArmed] = useState(false);
   const [dkClientCode, setDkClientCode] = useState('');
   const [dkClientSecret, setDkClientSecret] = useState('');
   const [dkValidationCode, setDkValidationCode] = useState('');
@@ -280,6 +282,8 @@ export function ChannelsPage() {
     setRsaPrivateKeyInput('');
     setRsaImportOpen(false);
     setRsaError('');
+    setRsaResetNotice('');
+    setRsaResetArmed(false);
     void loadRsaKeypair(account);
   };
 
@@ -298,12 +302,44 @@ export function ChannelsPage() {
       setRsaHasPrivateKey(true);
       setRsaPrivateKeyInput('');
       setRsaImportOpen(false);
+      setRsaResetNotice('');
       toast.success('کلید RSA ذخیره شد', 'کلید عمومی را در پنل دیجی‌کالا ثبت کنید.');
       void queryClient.invalidateQueries({ queryKey: queryKeys.channels.accounts(selectedChannelId) });
     } catch (error) {
       const message = toFaErrorMessage(error);
       setRsaError(message);
       toast.error('ثبت کلید RSA ناموفق بود', message);
+    } finally {
+      setRsaBusy(false);
+    }
+  };
+
+  const resetRsaKeypair = async (): Promise<void> => {
+    if (rsaAccount === null) return;
+    setRsaBusy(true);
+    setRsaError('');
+    setRsaResetNotice('');
+    setRsaResetArmed(false);
+    try {
+      const result = await api.post<ChannelAccountRsaKeypair>(
+        `/channel-accounts/${rsaAccount.id}/rsa-keypair/reset`,
+        {},
+        { idempotencyKey: newRequestId() },
+      );
+      setRsaPublicKey(result.publicKeyPem);
+      setRsaFingerprint(result.fingerprint);
+      setRsaHasPrivateKey(result.hasPrivateKey !== false);
+      setDkValidationCode('');
+      setDkResult('');
+      setRsaResetNotice(
+        'جفت‌کلید جدید ساخته شد. کلید عمومی جدید در کادر بالا قرار گرفت؛ آن را کامل در پنل دیجی‌کالا ثبت کنید و سپس یک کد اعتبارسنجی تازه بگیرید. کدهای قبلی با کلید قدیمی رمز شده‌اند و کار نمی‌کنند.',
+      );
+      toast.success('جفت‌کلید جدید ساخته شد', 'کلید عمومی جدید را در دیجی‌کالا ثبت کنید و کد تازه بگیرید.');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channels.accounts(selectedChannelId) });
+    } catch (error) {
+      const message = toFaErrorMessage(error);
+      setRsaError(message);
+      toast.error('تولید مجدد جفت‌کلید ناموفق بود', message);
     } finally {
       setRsaBusy(false);
     }
@@ -662,35 +698,95 @@ export function ChannelsPage() {
                 SHA-256: {rsaFingerprint}
               </p>
 
-              <div className="mt-4 space-y-2 rounded-lg border border-dashed border-slate-300 p-3 dark:border-slate-700">
+              <div className="mt-4 space-y-3 rounded-lg border border-dashed border-slate-300 p-3 dark:border-slate-700">
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
                   فعال‌سازی توکن دیجی‌کالا
                 </p>
+
+                <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-6 text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-100">
+                  <p className="font-semibold">اگر خطای «کد اعتبارسنجی با این کلید خصوصی هم‌خوان نیست» گرفتید</p>
+                  <p>
+                    دیجی‌کالا کد را با کلید عمومی‌ای رمز می‌کند که در پنل ثبت شده است؛ اثر انگشت کلید
+                    ذخیره‌شده باید دقیقاً با کلید ثبت‌شده در پنل یکی باشد. اگر نیست، جفت‌کلید تازه
+                    بسازید، کلید عمومی جدید را در پنل ثبت کنید و بعد یک کد اعتبارسنجی تازه بگیرید.
+                  </p>
+                  <p dir="ltr" className="break-all font-mono text-[10px] opacity-80">
+                    SHA-256: {rsaFingerprint.length > 0 ? rsaFingerprint : '—'}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant={rsaResetArmed ? 'danger' : 'outline'}
+                    icon={<RotateCw className="size-3.5" />}
+                    loading={rsaBusy}
+                    disabled={rsaLoading}
+                    onClick={() => {
+                      if (!rsaResetArmed) {
+                        setRsaResetArmed(true);
+                        return;
+                      }
+                      void resetRsaKeypair();
+                    }}
+                  >
+                    {rsaResetArmed ? 'تأیید جایگزینی جفت‌کلید' : 'تولید مجدد جفت‌کلید'}
+                  </Button>
+                  {rsaResetArmed ? (
+                    <p className="font-medium">
+                      با تأیید، جفت‌کلید فعلی باطل می‌شود. کلید عمومی جدید را در پنل ثبت کنید و کد
+                      اعتبارسنجی تازه بگیرید.
+                    </p>
+                  ) : null}
+                  {rsaResetNotice.length === 0 ? null : (
+                    <p role="status" className="font-medium">
+                      {rsaResetNotice}
+                    </p>
+                  )}
+                </div>
+
                 <p className="text-[11px] text-slate-500">
-                  از پنل دیجی‌کالا «کد کلاینت» و «کد اعتبارسنجی» را کپی کن و اینجا بچسبان؛ سامانه کد را
-                  با کلید خصوصی رمزگشایی و به توکن تبدیل می‌کند.
+                  از پنل دیجی‌کالا فقط دو مقدار «کد کلاینت» و «کد اعتبارسنجی» را کپی کن و اینجا بچسبان؛
+                  سامانه کد را با کلید خصوصی رمزگشایی و به توکن تبدیل می‌کند.
                 </p>
-                <Input
-                  dir="ltr"
-                  placeholder="Client code"
-                  value={dkClientCode}
-                  onChange={(event) => setDkClientCode(event.target.value)}
-                />
-                <Input
-                  dir="ltr"
-                  type="password"
-                  placeholder="Client secret (اگر دیجی‌کالا داده)"
-                  value={dkClientSecret}
-                  onChange={(event) => setDkClientSecret(event.target.value)}
-                />
-                <Textarea
-                  dir="ltr"
-                  rows={4}
-                  placeholder="Validation code (base64)"
-                  className="font-mono text-[11px]"
-                  value={dkValidationCode}
-                  onChange={(event) => setDkValidationCode(event.target.value)}
-                />
+                <FormField label="کد کلاینت (Client code)">
+                  <Input
+                    dir="ltr"
+                    placeholder="Client code"
+                    value={dkClientCode}
+                    onChange={(event) => setDkClientCode(event.target.value)}
+                  />
+                </FormField>
+                <FormField
+                  label="کد اعتبارسنجی (Validation code)"
+                  hint="مقدار base64؛ یک‌بارمصرف و کوتاه‌عمر است."
+                >
+                  <Textarea
+                    dir="ltr"
+                    rows={4}
+                    placeholder="Validation code (base64)"
+                    className="font-mono text-[11px]"
+                    value={dkValidationCode}
+                    onChange={(event) => setDkValidationCode(event.target.value)}
+                  />
+                </FormField>
+
+                <details className="rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+                  <summary className="cursor-pointer select-none text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                    پیشرفته (اختیاری): Client secret
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    <p className="text-[11px] text-slate-500">
+                      سرویس‌هاب دیجی‌کالا معمولاً فقط «کد کلاینت» و «کد اعتبارسنجی» می‌دهد. این فیلد را
+                      فقط در صورتی پر کنید که client secret را جداگانه دریافت کرده‌اید.
+                    </p>
+                    <Input
+                      dir="ltr"
+                      type="password"
+                      placeholder="Client secret (اختیاری)"
+                      value={dkClientSecret}
+                      onChange={(event) => setDkClientSecret(event.target.value)}
+                    />
+                  </div>
+                </details>
+
                 <Button
                   size="sm"
                   loading={dkBusy}

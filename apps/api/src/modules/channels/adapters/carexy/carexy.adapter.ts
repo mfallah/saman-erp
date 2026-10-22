@@ -70,23 +70,70 @@ function pick(record: Record<string, unknown>, keys: readonly string[]): unknown
   return undefined;
 }
 
-const LIST_KEYS = ['data', 'products', 'items', 'result', 'results', 'inventories'] as const;
+const LIST_KEYS = [
+  'response',
+  'data',
+  'products',
+  'items',
+  'result',
+  'results',
+  'rows',
+  'inventories',
+] as const;
 const STOCK_KEYS = ['stock', 'quantity', 'available', 'count', 'qty'] as const;
 
-/** `[…]`, `{data: […]}` or `{data: {data|products|items: […]}}` (Laravel-ish). */
-function listPayload(json: unknown): unknown[] {
+/**
+ * `[…]`, `{response: {data: […]}}` (Carexy), `{data: {data|products|items: […]}}`
+ * (Laravel-ish) or a numeric-keyed map — unwrapped recursively up to 4 levels.
+ */
+function listPayload(json: unknown, depth = 0): unknown[] {
+  if (depth > 4) return [];
   if (Array.isArray(json)) return json;
   if (!isRecord(json)) return [];
   for (const key of LIST_KEYS) {
+    if (!(key in json)) continue;
     const value = json[key];
-    if (Array.isArray(value)) return value;
-    if (isRecord(value)) {
-      for (const inner of LIST_KEYS) {
-        if (Array.isArray(value[inner])) return value[inner] as unknown[];
-      }
-    }
+    const nested = listPayload(value, depth + 1);
+    if (nested.length > 0) return nested;
+    // A present but empty array is an authoritative empty page.
+    if (Array.isArray(value)) return [];
   }
+  const keys = Object.keys(json);
+  if (keys.length > 0 && keys.every((key) => /^\d+$/.test(key))) return Object.values(json);
   return [];
+}
+
+/**
+ * Carexy answers HTTP 200 even when the envelope reports failure
+ * (`{success: false, code: 401}`), so the body — not the status — decides.
+ */
+function providerFailure(json: unknown): { code: string; httpStatus: number } | null {
+  if (!isRecord(json)) return null;
+  const success = json['success'];
+  const envelopeCode = json['code'];
+  const inner = json['response'];
+  const codeValue = envelopeCode ?? (isRecord(inner) ? inner['code'] : undefined);
+  const parsedCode =
+    codeValue === undefined || codeValue === null ? undefined : Number(String(codeValue).trim());
+  const failureCode =
+    parsedCode !== undefined &&
+    Number.isFinite(parsedCode) &&
+    (parsedCode < 200 || parsedCode > 299);
+  const failed = success === false || success === 'false' || success === 0 || success === '0';
+  if (!failed && !failureCode) return null;
+  const code = codeValue === undefined ? 'unknown' : String(codeValue);
+  return { code, httpStatus: failureCode && parsedCode !== undefined ? parsedCode : 0 };
+}
+
+/** Envelope diagnostics only — key names and counts, never credentials or payloads. */
+function logListEnvelope(page: number, json: unknown, items: readonly unknown[]): void {
+  const envelope = isRecord(json) ? json : {};
+  const inner = envelope['response'];
+  const first = items[0];
+  // eslint-disable-next-line no-console
+  console.log(
+    `[carexy] products page=${page} success=${String(envelope['success'])} code=${String(envelope['code'])} responseType=${typeof inner} responseKeys=${isRecord(inner) ? Object.keys(inner).join(',') : '-'} items=${items.length} firstItemKeys=${isRecord(first) ? Object.keys(first).slice(0, 20).join(',') : '-'}`,
+  );
 }
 
 /** Sum of one stock field across inventory-like rows; `undefined` when absent. */
@@ -279,8 +326,9 @@ export class CarexyAdapter implements ChannelAdapter {
 
   /**
    * First-sync catalogue import. Reads `GET /api/v1/products` page by page and
-   * maps only fields the contract exposes, tolerating the common Laravel
-   * envelopes (`{data: [...]}`, `{data: {data: [...]}}`).
+   * maps only fields the contract exposes, tolerating Carexy's
+   * `{success, response: {data: [...]}, code}` envelope and the common Laravel
+   * shapes (`{data: [...]}`, `{data: {data: [...]}}`).
    */
   async *pullProducts(account: AdapterAccount): AsyncIterable<ExternalProduct> {
     const perPage = 50;
@@ -299,11 +347,24 @@ export class CarexyAdapter implements ChannelAdapter {
         idempotent: true,
       });
       const items = listPayload(response.json);
-      // Diagnostics: Carexy's list shape varies between deployments; log the envelope keys once per page.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[carexy] products page=${page} items=${items.length} envelopeKeys=${Object.keys((response.json ?? {}) as Record<string, unknown>).join(',')} firstItemKeys=${items.length > 0 && isRecord(items[0]) ? Object.keys(items[0] as Record<string, unknown>).slice(0, 20).join(',') : '-'}`,
-      );
+      // Diagnostics: Carexy's list shape varies between deployments; log the envelope shape once per page.
+      logListEnvelope(page, response.json, items);
+      const failure = providerFailure(response.json);
+      if (failure !== null) {
+        throw new IntegrationError(
+          failure.httpStatus === 401
+            ? 'UNAUTHENTICATED'
+            : failure.httpStatus === 403
+              ? 'FORBIDDEN'
+              : 'UPSTREAM_INVALID_RESPONSE',
+          {
+            messageFa: `کرکسی فهرست محصولات را رد کرد (کد ${failure.code}).`,
+            retryable: false,
+            ...(failure.httpStatus > 0 ? { httpStatus: failure.httpStatus } : {}),
+            details: { providerCode: failure.code },
+          },
+        );
+      }
       for (const raw of items) {
         if (!isRecord(raw)) continue;
         const externalProductId = scalar(pick(raw, ['uuid', 'product_uuid', 'id', 'product_id']));

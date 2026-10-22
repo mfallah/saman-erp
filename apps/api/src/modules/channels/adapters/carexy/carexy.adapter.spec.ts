@@ -11,6 +11,7 @@ import { mapCarexyInventory, toCarexyInventoryWrite } from './carexy.types';
 import type { ChannelMappingRepositoryPort } from '../../repositories/channel-mapping.repository';
 import type { ExternalProduct } from '../../ports/channel-adapter.port';
 import type { AdapterAccount } from '../../domain/channel.types';
+import { IntegrationError } from '../../domain/channel.types';
 
 const account: AdapterAccount = {
   id: '5',
@@ -199,6 +200,87 @@ describe('Carexy mapping (§8.2, §53–54)', () => {
       requests.filter((url) => new URL(url).pathname.startsWith('/api/v1/inventories/product/'))
         .length,
       1,
+    );
+  });
+
+  it('unwraps the {success, response:{data}, code} envelope returned in production', async () => {
+    const http = new PartnerHttpClient(
+      {
+        logger: new SilentLogger(),
+        apiCalls: apiCalls([]),
+        rateLimiter: new TokenBucket(new InMemoryKeyValueStore(), {
+          capacity: 100,
+          refillPerSecond: 100,
+        }),
+        declaredHosts: ['carexy.shop'],
+      },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              success: true,
+              response: {
+                data: [
+                  {
+                    uuid: 'p-env',
+                    name_fa: 'کالای پوششی',
+                    sale_price: '1,200,000',
+                    stock: 4,
+                  },
+                ],
+              },
+              code: 200,
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      },
+    );
+    const adapter = new CarexyAdapter({ http, mappings: noopMappings, logger: new SilentLogger() });
+
+    const products: ExternalProduct[] = [];
+    for await (const product of adapter.pullProducts(account)) products.push(product);
+
+    assert.equal(products.length, 1);
+    assert.equal(products[0]?.externalProductId, 'p-env');
+    assert.equal(products[0]?.title, 'کالای پوششی');
+    assert.equal(products[0]?.price, '1200000');
+    assert.equal(products[0]?.available, '4');
+  });
+
+  it('fails the job with the provider code when the envelope reports {success:false, code:401}', async () => {
+    const http = new PartnerHttpClient(
+      {
+        logger: new SilentLogger(),
+        apiCalls: apiCalls([]),
+        rateLimiter: new TokenBucket(new InMemoryKeyValueStore(), {
+          capacity: 100,
+          refillPerSecond: 100,
+        }),
+        declaredHosts: ['carexy.shop'],
+      },
+      {
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ success: false, code: 401 }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      },
+    );
+    const adapter = new CarexyAdapter({ http, mappings: noopMappings, logger: new SilentLogger() });
+
+    await assert.rejects(
+      async () => {
+        for await (const _product of adapter.pullProducts(account)) {
+          assert.fail('no product should be yielded from a failed envelope');
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof IntegrationError);
+        assert.equal(error.code, 'UNAUTHENTICATED');
+        assert.match(error.messageFa, /401/);
+        assert.equal(error.details?.['providerCode'], '401');
+        return true;
+      },
     );
   });
 

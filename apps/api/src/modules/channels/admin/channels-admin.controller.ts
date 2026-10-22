@@ -13,7 +13,11 @@ import { CurrentTenant } from '../../../common/decorators/current-context.decora
 import { Permissions } from '../../..//common/decorators/permissions.decorator';
 import { apiData } from '../../../common/interceptors/response.interceptor';
 import { ChannelAccountService } from '../services/channel-accounts.service';
-import { activateDigikalaToken } from '../adapters/digikala/digikala-activation.service';
+import { publicKeyFingerprint, publicKeyFromPrivate } from '../domain/rsa-keypair';
+import {
+  activateDigikalaToken,
+  RsaDecryptionError,
+} from '../adapters/digikala/digikala-activation.service';
 import {
   ChannelSyncService,
   SYNC_TRIGGER_TYPES,
@@ -290,6 +294,30 @@ export class ChannelsAdminController {
   }
 
   /**
+   * Replaces whatever key-pair is stored with a brand-new 4096-bit pair.
+   * Used when Digikala still holds an older public key, so validation codes
+   * are encrypted with a key our private key cannot decrypt.
+   */
+  @Post('channel-accounts/:accountId/rsa-keypair/reset')
+  @Permissions('channel.credential.write')
+  @ApiOperation({ summary: 'Overwrite the RSA key-pair with a new 4096-bit pair' })
+  async resetRsaKeypair(@CurrentTenant() ctx: TenantContext, @Param('accountId') accountId: string) {
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const result = await this.accounts.resetRsaKeypair({
+      organizationId: ctx.orgId.toString(),
+      accountId: accountInternal,
+      actorId: ctx.actorId === null ? null : ctx.actorId.toString(),
+      requestId: ctx.requestId,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+    });
+    return apiData(result);
+  }
+
+  /**
    * Exchanges Digikala's short-lived validation code for access/refresh tokens.
    * Flow: base64-decode the code -> RSA-decrypt with the stored private key ->
    * POST /open-api/v1/auth/token -> store access_token/refresh_token.
@@ -321,10 +349,17 @@ export class ChannelsAdminController {
     }
     const clientCode = text(payload['clientCode']) || credentials['client_code'] || credentials['client_id'] || '';
     const clientSecret = text(payload['clientSecret']) || credentials['client_secret'] || '';
+    let storedFingerprint: string | undefined;
+    try {
+      storedFingerprint = publicKeyFingerprint(publicKeyFromPrivate(privateKey));
+    } catch {
+      storedFingerprint = undefined;
+    }
     try {
       const result = await activateDigikalaToken({
         validationCode,
         privateKeyPem: privateKey,
+        ...(storedFingerprint === undefined ? {} : { publicKeyFingerprint: storedFingerprint }),
         ...(clientCode.length > 0 ? { clientCode } : {}),
         ...(clientSecret.length > 0 ? { clientSecret } : {}),
         ...(credentials['base_url'] === undefined ? {} : { baseUrl: credentials['base_url'] }),
@@ -354,9 +389,23 @@ export class ChannelsAdminController {
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[digikala] token activation failed:', error instanceof Error ? error.message : String(error));
+      if (error instanceof RsaDecryptionError) {
+        throw new BadRequestException({
+          code: 'DIGIKALA_RSA_DECRYPT_FAILED',
+          message: error.message,
+          details: {
+            fingerprint: error.fingerprint,
+            attempts: [...error.attempts],
+            requiresPublicKeyMatch: true,
+          },
+        });
+      }
       throw new BadRequestException({
         code: 'DIGIKALA_TOKEN_FAILED',
         message: error instanceof Error ? error.message : String(error),
+        ...(storedFingerprint === undefined
+          ? {}
+          : { details: { fingerprint: storedFingerprint } }),
       });
     }
   }

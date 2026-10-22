@@ -206,6 +206,23 @@ export class ChannelAccountService {
     };
   }
 
+  /**
+   * Overwrite the stored pair with a fresh 4096-bit pair. The caller must
+   * re-register the new public key in Digikala and request a fresh validation
+   * code, because old codes were encrypted with the previous public key.
+   */
+  async resetRsaKeypair(input: {
+    organizationId: string;
+    accountId: string;
+    actorId: string | null;
+    requestId: string;
+    ip?: string;
+    userAgent?: string;
+  }): Promise<{ publicKeyPem: string; fingerprint: string; keyBits: number; hasPrivateKey: true; reset: true }> {
+    const result = await this.setRsaKeypair(input);
+    return { ...result, hasPrivateKey: true, reset: true };
+  }
+
   async credentialMetadata(
     organizationId: string,
     accountId: string,
