@@ -5,6 +5,7 @@ import { useAuth } from '../../lib/use-auth';
 import { hasPermission } from '../../lib/auth-store';
 import { NAV_ITEMS, type NavChild, type NavItem } from './nav';
 import { IconButton } from '../ui/IconButton';
+import { useBranding } from '../../lib/branding';
 
 interface SidebarProps {
   readonly collapsed: boolean;
@@ -35,6 +36,9 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate, className }: 
   useAuth();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const items = NAV_ITEMS.filter(isVisible);
+  const branding = useBranding();
+  const logo = branding.data?.logoDataUrl;
+  const appName = branding.data?.appName ?? 'سامان ERP';
 
   const isActive = (target: string | undefined, item: NavItem): boolean => {
     if (target === undefined) {
@@ -62,10 +66,14 @@ export function Sidebar({ collapsed, onToggleCollapse, onNavigate, className }: 
       <div className="flex h-14 items-center justify-between gap-2 border-b border-slate-200 px-3 dark:border-slate-700">
         {!collapsed && (
           <Link to="/" className="flex items-center gap-2" onClick={onNavigate} aria-label="سامان ERP — داشبورد">
-            <span className="grid size-8 place-items-center rounded-lg bg-brand-700 text-sm font-bold text-white">
-              س
-            </span>
-            <span className="text-sm font-bold text-slate-900 dark:text-slate-100">سامان ERP</span>
+            {logo === undefined ? (
+              <span className="grid size-8 place-items-center rounded-lg bg-brand-700 text-sm font-bold text-white">
+                س
+              </span>
+            ) : (
+              <img src={logo} alt={appName} className="size-8 rounded-lg object-contain" />
+            )}
+            <span className="text-sm font-bold text-slate-900 dark:text-slate-100">{appName}</span>
           </Link>
         )}
         {collapsed && (

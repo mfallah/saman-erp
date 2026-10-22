@@ -5,6 +5,7 @@ import { PREF_KEYS } from '../../lib/config';
 import { usePreferenceState } from '../../lib/hooks';
 import { Drawer } from '../ui/Modal';
 import { useToast } from '../ui/Toast';
+import { applyFavicon, useBranding } from '../../lib/branding';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 
@@ -17,6 +18,12 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const collapsed = collapsedPref === 'true';
   const theme: 'light' | 'dark' = themePref === 'dark' ? 'dark' : 'light';
+  const branding = useBranding();
+
+  useEffect(() => {
+    applyFavicon(branding.data?.faviconDataUrl ?? branding.data?.logoDataUrl);
+    if (branding.data?.appName !== undefined) document.title = branding.data.appName;
+  }, [branding.data]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');

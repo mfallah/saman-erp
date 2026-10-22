@@ -22,6 +22,7 @@ import { Switch } from '../components/ui/Switch';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import { Textarea } from '../components/ui/Textarea';
 import { useToast } from '../components/ui/Toast';
+import { applyFavicon } from '../lib/branding';
 
 /** Persian labels for known setting keys; unknown keys are shown by their code. */
 const SETTING_LABELS: Record<string, string> = {
@@ -352,6 +353,102 @@ function SessionsCard() {
   );
 }
 
+
+/** Upload logo/favicon and store them as data URLs in settings group `branding`. */
+function BrandingTab({ editable }: { readonly editable: boolean }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [logo, setLogo] = useState<string | undefined>(undefined);
+  const [favicon, setFavicon] = useState<string | undefined>(undefined);
+  const [appName, setAppName] = useState('');
+
+  const query = useQuery({
+    queryKey: ['branding'],
+    queryFn: () => api.get<Record<string, unknown>>('/settings/branding'),
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (query.data !== undefined) {
+      setLogo(typeof query.data['logoDataUrl'] === 'string' ? (query.data['logoDataUrl'] as string) : undefined);
+      setFavicon(typeof query.data['faviconDataUrl'] === 'string' ? (query.data['faviconDataUrl'] as string) : undefined);
+      setAppName(typeof query.data['appName'] === 'string' ? (query.data['appName'] as string) : '');
+    }
+  }, [query.data]);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const version = query.data?.['version'];
+      return api.put<Record<string, unknown>>(
+        '/settings/branding',
+        { logoDataUrl: logo ?? '', faviconDataUrl: favicon ?? '', appName },
+        { ...(typeof version === 'number' ? { ifMatch: version } : {}) },
+      );
+    },
+    onSuccess: () => {
+      toast.success('برندینگ ذخیره شد');
+      applyFavicon(favicon ?? logo);
+      void queryClient.invalidateQueries({ queryKey: ['branding'] });
+    },
+    onError: (error) => toast.error('ذخیره برندینگ ناموفق بود', toFaErrorMessage(error)),
+  });
+
+  const pick = (file: File | undefined, apply: (value: string | undefined) => void) => {
+    if (file === undefined) return;
+    if (file.size > 200 * 1024) {
+      toast.error('فایل بزرگ است', 'حجم لوگو/فاوآیکون باید کمتر از ۲۰۰ کیلوبایت باشد.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => apply(typeof reader.result === 'string' ? reader.result : undefined);
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <Card>
+      <CardHeader title="برندینگ" description="لوگو، فاوآیکون و نام نمایشی سامانه" />
+      <div className="grid gap-4 md:grid-cols-2">
+        <FormField label="لوگو (PNG/SVG، حداکثر ۲۰۰KB)">
+          <div className="flex items-center gap-3">
+            {logo === undefined ? null : <img src={logo} alt="لوگو" className="size-12 rounded-lg object-contain" />}
+            <input
+              type="file"
+              accept="image/png,image/svg+xml,image/webp"
+              disabled={!editable}
+              onChange={(event) => pick(event.target.files?.[0], setLogo)}
+              className="block w-full text-xs"
+            />
+          </div>
+        </FormField>
+        <FormField label="فاوآیکون (PNG/ICO/SVG)">
+          <div className="flex items-center gap-3">
+            {favicon === undefined ? null : <img src={favicon} alt="فاوآیکون" className="size-8 rounded object-contain" />}
+            <input
+              type="file"
+              accept="image/png,image/svg+xml,image/x-icon,image/webp"
+              disabled={!editable}
+              onChange={(event) => pick(event.target.files?.[0], setFavicon)}
+              className="block w-full text-xs"
+            />
+          </div>
+        </FormField>
+        <FormField label="نام نمایشی سامانه">
+          <Input value={appName} disabled={!editable} onChange={(event) => setAppName(event.target.value)} placeholder="سامان ERP" />
+        </FormField>
+      </div>
+      {editable ? (
+        <div className="mt-4">
+          <Button loading={save.isPending} onClick={() => save.mutate()}>
+            ذخیره برندینگ
+          </Button>
+        </div>
+      ) : (
+        <p className="mt-4 text-xs text-slate-500">برای ویرایش برندینگ به مجوز تنظیمات نیاز دارید.</p>
+      )}
+    </Card>
+  );
+}
+
 /** Settings: organization, SMS, pricing and security groups. */
 export function SettingsPage() {
   useDocumentTitle('تنظیمات');
@@ -391,6 +488,7 @@ export function SettingsPage() {
           { value: 'organization', label: 'سازمان', icon: <Building2 className="size-4" /> },
           { value: 'sms', label: 'پیامک', icon: <MessageSquareText className="size-4" /> },
           { value: 'pricing', label: 'قیمت‌گذاری' },
+          { value: 'branding', label: 'برندینگ' },
           { value: 'security', label: 'امنیت', icon: <Lock className="size-4" /> },
         ]}
       />
@@ -419,6 +517,7 @@ export function SettingsPage() {
             editable={canUpdate}
           />
         )}
+        {tab === 'branding' && <BrandingTab editable={canUpdate} />}
         {tab === 'security' && (
           <div className="grid gap-4 lg:grid-cols-2">
             <SettingsGroupEditor
