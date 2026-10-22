@@ -20,7 +20,7 @@ import { IdParam, parseWith } from './dto/common';
 import { BrandListQuery, BulkUpdateCategoriesBody, CategoryListQuery, CreateBrandBody, CreateCategoryBody, MoveCategoryBody, UpdateBrandBody, UpdateCategoryBody } from './dto/category.dto';
 import { AttributeListQuery, CreateAttributeBody, ReplaceAttributeValuesBody, ReplaceVariantAttributesBody, UpdateAttributeBody, UpdateAttributeValueBody } from './dto/attribute.dto';
 import { ConversionIdParam, CreateConversionBody, CreateUnitBody, UnitDetailQuery, UnitListQuery, UpdateUnitBody } from './dto/unit.dto';
-import { ArchiveProductBody, AttachMediaBody, BarcodeIdParam, BarcodeLookupQuery, BulkUpdateProductsBody, CostHistoryQuery, CreateBarcodeBody, CreateProductBody, CreateVariantBody, LookupProductQuery, MediaIdParam, PriceHistoryQuery, ProductDetailQuery, ProductListQuery, PublishProductBody, ReplaceSupplierLinksBody, UpdateMediaBody, UpdateProductBody, UpdateVariantBody, VariantListQuery } from './dto/product.dto';
+import { ArchiveProductBody, AttachMediaBody, BarcodeIdParam, BarcodeLookupQuery, BulkUpdateProductsBody, CostHistoryQuery, CreateBarcodeBody, CreateProductBody, CreateVariantBody, LookupProductQuery, MediaIdParam, PriceHistoryQuery, ProductDetailQuery, ProductListQuery, PublishProductBody, ReplaceSupplierLinksBody, UpdateMediaBody, UpdateProductBody, UpdateVariantBody, VariantIdParam, VariantListQuery } from './dto/product.dto';
 
 const offset = (data: readonly unknown[], total: number, page: number, perPage: number) =>
   apiData(data, { pagination: buildOffsetMeta(page, perPage, total), total });
@@ -268,6 +268,27 @@ export class ProductsController {
   async createVariant(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
     const { id } = parseWith(IdParam, params);
     return apiData(await this.service.createVariant(ctx, id, parseWith(CreateVariantBody, body)));
+  }
+
+  @Patch(':id/variants/:variantId')
+  @Permissions('variant.update')
+  @Audited('variant.update')
+  async updateVariant(
+    @CurrentTenant() ctx: TenantContext,
+    @Param() params: unknown,
+    @Body() body: unknown,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ) {
+    const { id, variantId } = parseWith(VariantIdParam, params);
+    const data = await this.service.updateVariant(
+      ctx,
+      variantId,
+      parseWith(UpdateVariantBody, body),
+      parseIfMatch(ifMatch),
+      id,
+    );
+    return apiData(versioned(reply, data));
   }
 
   @Get(':id/price-history')

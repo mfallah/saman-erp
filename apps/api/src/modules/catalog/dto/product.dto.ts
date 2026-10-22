@@ -79,6 +79,8 @@ export type UpdateProductBody = z.infer<typeof UpdateProductBody>;
 
 export const UpdateVariantBody = z
   .object({
+    sku: Sku.optional(),
+    barcode: z.string().trim().min(4).max(50).nullable().optional(),
     weightGrams: WeightGrams.optional(),
     dimensions: Dimensions.optional(),
     unitId: PublicId.optional(),
@@ -89,6 +91,9 @@ export const UpdateVariantBody = z
   .strict()
   .refine((body) => Object.keys(body).length > 0, { message: 'empty_update' });
 export type UpdateVariantBody = z.infer<typeof UpdateVariantBody>;
+
+export const VariantIdParam = z.object({ id: PublicId, variantId: PublicId });
+export type VariantIdParam = z.infer<typeof VariantIdParam>;
 
 export const BulkUpdateProductsBody = z.object({
   items: z

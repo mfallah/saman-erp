@@ -6,7 +6,7 @@
  * - Account settings can never override signature headers/algorithm (H-03).
  */
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createPublicKey, randomUUID } from 'node:crypto';
 
 import { AppError } from '@saman/shared';
 import { AUDIT, CRYPTO, type AuditPort, type CryptoPort, type Db } from '../../../common/contracts';
@@ -16,8 +16,13 @@ import type { AdapterAccount } from '../domain/channel.types';
 import {
   generateRsaKeypair,
   importRsaKeypair,
+  publicKeyBase64Der,
   publicKeyFingerprint,
   publicKeyFromPrivate,
+  publicKeyPkcs1Pem,
+  publicKeySpkiPem,
+  RSA_KEY_BITS,
+  type RsaKeyBits,
   type RsaKeypair,
 } from '../domain/rsa-keypair';
 import type { AppLogger } from '../ports/logger.port';
@@ -141,7 +146,14 @@ export class ChannelAccountService {
   async rsaKeypair(
     organizationId: string,
     accountId: string,
-  ): Promise<{ publicKeyPem: string; fingerprint: string; hasPrivateKey: boolean }> {
+  ): Promise<{
+    publicKeyPem: string;
+    publicKeyPkcs1: string;
+    publicKeyBase64: string;
+    fingerprint: string;
+    keyBits: number;
+    hasPrivateKey: boolean;
+  }> {
     const row = await this.get(organizationId, accountId);
     const credentials = await this.decryptActive(row.id);
     const privateKeyPem = credentials['private_key'];
@@ -159,22 +171,32 @@ export class ChannelAccountService {
       });
     }
     return {
-      publicKeyPem,
+      publicKeyPem: publicKeySpkiPem(publicKeyPem),
+      publicKeyPkcs1: publicKeyPkcs1Pem(publicKeyPem),
+      publicKeyBase64: publicKeyBase64Der(publicKeyPem),
       fingerprint: publicKeyFingerprint(publicKeyPem),
+      keyBits: Number(createPublicKey(publicKeyPem).asymmetricKeyDetails?.modulusLength ?? RSA_KEY_BITS),
       hasPrivateKey: privateKeyPem !== undefined,
     };
   }
 
-  /** Generate a 4096-bit pair, or import an existing private key. */
+  /** Generate a fresh pair (2048/4096-bit), or import an existing private key. */
   async setRsaKeypair(input: {
     organizationId: string;
     accountId: string;
+    bits?: RsaKeyBits;
     privateKeyPem?: string;
     actorId: string | null;
     requestId: string;
     ip?: string;
     userAgent?: string;
-  }): Promise<{ publicKeyPem: string; fingerprint: string; keyBits: number }> {
+  }): Promise<{
+    publicKeyPem: string;
+    publicKeyPkcs1: string;
+    publicKeyBase64: string;
+    fingerprint: string;
+    keyBits: number;
+  }> {
     const row = await this.get(input.organizationId, input.accountId);
     let keypair: RsaKeypair;
     if (input.privateKeyPem !== undefined && input.privateKeyPem.trim().length > 0) {
@@ -187,7 +209,7 @@ export class ChannelAccountService {
         });
       }
     } else {
-      keypair = generateRsaKeypair();
+      keypair = generateRsaKeypair(input.bits ?? RSA_KEY_BITS);
     }
 
     await this.setCredentials({
@@ -201,6 +223,8 @@ export class ChannelAccountService {
     });
     return {
       publicKeyPem: keypair.publicKeyPem,
+      publicKeyPkcs1: keypair.publicKeyPkcs1,
+      publicKeyBase64: keypair.publicKeyBase64,
       fingerprint: keypair.fingerprint,
       keyBits: keypair.keyBits,
     };

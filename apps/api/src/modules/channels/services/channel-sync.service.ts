@@ -91,6 +91,8 @@ export class ChannelSyncService {
     accountId: string;
     type: SyncTriggerType;
     scope?: SyncScope;
+    /** Skip debounce coalescing (used by stock adjustments that must push now). */
+    force?: boolean;
   }): Promise<{ jobId: string; status: string }> {
     const jobType = this.toJobType(input.type);
     const resolved = await this.accounts.resolveForSync(input.organizationId, input.accountId);
@@ -105,9 +107,13 @@ export class ChannelSyncService {
     const debounceSeconds = this.numberSetting(resolved.row.settings, 'stockDebounceSeconds', 3);
     const operationKey =
       input.type === 'inventory_push'
-        ? debounceKey(`stock:${input.accountId}`, debounceSeconds * 1000, this.now().getTime())
+        ? input.force === true
+          ? `stock:${input.accountId}:${this.now().getTime()}`
+          : debounceKey(`stock:${input.accountId}`, debounceSeconds * 1000, this.now().getTime())
         : input.type === 'price_push'
-          ? debounceKey(`price:${input.accountId}`, debounceSeconds * 1000, this.now().getTime())
+          ? input.force === true
+            ? `price:${input.accountId}:${this.now().getTime()}`
+            : debounceKey(`price:${input.accountId}`, debounceSeconds * 1000, this.now().getTime())
           : input.type === 'order_pull'
             ? `orders:${input.accountId}`
             : input.type === 'product_import' || input.type === 'product_push'
@@ -511,7 +517,7 @@ export class ChannelSyncService {
     const organizationId = resolved.row.organizationId;
     const accountId = resolved.row.id;
     const title = (item.title.trim() || externalId).slice(0, 300);
-    const externalVariantId = (item.externalVariantId ?? '').trim().slice(0, 150) || null;
+    const externalVariantId = (item.externalVariantId ?? externalId ?? '').trim().slice(0, 150) || null;
     const externalSku = (item.sku ?? '').trim().slice(0, 150) || null;
     const barcode = (item.barcode ?? '').trim().slice(0, 50) || null;
     const productNo = `${prefix}-${externalId}`.slice(0, 40);
@@ -825,17 +831,22 @@ export class ChannelSyncService {
       select m.product_variant_id as variant_id,
              m.external_variant_id,
              m.external_product_id,
-             sum(i.available_qty)::text as available_qty,
-             sum(i.safety_qty)::text as safety_qty
+             coalesce((
+               select greatest(sum(b.on_hand) - sum(b.reserved), 0)
+               from erp.inventory_balances b
+               where b.product_variant_id = m.product_variant_id
+                 and b.organization_id = ${organizationId}::bigint
+             ), 0)::text as available_qty,
+             coalesce(max(i.safety_qty), 0)::text as safety_qty
       from erp.channel_product_mappings m
-      join erp.channel_inventory_mappings i
+      join erp.channel_accounts a on a.id = m.channel_account_id
+      left join erp.channel_inventory_mappings i
         on i.channel_account_id = m.channel_account_id
        and i.product_variant_id = m.product_variant_id
-      join erp.channel_accounts a on a.id = m.channel_account_id
+       and i.sync_enabled = true
       where a.organization_id = ${organizationId}::bigint
         and m.channel_account_id = ${accountId}::bigint
         and m.external_variant_id is not null
-        and i.sync_enabled = true
       group by m.product_variant_id, m.external_variant_id, m.external_product_id`;
     return rows.map((row) => ({
       variantId: asString(row.variant_id),

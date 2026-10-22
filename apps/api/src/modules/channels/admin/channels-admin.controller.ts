@@ -13,7 +13,12 @@ import { CurrentTenant } from '../../../common/decorators/current-context.decora
 import { Permissions } from '../../..//common/decorators/permissions.decorator';
 import { apiData } from '../../../common/interceptors/response.interceptor';
 import { ChannelAccountService } from '../services/channel-accounts.service';
-import { publicKeyFingerprint, publicKeyFromPrivate } from '../domain/rsa-keypair';
+import {
+  normalizePublicKey,
+  publicKeyFingerprint,
+  publicKeyFromPrivate,
+  type RsaKeyBits,
+} from '../domain/rsa-keypair';
 import {
   activateDigikalaToken,
   decryptValidationCode,
@@ -78,6 +83,21 @@ export class ChannelsAdminController {
       where public_id = ${publicId} and organization_id = ${ctx.orgId} and deleted_at is null limit 1
     `;
     return rows.length === 0 ? null : String(rows[0]!['id']);
+  }
+
+  /** Fingerprint of the key Digikala should be holding: stored public key, else derived from the private key. */
+  private storedRsaFingerprint(credentials: Readonly<Record<string, string>>): string | null {
+    const publicKey = credentials['public_key'];
+    const privateKey = credentials['private_key'];
+    try {
+      if (publicKey !== undefined && publicKey.length > 0) return publicKeyFingerprint(publicKey);
+      if (privateKey !== undefined && privateKey.length > 0) {
+        return publicKeyFingerprint(publicKeyFromPrivate(privateKey));
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   @Get('channels')
@@ -263,7 +283,7 @@ export class ChannelsAdminController {
 
   @Post('channel-accounts/:accountId/rsa-keypair')
   @Permissions('channel.credential.write')
-  @ApiOperation({ summary: 'Generate (4096-bit) or import the Digikala RSA key-pair' })
+  @ApiOperation({ summary: 'Generate (2048/4096-bit) or import the Digikala RSA key-pair' })
   async setRsaKeypair(
     @CurrentTenant() ctx: TenantContext,
     @Param('accountId') accountId: string,
@@ -278,6 +298,15 @@ export class ChannelsAdminController {
     if (privateKeyText.length > 65_536) {
       throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'privateKeyPem is too large' });
     }
+    const bitsRaw = payload['bits'];
+    let bits: RsaKeyBits | undefined;
+    if (bitsRaw !== undefined && bitsRaw !== null && bitsRaw !== '') {
+      const parsed = Number(bitsRaw);
+      if (parsed !== 2048 && parsed !== 4096) {
+        throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'bits must be 2048 or 4096' });
+      }
+      bits = parsed;
+    }
     const accountInternal = await this.accountInternalId(ctx, accountId);
     if (accountInternal === null) {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
@@ -286,12 +315,62 @@ export class ChannelsAdminController {
       organizationId: ctx.orgId.toString(),
       accountId: accountInternal,
       ...(privateKeyText.trim().length > 0 ? { privateKeyPem: privateKeyText } : {}),
+      ...(bits === undefined ? {} : { bits }),
       actorId: ctx.actorId === null ? null : ctx.actorId.toString(),
       requestId: ctx.requestId,
       ip: ctx.ip,
       userAgent: ctx.userAgent,
     });
     return apiData(result);
+  }
+
+  /**
+   * Compare a key read from the Digikala panel with the key stored here.
+   * Accepts SPKI PEM, PKCS#1 PEM or raw base64 DER and compares SHA-256
+   * fingerprints, so formatting differences do not matter.
+   */
+  @Post('channel-accounts/:accountId/rsa-keypair/compare')
+  @Permissions('channel.account.read')
+  @ApiOperation({ summary: 'Compare a pasted public key with the stored RSA public key' })
+  async compareRsaKey(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const publicKey = payload['publicKey'];
+    const publicKeyText = typeof publicKey === 'string' ? publicKey.trim() : '';
+    if (publicKeyText.length === 0) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'publicKey is required' });
+    }
+    if (publicKeyText.length > 65_536) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'publicKey is too large' });
+    }
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    let providedFingerprint: string;
+    try {
+      providedFingerprint = publicKeyFingerprint(normalizePublicKey(publicKeyText));
+    } catch {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'کلید عمومی معتبر نیست؛ PEM (SPKI یا PKCS#1) یا Base64 DER بفرستید.',
+      });
+    }
+    const storedFingerprint = this.storedRsaFingerprint(await this.accounts.decryptActive(accountInternal));
+    if (storedFingerprint === null) {
+      throw new BadRequestException({
+        code: 'RSA_KEY_NOT_FOUND',
+        message: 'کلید عمومی برای این حساب ثبت نشده است.',
+      });
+    }
+    return apiData({
+      match: storedFingerprint === providedFingerprint,
+      storedFingerprint,
+      providedFingerprint,
+    });
   }
 
   /**
@@ -349,11 +428,16 @@ export class ChannelsAdminController {
     if (privateKey === undefined || privateKey.length === 0) {
       throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'کلید خصوصی ثبت نشده است.' });
     }
+    const storedFingerprint = this.storedRsaFingerprint(credentials);
     try {
       const result = decryptValidationCode(validationCode, privateKey);
-      return apiData({ ok: true, decryption: result.decryption });
+      return apiData({ ok: true, decryption: result.decryption, storedFingerprint });
     } catch (error) {
-      return apiData({ ok: false, message: error instanceof Error ? error.message : String(error) });
+      return apiData({
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+        storedFingerprint,
+      });
     }
   }
 

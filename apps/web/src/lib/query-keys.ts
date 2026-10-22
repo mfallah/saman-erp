@@ -26,6 +26,7 @@ export const queryKeys = {
     balances: (params?: QueryParams) => ['inventory', 'balances', params ?? {}] as const,
     ledger: (params?: QueryParams) => ['inventory', 'ledger', params ?? {}] as const,
     adjustments: (params?: QueryParams) => ['inventory', 'adjustments', params ?? {}] as const,
+    stock: (params?: QueryParams) => ['inventory', 'stock', params ?? {}] as const,
   },
   warehouses: {
     list: ['warehouses'] as const,

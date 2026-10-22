@@ -59,6 +59,15 @@ export interface MovementResult {
   readonly totalCostAmount: bigint;
 }
 
+/** Result of an inline stock delta; `variantInternalId` is internal-only. */
+export interface QuickAdjustResult {
+  readonly adjustmentId: string;
+  readonly variantId: string;
+  readonly variantInternalId: bigint;
+  readonly warehouseId: string;
+  readonly onHand: string;
+}
+
 interface LockedCostState {
   readonly average: AverageCostState;
   readonly averageInternalId: bigint;
@@ -801,6 +810,151 @@ export class InventoryService {
     if (row === null) throw notFound('adjustment');
     const lines = await this.repo.listAdjustmentLines(this.db, toBigInt(row.internalId));
     return { ...adjustmentView(row), lines: lines.map(adjustmentLineView) };
+  }
+
+  /**
+   * Inline stock delta used by the stock workspace (`POST /inventory/stock/adjust`).
+   *
+   * The delta is posted immediately through the same ledger primitive as every
+   * other movement (balance projection, cost layers/average, accounting event and
+   * audit share one transaction), so there is no second write path for stock.
+   * A delta that would drive the balance negative is rejected before posting.
+   */
+  async quickAdjust(
+    ctx: TenantContext,
+    input: {
+      variantId: string;
+      quantityDelta: number;
+      reason?: string | undefined;
+      warehouseId?: string | undefined;
+    },
+  ): Promise<QuickAdjustResult> {
+    if (!Number.isInteger(input.quantityDelta) || input.quantityDelta === 0) {
+      throw new AppError('VALIDATION_ERROR', {
+        details: [{ field: 'quantityDelta', rule: 'quantity_delta_invalid' }],
+      });
+    }
+    const delta = input.quantityDelta;
+    const inbound = delta > 0;
+    return this.db.begin(async (tx) => {
+      const variant = await this.catalog.requireVariant(ctx, input.variantId);
+      const warehouseInternalId =
+        input.warehouseId === undefined
+          ? await this.ensureDefaultWarehouse(tx, ctx)
+          : await this.requireWarehouse(tx, ctx, input.warehouseId);
+      const locationInternalId = await this.resolveDefaultAdjustmentLocation(tx, ctx, warehouseInternalId);
+      const publicIds = await this.repo.publicIds(tx, warehouseInternalId, locationInternalId, variant.internalId);
+      const key = { warehouseInternalId, locationInternalId, variantInternalId: variant.internalId };
+      const systemQuantity = normalizeQuantity(await this.repo.findOnHand(tx, ctx.orgId, key));
+      const magnitude = normalizeQuantity(String(Math.abs(delta)));
+      const countedQuantity = inbound ? addQuantity(systemQuantity, magnitude) : subQuantity(systemQuantity, magnitude);
+      if (compareQuantity(countedQuantity, '0') < 0) {
+        throw new AppError('RULE_VIOLATION', {
+          message: 'موجودی منفی نتیجهٔ این تعدیل است و مجاز نیست.',
+          messageKey: 'inventory.negative_stock',
+          details: [
+            {
+              field: 'quantityDelta',
+              rule: 'negative_stock',
+              params: { systemQuantity, requested: delta },
+            },
+          ],
+        });
+      }
+      // Reading (not locking) the average only picks the movement type/cost; the
+      // lock order stays owned by `postMovement` (layers → average → balance).
+      const average = await this.repo.findAverageCost(tx, warehouseInternalId, variant.internalId);
+      const averageUnitCost = average === null ? 0n : BigInt(average.avgCostAmount);
+      const movementType: InventoryTransactionType = inbound
+        ? averageUnitCost > 0n
+          ? 'adjustment_in'
+          : 'opening_balance'
+        : 'adjustment_out';
+
+      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', todayIso());
+      const adjustment = await this.repo.insertAdjustment(tx, {
+        orgId: ctx.orgId,
+        warehouseInternalId,
+        adjustmentNo,
+        reasonCode: 'correction',
+        description: input.reason ?? null,
+        requiresApproval: false,
+        createdBy: ctx.actorId,
+      });
+      const movement = await this.postMovement(tx, ctx, {
+        warehouseId: publicIds.warehouseId,
+        locationId: publicIds.locationId,
+        variantId: variant.id,
+        type: movementType,
+        quantity: magnitude,
+        unitCostAmount: inbound ? averageUnitCost : null,
+        referenceType: 'stock_adjustment',
+        referenceId: adjustment.id,
+        referenceInternalId: toBigInt(adjustment.internalId),
+        idempotencyKey: `stock-adjust:${adjustment.id}`,
+      });
+      const adjustmentLine = await this.repo.insertAdjustmentLine(tx, {
+        adjustmentInternalId: toBigInt(adjustment.internalId),
+        variantInternalId: variant.internalId,
+        locationInternalId,
+        lotInternalId: null,
+        systemQuantity,
+        countedQuantity,
+        differenceQuantity: inbound ? magnitude : subQuantity('0.0000', magnitude),
+        unitCostAmount: movement.unitCostAmount,
+      });
+      await this.repo.setAdjustmentLineTransaction(
+        tx,
+        toBigInt(adjustmentLine.internalId),
+        toBigInt(movement.transaction.internalId),
+      );
+      await this.repo.updateAdjustmentStatus(tx, toBigInt(adjustment.internalId), {
+        status: 'applied',
+        applied: true,
+      });
+      if (movement.totalCostAmount > 0n) {
+        await this.emitAccounting(
+          tx,
+          ctx,
+          INVENTORY_ACCOUNTING_EVENTS.adjustmentPosted,
+          'stock_adjustment',
+          toBigInt(adjustment.internalId),
+          {
+            adjustmentId: adjustment.internalId.toString(),
+            adjustmentPublicId: adjustment.id,
+            adjustmentNo: adjustment.adjustmentNo,
+            warehouseId: publicIds.warehouseId,
+            reasonCode: 'correction',
+            kind: inbound ? 'count_gain' : 'count_shortage',
+            totalCostAmount: movement.totalCostAmount.toString(),
+            businessDate: todayIso(),
+            ledgerIds: [movement.transaction.id],
+            status: 'applied',
+          },
+        );
+      }
+      await this.record(
+        tx,
+        ctx,
+        'inventory.adjustment.quick_adjust',
+        'stock_adjustment',
+        adjustment.id,
+        null,
+        {
+          variantId: variant.id,
+          warehouseId: publicIds.warehouseId,
+          quantityDelta: delta,
+          reason: input.reason ?? null,
+        },
+      );
+      return {
+        adjustmentId: adjustment.id,
+        variantId: variant.id,
+        variantInternalId: variant.internalId,
+        warehouseId: publicIds.warehouseId,
+        onHand: normalizeQuantity(movement.balance.onHand),
+      };
+    });
   }
 
   async createAdjustment(
@@ -1774,6 +1928,44 @@ export class InventoryService {
   private async requireLocation(tx: Db, ctx: TenantContext, publicId: string): Promise<bigint> {
     const internalId = await this.repo.resolveLocationId(tx, ctx.orgId, publicId);
     if (internalId === null) throw notFound('location');
+    return internalId;
+  }
+
+  /**
+   * A fresh install has no warehouse at all, which blocked every stock
+   * adjustment. Lazily bootstrap a main warehouse + default location so the
+   * stock workspace works out of the box; operators can rename/add later.
+   */
+  private async ensureDefaultWarehouse(tx: Db, ctx: TenantContext): Promise<bigint> {
+    const existing = await this.repo.resolveDefaultWarehouseId(tx, ctx.orgId);
+    if (existing !== null) {
+      const location = await this.repo.resolveFirstActiveLocationId(tx, ctx.orgId, existing);
+      if (location === null) {
+        await tx`
+          insert into erp.warehouse_locations (warehouse_id, full_code, location_type, is_pickable, is_active)
+          values (${existing}::bigint, 'MAIN-01', 'storage', true, true)
+        `;
+      }
+      return existing;
+    }
+    const created = await tx<{ id: string }[]>`
+      insert into erp.warehouses (organization_id, code, name, warehouse_type, is_active, created_by)
+      values (${ctx.orgId}, 'MAIN', 'انبار اصلی', 'main', true, ${ctx.actorId})
+      returning id::text as id
+    `;
+    const warehouseId = created[0]?.id;
+    if (warehouseId === undefined) throw new Error('warehouse_bootstrap_failed');
+    await tx`
+      insert into erp.warehouse_locations (warehouse_id, full_code, location_type, is_pickable, is_active)
+      values (${warehouseId}::bigint, 'MAIN-01', 'storage', true, true)
+    `;
+    return BigInt(warehouseId);
+  }
+
+  /** Warehouse-less adjustments land in the organization's first active warehouse. */
+  private async requireDefaultWarehouse(tx: Db, ctx: TenantContext): Promise<bigint> {
+    const internalId = await this.repo.resolveDefaultWarehouseId(tx, ctx.orgId);
+    if (internalId === null) throw notFound('warehouse');
     return internalId;
   }
 

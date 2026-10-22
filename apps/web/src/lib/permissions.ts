@@ -18,6 +18,7 @@ export const PERM = {
   barcodeCreate: 'barcode.create',
   variantCreate: 'variant.create',
   // inventory / warehouse
+  inventoryRead: 'inventory.balance.read',
   inventoryBalanceRead: 'inventory.balance.read',
   inventoryLedgerRead: 'inventory.ledger.read',
   inventoryAdjust: 'inventory.adjust',

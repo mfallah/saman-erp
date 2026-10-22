@@ -74,6 +74,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     permission: PERM.inventoryBalanceRead,
     children: [
       { label: 'موجودی و گردش', to: '/inventory', permission: PERM.inventoryBalanceRead },
+      { label: 'موجودی کانال‌ها', to: '/inventory/stock', permission: PERM.inventoryRead },
       { label: 'انبارها', to: '/warehouses', permission: PERM.warehouseRead },
     ],
   },

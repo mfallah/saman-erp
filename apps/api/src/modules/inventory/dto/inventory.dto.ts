@@ -85,6 +85,35 @@ export const ConsumeReservationBody = z.object({
   referenceId: PublicId,
 });
 
+/**
+ * Stock workspace (`GET /inventory/stock`). `search` is the documented name;
+ * `q` is accepted as the short alias the SPA already sends.
+ */
+export const StockListQuery = OffsetPaginationQuery.extend({
+  search: z.string().trim().min(1).max(120).optional(),
+  q: z.string().trim().min(1).max(120).optional(),
+});
+export type StockListQuery = z.infer<typeof StockListQuery>;
+
+export const StockHistoryQuery = OffsetPaginationQuery;
+export type StockHistoryQuery = z.infer<typeof StockHistoryQuery>;
+
+export const StockVariantParam = z.object({ variantId: PublicId });
+
+/** Inline stock delta (`POST /inventory/stock/adjust`); negative decreases. */
+export const StockAdjustBody = z.object({
+  variantId: PublicId,
+  quantityDelta: z
+    .number()
+    .int({ message: 'quantity_delta_must_be_integer' })
+    .min(-1_000_000)
+    .max(1_000_000)
+    .refine((value) => value !== 0, { message: 'quantity_delta_zero' }),
+  reason: z.string().trim().max(300).optional(),
+  warehouseId: PublicId.optional(),
+});
+export type StockAdjustBody = z.infer<typeof StockAdjustBody>;
+
 export const AdjustmentListQuery = OffsetPaginationQuery.extend({
   status: z.enum(['draft', 'pending_approval', 'approved', 'applied', 'rejected', 'voided']).optional(),
   type: z.string().max(40).optional(),

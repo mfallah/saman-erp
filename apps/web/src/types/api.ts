@@ -225,6 +225,41 @@ export interface AdjustmentLineInput {
   readonly unitCost?: string;
 }
 
+/* ---------------------------------------------------------- channel stock */
+
+/** A channel listing for a variant, with the partner-side identifier. */
+export interface StockChannelRef {
+  readonly channelCode?: string | null;
+  readonly channelName?: string | null;
+  readonly externalVariantId?: string | null;
+  readonly externalId?: string | null;
+}
+
+/** One row of the channel-stock screen: canonical variant + channel listings. */
+export interface StockRow {
+  readonly id?: string;
+  readonly variantId: string;
+  readonly productId?: string | null;
+  readonly productName: string;
+  readonly sku: string;
+  readonly onHand: string | number;
+  readonly channels?: readonly StockChannelRef[];
+}
+
+/** Request body for an inline stock delta (`POST /inventory/stock/adjust`). */
+export interface StockAdjustInput {
+  readonly variantId: string;
+  readonly quantityDelta: number;
+  readonly reason: string;
+}
+
+/** Result of an inline stock delta; the channels queued for a push. */
+export interface StockAdjustResult {
+  readonly adjustmentId?: string;
+  readonly onHand?: string | number;
+  readonly queuedChannels?: readonly (string | StockChannelRef)[];
+}
+
 /* ---------------------------------------------------------------- sales */
 
 export interface OrderLine {
@@ -409,9 +444,17 @@ export interface ChannelAccount extends Ref {
 
 export interface ChannelAccountRsaKeypair {
   readonly publicKeyPem: string;
+  readonly publicKeyPkcs1?: string;
+  readonly publicKeyBase64?: string;
   readonly fingerprint: string;
   readonly keyBits?: number;
   readonly hasPrivateKey?: boolean;
+}
+
+export interface RsaKeyCompareResult {
+  readonly match: boolean;
+  readonly storedFingerprint: string;
+  readonly providedFingerprint: string;
 }
 
 export type PricingMode = 'margin' | 'cost_plus_fees';

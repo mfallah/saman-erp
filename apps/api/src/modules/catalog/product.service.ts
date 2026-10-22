@@ -45,7 +45,7 @@ export interface VariantLookup {
   readonly productInternalId: bigint;
   readonly productId: string;
   readonly productNo: string;
-  readonly categoryInternalId: bigint;
+  readonly categoryInternalId: bigint | null;
   readonly unitId: string | null;
   readonly trackLot: boolean;
   readonly trackSerial: boolean;
@@ -686,12 +686,24 @@ export class ProductService {
     publicId: string,
     body: UpdateVariantBody,
     expectedVersion?: number,
+    productPublicId?: string,
   ): Promise<Record<string, unknown>> {
     return this.db.begin(async (tx) => {
       const current = await this.repo.findVariant(tx, ctx.orgId, publicId);
       if (current === null) throw notFound('variant');
+      if (productPublicId !== undefined) {
+        const product = await this.repo.findProduct(tx, ctx.orgId, productPublicId);
+        if (product === null || current.productId !== product.id) throw notFound('variant');
+      }
       if (expectedVersion !== undefined && current.version !== expectedVersion) {
         throw versionConflict(current.version, expectedVersion);
+      }
+      if (
+        body.sku !== undefined &&
+        body.sku !== current.sku &&
+        (await this.repo.variantSkuExists(tx, body.sku, toBigInt(current.internalId)))
+      ) {
+        throw conflict('variant_sku_conflict', { sku: body.sku });
       }
       const unitInternalId =
         body.unitId === undefined
@@ -700,9 +712,9 @@ export class ProductService {
             : await this.resolveUnitInternal(tx, ctx, current.unitId)
           : await this.resolveUnitInternal(tx, ctx, body.unitId);
       const updated = await this.repo.updateVariant(tx, ctx.orgId, toBigInt(current.internalId), {
-        sku: current.sku,
+        sku: body.sku ?? current.sku,
         title: body.title === undefined ? current.title : body.title,
-        barcode: current.barcode,
+        barcode: body.barcode === undefined ? current.barcode : body.barcode,
         unitInternalId,
         weightGrams: body.weightGrams === undefined ? current.weightGrams : body.weightGrams,
         isActive: body.status === undefined ? current.isActive : body.status === 'active',
@@ -1472,7 +1484,7 @@ export class CatalogLookupService {
       productInternalId: toBigInt(row.productInternalId),
       productId: row.productId,
       productNo: row.productNo,
-      categoryInternalId: toBigInt(row.categoryInternalId),
+      categoryInternalId: row.categoryInternalId === null || row.categoryInternalId === undefined ? null : toBigInt(row.categoryInternalId),
       unitId: row.unitId,
       trackLot: row.trackLot,
       trackSerial: row.trackSerial,

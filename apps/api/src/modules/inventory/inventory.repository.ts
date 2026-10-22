@@ -369,6 +369,45 @@ function layerColumns(tx: Db) {
   `;
 }
 
+/** One mapped channel listing of a variant (stock workspace chips). */
+export interface StockChannelAccount {
+  accountId: string;
+  channelCode: string;
+  channelName: string;
+  externalProductId: string | null;
+  externalVariantId: string | null;
+}
+
+/** A mapped channel listing plus the internal account id used to queue a push. */
+export interface StockChannelTarget extends StockChannelAccount {
+  accountInternalId: string;
+}
+
+/** Aggregated variant row of `GET /inventory/stock`. */
+export interface StockRow {
+  variantId: string;
+  productId: string;
+  productName: string;
+  sku: string;
+  onHand: string;
+  reserved: string;
+  channels: StockChannelAccount[];
+}
+
+export interface StockHistoryRow {
+  id: string;
+  type: string;
+  quantity: string;
+  unitCostAmount: string | null;
+  totalCostAmount: string | null;
+  warehouseId: string;
+  locationId: string;
+  referenceType: string;
+  referenceId: string | null;
+  businessDate: string;
+  createdAt: string;
+}
+
 interface LedgerInsert {
   readonly orgId: bigint;
   readonly warehouseInternalId: bigint;
@@ -1950,5 +1989,162 @@ export class InventoryRepository {
     const row = rows[0];
     if (row === undefined) return null;
     return { periodInternalId: BigInt(row.id), status: row.status };
+  }
+
+  // ------------------------------------------------------------ stock workspace
+
+  /**
+   * Aggregated variant stock for the stock workspace: organization-scoped,
+   * soft-delete aware and independent of the warehouse/location split. The
+   * channel listings are aggregated as JSON so the list stays one query.
+   */
+  async listStock(
+    tx: Db,
+    params: { orgId: bigint; search: string | null; limit: number; offset: number },
+  ): Promise<{ items: StockRow[]; total: number }> {
+    const counted = await tx<{ total: string }[]>`
+      select count(*)::text as total
+      from erp.product_variants v
+      join erp.products p on p.id = v.product_id
+      where p.organization_id = ${params.orgId}
+        and p.deleted_at is null
+        and v.deleted_at is null
+        and (${params.search}::text is null
+             or p.name ilike '%' || ${params.search}::text || '%'
+             or coalesce(p.name_en, '') ilike '%' || ${params.search}::text || '%'
+             or v.sku ilike '%' || ${params.search}::text || '%'
+             or coalesce(v.barcode, '') = ${params.search}::text)
+    `;
+    const rows = await tx<StockRow[]>`
+      select v.public_id as "variantId",
+             p.public_id as "productId",
+             p.name as "productName",
+             v.sku,
+             coalesce(sum(b.on_hand), 0)::text as "onHand",
+             coalesce(sum(b.reserved), 0)::text as "reserved",
+             coalesce(
+               (select json_agg(json_build_object(
+                         'accountId', ca.public_id,
+                         'channelCode', sc.code,
+                         'channelName', sc.name,
+                         'externalProductId', m.external_product_id,
+                         'externalVariantId', m.external_variant_id
+                       ) order by sc.code asc, ca.id asc)
+                from erp.channel_product_mappings m
+                join erp.channel_accounts ca
+                  on ca.id = m.channel_account_id
+                 and ca.organization_id = ${params.orgId}
+                 and ca.is_active
+                 and ca.deleted_at is null
+                join erp.sales_channels sc on sc.id = ca.channel_id and sc.deleted_at is null
+                where m.product_variant_id = v.id and m.deleted_at is null),
+               '[]'::json
+             ) as channels
+      from erp.product_variants v
+      join erp.products p on p.id = v.product_id
+      left join erp.inventory_balances b
+        on b.product_variant_id = v.id and b.organization_id = p.organization_id
+      where p.organization_id = ${params.orgId}
+        and p.deleted_at is null
+        and v.deleted_at is null
+        and (${params.search}::text is null
+             or p.name ilike '%' || ${params.search}::text || '%'
+             or coalesce(p.name_en, '') ilike '%' || ${params.search}::text || '%'
+             or v.sku ilike '%' || ${params.search}::text || '%'
+             or coalesce(v.barcode, '') = ${params.search}::text)
+      group by v.id, p.id, v.public_id, p.public_id, p.name, v.sku
+      order by p.name asc, v.sku asc, v.id asc
+      limit ${params.limit} offset ${params.offset}
+    `;
+    return { items: rows, total: Number(counted[0]?.total ?? '0') };
+  }
+
+  /** Active variant→channel mappings that can accept a stock push. */
+  async listStockChannelTargets(
+    tx: Db,
+    orgId: bigint,
+    variantInternalId: bigint,
+  ): Promise<StockChannelTarget[]> {
+    return tx<StockChannelTarget[]>`
+      select ca.id::text as "accountInternalId",
+             ca.public_id as "accountId",
+             sc.code as "channelCode",
+             sc.name as "channelName",
+             m.external_product_id as "externalProductId",
+             m.external_variant_id as "externalVariantId"
+      from erp.channel_product_mappings m
+      join erp.channel_accounts ca
+        on ca.id = m.channel_account_id
+       and ca.organization_id = ${orgId}
+       and ca.is_active
+       and ca.deleted_at is null
+       and ca.stock_push_enabled
+      join erp.sales_channels sc on sc.id = ca.channel_id and sc.deleted_at is null and sc.is_active
+      where m.product_variant_id = ${variantInternalId} and m.deleted_at is null
+      order by sc.code asc, ca.id asc
+    `;
+  }
+
+  /** Non-locking on-hand read (response/validation only; writes use `lockBalances`). */
+  async findOnHand(
+    tx: Db,
+    orgId: bigint,
+    key: { warehouseInternalId: bigint; locationInternalId: bigint; variantInternalId: bigint },
+  ): Promise<string> {
+    const rows = await tx<{ onHand: string }[]>`
+      select coalesce(on_hand, 0)::text as "onHand"
+      from erp.inventory_balances
+      where organization_id = ${orgId}
+        and warehouse_id = ${key.warehouseInternalId}
+        and location_id = ${key.locationInternalId}
+        and product_variant_id = ${key.variantInternalId}
+      limit 1
+    `;
+    return rows[0]?.onHand ?? '0.0000';
+  }
+
+  /** First active warehouse of the organization (default for a warehouse-less adjust). */
+  async resolveDefaultWarehouseId(tx: Db, orgId: bigint): Promise<bigint | null> {
+    const rows = await tx<{ id: string }[]>`
+      select id::text as id from erp.warehouses
+      where organization_id = ${orgId} and deleted_at is null and is_active
+      order by code asc, id asc
+      limit 1
+    `;
+    return rows[0] === undefined ? null : BigInt(rows[0].id);
+  }
+
+  /** Variant ledger history for the stock workspace (`GET /inventory/stock/:id/history`). */
+  async stockHistory(
+    tx: Db,
+    params: { orgId: bigint; variantInternalId: bigint; limit: number; offset: number },
+  ): Promise<{ items: StockHistoryRow[]; total: number }> {
+    const counted = await tx<{ total: string }[]>`
+      select count(*)::text as total
+      from erp.inventory_transactions t
+      where t.organization_id = ${params.orgId}
+        and t.product_variant_id = ${params.variantInternalId}
+    `;
+    const items = await tx<StockHistoryRow[]>`
+      select t.public_id as id,
+             t.transaction_type as type,
+             t.quantity::text as quantity,
+             t.unit_cost_amount::text as "unitCostAmount",
+             t.total_cost_amount::text as "totalCostAmount",
+             w.public_id as "warehouseId",
+             l.public_id as "locationId",
+             t.reference_type as "referenceType",
+             t.reference_public_id as "referenceId",
+             t.business_date::text as "businessDate",
+             t.created_at::text as "createdAt"
+      from erp.inventory_transactions t
+      join erp.warehouses w on w.id = t.warehouse_id
+      join erp.warehouse_locations l on l.id = t.location_id
+      where t.organization_id = ${params.orgId}
+        and t.product_variant_id = ${params.variantInternalId}
+      order by t.created_at desc, t.id desc
+      limit ${params.limit} offset ${params.offset}
+    `;
+    return { items, total: Number(counted[0]?.total ?? '0') };
   }
 }

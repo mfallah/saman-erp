@@ -13,6 +13,7 @@ import type {
   ChannelAccount,
   ChannelAccountRsaKeypair,
   ChannelHealthRow,
+  RsaKeyCompareResult,
   SyncJob,
 } from '../types/api';
 import { PermissionNotice } from '../components/auth/Can';
@@ -112,6 +113,8 @@ export function ChannelsPage() {
   const [syncType, setSyncType] = useState('inventory_push');
   const [rsaAccount, setRsaAccount] = useState<ChannelAccount | null>(null);
   const [rsaPublicKey, setRsaPublicKey] = useState('');
+  const [rsaPublicKeyPkcs1, setRsaPublicKeyPkcs1] = useState('');
+  const [rsaPublicKeyBase64, setRsaPublicKeyBase64] = useState('');
   const [rsaFingerprint, setRsaFingerprint] = useState('');
   const [rsaHasPrivateKey, setRsaHasPrivateKey] = useState(false);
   const [rsaPrivateKeyInput, setRsaPrivateKeyInput] = useState('');
@@ -121,6 +124,11 @@ export function ChannelsPage() {
   const [rsaError, setRsaError] = useState('');
   const [rsaResetNotice, setRsaResetNotice] = useState('');
   const [rsaResetArmed, setRsaResetArmed] = useState(false);
+  const [rsaKeyBits, setRsaKeyBits] = useState<2048 | 4096>(4096);
+  const [rsaCompareInput, setRsaCompareInput] = useState('');
+  const [rsaCompareBusy, setRsaCompareBusy] = useState(false);
+  const [rsaCompareResult, setRsaCompareResult] = useState<RsaKeyCompareResult | null>(null);
+  const [rsaCompareError, setRsaCompareError] = useState('');
   const [dkClientCode, setDkClientCode] = useState('');
   const [dkClientSecret, setDkClientSecret] = useState('');
   const [dkValidationCode, setDkValidationCode] = useState('');
@@ -128,7 +136,7 @@ export function ChannelsPage() {
   const [dkResult, setDkResult] = useState('');
   const [rsaVerifyBusy, setRsaVerifyBusy] = useState(false);
   const [rsaVerifyResult, setRsaVerifyResult] = useState('');
-  const [rsaFormat, setRsaFormat] = useState<'pem' | 'raw'>('pem');
+  const [rsaFormat, setRsaFormat] = useState<'spki' | 'pkcs1' | 'base64'>('spki');
 
   const channelsQuery = useQuery({
     queryKey: queryKeys.channels.list,
@@ -239,15 +247,24 @@ export function ChannelsPage() {
     setRsaVerifyBusy(true);
     setRsaVerifyResult('');
     try {
-      const result = await api.post<{ ok: boolean; decryption?: string; message?: string }>(
+      const result = await api.post<{
+        ok: boolean;
+        decryption?: string;
+        message?: string;
+        storedFingerprint?: string | null;
+      }>(
         `/channel-accounts/${rsaAccount.id}/rsa-keypair/verify`,
         { validationCode: dkValidationCode },
         { idempotencyKey: newRequestId() },
       );
+      const fingerprintNote =
+        result.storedFingerprint === undefined || result.storedFingerprint === null
+          ? ''
+          : ` · اثر انگشت ذخیره‌شده: ${result.storedFingerprint}`;
       setRsaVerifyResult(
         result.ok
-          ? `رمزگشایی موفق بود (${result.decryption})؛ کلید درست است و می‌توانی توکن بگیری.`
-          : `رمزگشایی ناموفق: ${result.message ?? 'کلید با پنل هم‌خوان نیست.'}`,
+          ? `رمزگشایی موفق بود (${result.decryption})؛ کلید درست است و می‌توانی توکن بگیری.${fingerprintNote}`
+          : `رمزگشایی ناموفق: ${result.message ?? 'کلید با پنل هم‌خوان نیست.'}${fingerprintNote}`,
       );
     } catch (error) {
       setRsaVerifyResult(toFaErrorMessage(error));
@@ -286,11 +303,16 @@ export function ChannelsPage() {
         `/channel-accounts/${account.id}/rsa-keypair`,
       );
       setRsaPublicKey(view.publicKeyPem);
+      setRsaPublicKeyPkcs1(view.publicKeyPkcs1 ?? '');
+      setRsaPublicKeyBase64(view.publicKeyBase64 ?? '');
       setRsaFingerprint(view.fingerprint);
       setRsaHasPrivateKey(view.hasPrivateKey === true);
+      if (view.keyBits === 2048 || view.keyBits === 4096) setRsaKeyBits(view.keyBits);
       setRsaError('');
     } catch (error) {
       setRsaPublicKey('');
+      setRsaPublicKeyPkcs1('');
+      setRsaPublicKeyBase64('');
       setRsaFingerprint('');
       setRsaHasPrivateKey(false);
       setRsaError(error instanceof ApiError && error.code === 'NOT_FOUND' ? '' : toFaErrorMessage(error));
@@ -302,6 +324,8 @@ export function ChannelsPage() {
   const openRsaModal = (account: ChannelAccount): void => {
     setRsaAccount(account);
     setRsaPublicKey('');
+    setRsaPublicKeyPkcs1('');
+    setRsaPublicKeyBase64('');
     setRsaFingerprint('');
     setRsaHasPrivateKey(false);
     setRsaPrivateKeyInput('');
@@ -309,6 +333,11 @@ export function ChannelsPage() {
     setRsaError('');
     setRsaResetNotice('');
     setRsaResetArmed(false);
+    setRsaFormat('spki');
+    setRsaKeyBits(4096);
+    setRsaCompareInput('');
+    setRsaCompareResult(null);
+    setRsaCompareError('');
     void loadRsaKeypair(account);
   };
 
@@ -319,12 +348,15 @@ export function ChannelsPage() {
     try {
       const result = await api.post<ChannelAccountRsaKeypair>(
         `/channel-accounts/${rsaAccount.id}/rsa-keypair`,
-        privateKeyPem === undefined ? {} : { privateKeyPem },
+        privateKeyPem === undefined ? { bits: rsaKeyBits } : { privateKeyPem },
         { idempotencyKey: newRequestId() },
       );
       setRsaPublicKey(result.publicKeyPem);
+      setRsaPublicKeyPkcs1(result.publicKeyPkcs1 ?? '');
+      setRsaPublicKeyBase64(result.publicKeyBase64 ?? '');
       setRsaFingerprint(result.fingerprint);
       setRsaHasPrivateKey(true);
+      if (result.keyBits === 2048 || result.keyBits === 4096) setRsaKeyBits(result.keyBits);
       setRsaPrivateKeyInput('');
       setRsaImportOpen(false);
       setRsaResetNotice('');
@@ -352,10 +384,15 @@ export function ChannelsPage() {
         { idempotencyKey: newRequestId() },
       );
       setRsaPublicKey(result.publicKeyPem);
+      setRsaPublicKeyPkcs1(result.publicKeyPkcs1 ?? '');
+      setRsaPublicKeyBase64(result.publicKeyBase64 ?? '');
       setRsaFingerprint(result.fingerprint);
       setRsaHasPrivateKey(result.hasPrivateKey !== false);
+      if (result.keyBits === 2048 || result.keyBits === 4096) setRsaKeyBits(result.keyBits);
       setDkValidationCode('');
       setDkResult('');
+      setRsaCompareResult(null);
+      setRsaCompareInput('');
       setRsaResetNotice(
         'جفت‌کلید جدید ساخته شد. کلید عمومی جدید در کادر بالا قرار گرفت؛ آن را کامل در پنل دیجی‌کالا ثبت کنید و سپس یک کد اعتبارسنجی تازه بگیرید. کدهای قبلی با کلید قدیمی رمز شده‌اند و کار نمی‌کنند.',
       );
@@ -370,12 +407,37 @@ export function ChannelsPage() {
     }
   };
 
+  const rsaFormattedKey =
+    rsaFormat === 'spki' ? rsaPublicKey : rsaFormat === 'pkcs1' ? rsaPublicKeyPkcs1 : rsaPublicKeyBase64;
+  const rsaFormatLabel = rsaFormat === 'spki' ? 'PEM SPKI' : rsaFormat === 'pkcs1' ? 'PEM PKCS#1' : 'Base64 DER';
+
   const copyPublicKey = async (): Promise<void> => {
+    const value = rsaFormattedKey.length > 0 ? rsaFormattedKey : rsaPublicKey;
+    if (value.length === 0) return;
     try {
-      await navigator.clipboard.writeText(rsaPublicKey);
+      await navigator.clipboard.writeText(value);
       toast.success('کلید عمومی کپی شد');
     } catch {
       setRsaError('کپی خودکار ممکن نشد؛ متن کلید را دستی انتخاب و کپی کنید.');
+    }
+  };
+
+  const compareRsaKey = async (): Promise<void> => {
+    if (rsaAccount === null || rsaCompareInput.trim().length === 0) return;
+    setRsaCompareBusy(true);
+    setRsaCompareResult(null);
+    setRsaCompareError('');
+    try {
+      const result = await api.post<RsaKeyCompareResult>(
+        `/channel-accounts/${rsaAccount.id}/rsa-keypair/compare`,
+        { publicKey: rsaCompareInput },
+        { idempotencyKey: newRequestId() },
+      );
+      setRsaCompareResult(result);
+    } catch (error) {
+      setRsaCompareError(toFaErrorMessage(error));
+    } finally {
+      setRsaCompareBusy(false);
     }
   };
 
@@ -631,6 +693,21 @@ export function ChannelsPage() {
             خصوصی فقط به‌صورت رمزنگاری‌شده در سرور نگهداری می‌شود و هرگز نمایش داده نمی‌شود.
           </p>
 
+          <FormField
+            label="اندازهٔ کلید"
+            hint="۴۰۹۶ بیت پیشنهادی است؛ ۲۰۴۸ فقط اگر پنل دیجی‌کالا اندازهٔ بزرگ‌تر را نپذیرد."
+          >
+            <Select
+              value={String(rsaKeyBits)}
+              disabled={rsaBusy || rsaLoading}
+              options={[
+                { value: '4096', label: '۴۰۹۶ بیت (پیشنهادی)' },
+                { value: '2048', label: '۲۰۴۸ بیت' },
+              ]}
+              onChange={(event) => setRsaKeyBits(event.target.value === '2048' ? 2048 : 4096)}
+            />
+          </FormField>
+
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
@@ -697,16 +774,32 @@ export function ChannelsPage() {
             <p className="text-xs text-slate-500">در حال خواندن کلید عمومی…</p>
           ) : rsaPublicKey.length > 0 ? (
             <div className="space-y-2">
+              <div role="group" aria-label="قالب کلید عمومی" className="flex flex-wrap gap-1.5">
+                {([
+                  { value: 'spki' as const, label: 'PEM SPKI' },
+                  { value: 'pkcs1' as const, label: 'PEM PKCS#1' },
+                  { value: 'base64' as const, label: 'Base64 DER' },
+                ] as const).map((format) => (
+                  <Button
+                    key={format.value}
+                    size="sm"
+                    variant={rsaFormat === format.value ? 'primary' : 'outline'}
+                    onClick={() => setRsaFormat(format.value)}
+                  >
+                    {format.label}
+                  </Button>
+                ))}
+              </div>
               <FormField
-                label="کلید عمومی (PEM)"
-                hint="اگر پنل دیجی‌کالا این قالب را نپذیرفت، با دکمهٔ «کپی Base64» همان کلید را بدون هدر بچسبان."
+                label={`کلید عمومی (${rsaFormatLabel})`}
+                hint="هر سه قالب به یک کلید اشاره می‌کنند؛ هر قالبی را که پنل دیجی‌کالا می‌پذیرد کپی کنید."
               >
                 <Textarea
                   dir="ltr"
                   readOnly
                   rows={9}
                   className="font-mono text-[11px]"
-                  value={rsaPublicKey}
+                  value={rsaFormattedKey.length > 0 ? rsaFormattedKey : rsaPublicKey}
                 />
               </FormField>
               <div className="flex flex-wrap items-center gap-2">
@@ -716,27 +809,67 @@ export function ChannelsPage() {
                   icon={<Copy className="size-3.5" />}
                   onClick={() => void copyPublicKey()}
                 >
-                  کپی کلید عمومی (PEM)
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  icon={<Copy className="size-3.5" />}
-                  onClick={() => {
-                    const raw = rsaPublicKey.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
-                    void navigator.clipboard?.writeText(raw);
-                    toast.success('کلید عمومی Base64 کپی شد');
-                  }}
-                >
-                  کپی Base64 (بدون هدر)
+                  کپی کلید ({rsaFormatLabel})
                 </Button>
                 <Badge tone={rsaHasPrivateKey ? 'success' : 'warning'}>
                   {rsaHasPrivateKey ? 'کلید خصوصی ذخیره شده است' : 'کلید خصوصی ثبت نشده است'}
                 </Badge>
+                {rsaKeyBits === 2048 || rsaKeyBits === 4096 ? (
+                  <Badge tone="info">{formatNumber(rsaKeyBits)} بیت</Badge>
+                ) : null}
               </div>
               <p dir="ltr" className="break-all font-mono text-[10px] text-slate-500">
                 SHA-256: {rsaFingerprint}
               </p>
+
+              <div className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                <FormField
+                  label="مقایسه با کلید پنل"
+                  hint="کلید عمومی نمایش‌داده‌شده در پنل دیجی‌کالا را بچسبانید؛ PEM (SPKI یا PKCS#1) و Base64 DER هر دو پذیرفته می‌شوند."
+                >
+                  <Textarea
+                    dir="ltr"
+                    rows={4}
+                    className="font-mono text-[11px]"
+                    value={rsaCompareInput}
+                    onChange={(event) => {
+                      setRsaCompareInput(event.target.value);
+                      setRsaCompareResult(null);
+                      setRsaCompareError('');
+                    }}
+                    placeholder="-----BEGIN PUBLIC KEY-----"
+                  />
+                </FormField>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  loading={rsaCompareBusy}
+                  disabled={rsaCompareInput.trim().length === 0}
+                  onClick={() => void compareRsaKey()}
+                >
+                  مقایسه با کلید پنل
+                </Button>
+                {rsaCompareError.length > 0 ? (
+                  <p role="alert" className="text-[11px] text-red-600 dark:text-red-400">
+                    {rsaCompareError}
+                  </p>
+                ) : null}
+                {rsaCompareResult === null ? null : (
+                  <div className="space-y-1" role="status">
+                    <Badge tone={rsaCompareResult.match ? 'success' : 'danger'}>
+                      {rsaCompareResult.match
+                        ? 'کلید پنل با کلید ذخیره‌شده یکسان است'
+                        : 'کلید پنل با کلید ذخیره‌شده هم‌خوان نیست'}
+                    </Badge>
+                    <p dir="ltr" className="break-all font-mono text-[10px] text-slate-500">
+                      stored: {rsaCompareResult.storedFingerprint}
+                    </p>
+                    <p dir="ltr" className="break-all font-mono text-[10px] text-slate-500">
+                      provided: {rsaCompareResult.providedFingerprint}
+                    </p>
+                  </div>
+                )}
+              </div>
 
               <div className="mt-4 space-y-3 rounded-lg border border-dashed border-slate-300 p-3 dark:border-slate-700">
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">

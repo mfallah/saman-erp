@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ImagePlus, Link2, Plus, Send, Trash2, Unlink } from 'lucide-react';
+import { Archive, ImagePlus, Link2, Pencil, Plus, Send, Trash2, Unlink } from 'lucide-react';
 import { api, newRequestId, toFaErrorMessage, uploadFile } from '../lib/api-client';
 import { formatJalali, formatJalaliDateTime } from '../lib/dates';
 import { useDocumentTitle } from '../lib/hooks';
@@ -8,7 +8,7 @@ import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { usePathParam } from '../lib/router';
 import { useHasPermission } from '../lib/use-auth';
-import type { Channel, ChannelAccount, ProductDetail, Unit, VariantSummary } from '../types/api';
+import type { CategoryNode, Channel, ChannelAccount, ProductDetail, Unit, VariantSummary } from '../types/api';
 import { Can, PermissionNotice } from '../components/auth/Can';
 import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -55,6 +55,27 @@ const variantColumns: readonly Column<VariantSummary>[] = [
   },
 ];
 
+const EDITABLE_STATUSES = [
+  { value: 'draft', label: 'پیش‌نویس' },
+  { value: 'active', label: 'فعال' },
+  { value: 'inactive', label: 'غیرفعال' },
+  { value: 'discontinued', label: 'متوقف‌شده' },
+] as const;
+
+/** Maps API statuses that are not directly editable (published/archived) to their editable base. */
+function editableStatus(status: string): string {
+  if (status === 'published') return 'active';
+  if (status === 'archived') return 'inactive';
+  return EDITABLE_STATUSES.some((option) => option.value === status) ? status : 'draft';
+}
+
+function flattenCategories(nodes: readonly CategoryNode[], depth = 0): { value: string; label: string }[] {
+  return nodes.flatMap((node) => [
+    { value: node.id, label: `${'— '.repeat(depth)}${node.nameFa ?? node.name ?? node.id}` },
+    ...flattenCategories(node.children ?? [], depth + 1),
+  ]);
+}
+
 /** Product detail: master data, variants, media; actions are permission-gated. */
 export function ProductDetailPage() {
   const id = usePathParam('id');
@@ -73,6 +94,14 @@ export function ProductDetailPage() {
   const [mappingChannelId, setMappingChannelId] = useState('');
   const [mappingAccountId, setMappingAccountId] = useState('');
   const [mappingSearch, setMappingSearch] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editNameFa, setEditNameFa] = useState('');
+  const [editNameEn, setEditNameEn] = useState('');
+  const [editCategoryId, setEditCategoryId] = useState('');
+  const [editStatus, setEditStatus] = useState('draft');
+  const [editVariant, setEditVariant] = useState<VariantSummary | null>(null);
+  const [editVariantSku, setEditVariantSku] = useState('');
+  const [editVariantBarcode, setEditVariantBarcode] = useState('');
 
   const canUpdate = useHasPermission(PERM.productUpdate);
   const canAddVariant = useHasPermission(PERM.variantCreate);
@@ -93,6 +122,12 @@ export function ProductDetailPage() {
     queryFn: () => api.get<readonly Unit[]>('/units', { perPage: 200 }),
     staleTime: 5 * 60_000,
     enabled: variantModalOpen,
+  });
+  const categoriesQuery = useQuery({
+    queryKey: queryKeys.catalog.categories,
+    queryFn: () => api.get<readonly CategoryNode[]>('/categories', { tree: true }),
+    staleTime: 5 * 60_000,
+    enabled: editOpen,
   });
 
   const channelVariants = productQuery.data?.variants ?? [];
@@ -191,6 +226,64 @@ export function ProductDetailPage() {
     onError: (error) => toast.error('ثبت تنوع ناموفق بود', toFaErrorMessage(error)),
   });
 
+  const updateProductMutation = useMutation({
+    mutationFn: () => {
+      const version = productQuery.data?.version;
+      return api.patch<ProductDetail>(
+        `/products/${id}`,
+        {
+          nameFa: editNameFa.trim(),
+          nameEn: editNameEn.trim(),
+          categoryId: editCategoryId,
+          status: editStatus,
+        },
+        version === undefined ? undefined : { ifMatch: version },
+      );
+    },
+    onSuccess: () => {
+      toast.success('کالا ویرایش شد');
+      setEditOpen(false);
+      invalidate();
+    },
+    onError: (error) => toast.error('ویرایش کالا ناموفق بود', toFaErrorMessage(error)),
+  });
+
+  const updateVariantMutation = useMutation({
+    mutationFn: (variant: VariantSummary) => {
+      const barcode = editVariantBarcode.trim();
+      return api.patch<VariantSummary>(
+        `/products/${id}/variants/${variant.id}`,
+        {
+          sku: editVariantSku.trim(),
+          barcode: barcode === '' ? null : barcode,
+        },
+        variant.version === undefined ? undefined : { ifMatch: variant.version },
+      );
+    },
+    onSuccess: () => {
+      toast.success('تنوع کالا ویرایش شد');
+      setEditVariant(null);
+      invalidate();
+    },
+    onError: (error) => toast.error('ویرایش تنوع ناموفق بود', toFaErrorMessage(error)),
+  });
+
+  const openEditProduct = (): void => {
+    const current = productQuery.data;
+    if (current === undefined) return;
+    setEditNameFa(current.nameFa);
+    setEditNameEn(current.nameEn ?? '');
+    setEditCategoryId(current.category?.id ?? '');
+    setEditStatus(editableStatus(current.status));
+    setEditOpen(true);
+  };
+
+  const openEditVariant = (variant: VariantSummary): void => {
+    setEditVariant(variant);
+    setEditVariantSku(variant.sku);
+    setEditVariantBarcode(variant.barcode ?? '');
+  };
+
   const addMediaMutation = useMutation({
     mutationFn: (fileId: string) =>
       api.post(`/products/${id}/media`, { fileId }, { idempotencyKey: newRequestId() }),
@@ -255,6 +348,25 @@ export function ProductDetailPage() {
   const product = productQuery.data;
   const variants = channelVariants;
   const media = product.media ?? [];
+  const categoryOptions = flattenCategories(categoriesQuery.data ?? []);
+  const variantTableColumns: readonly Column<VariantSummary>[] = [
+    ...variantColumns,
+    {
+      key: 'actions',
+      header: 'عملیات',
+      render: (variant) =>
+        canUpdate ? (
+          <Button
+            size="sm"
+            variant="outline"
+            icon={<Pencil className="size-3.5" />}
+            onClick={() => openEditVariant(variant)}
+          >
+            ویرایش
+          </Button>
+        ) : null,
+    },
+  ];
 
   const channelMappingColumns: readonly Column<ChannelMappingView>[] = [
     {
@@ -329,6 +441,15 @@ export function ProductDetailPage() {
         breadcrumbs={[{ label: 'محصولات', to: '/products' }, { label: product.nameFa }]}
         actions={
           <>
+            {canUpdate && (
+              <Button
+                variant="outline"
+                icon={<Pencil className="size-4" />}
+                onClick={openEditProduct}
+              >
+                ویرایش
+              </Button>
+            )}
             {canUpdate && product.status !== 'published' && product.status !== 'active' && (
               <Button
                 icon={<Send className="size-4" />}
@@ -433,7 +554,7 @@ export function ProductDetailPage() {
               <EmptyState title="تنوعی برای این کالا ثبت نشده است" />
             ) : (
               <DataTable
-                columns={variantColumns}
+                columns={variantTableColumns}
                 rows={variants}
                 rowKey={(variant) => variant.id}
                 caption="تنوع‌های کالا"
@@ -776,6 +897,116 @@ export function ProductDetailPage() {
               ))}
             </ul>
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        title="ویرایش کالا"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>
+              انصراف
+            </Button>
+            <Button
+              loading={updateProductMutation.isPending}
+              disabled={
+                editNameFa.trim() === '' ||
+                editCategoryId === '' ||
+                categoriesQuery.isError
+              }
+              onClick={() => updateProductMutation.mutate()}
+            >
+              ذخیره تغییرات
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          {categoriesQuery.isError && (
+            <ErrorState
+              message="دریافت دسته‌بندی‌ها ناموفق بود."
+              error={categoriesQuery.error}
+              onRetry={() => void categoriesQuery.refetch()}
+            />
+          )}
+          <FormField label="نام فارسی" required>
+            <Input
+              value={editNameFa}
+              onChange={(event) => setEditNameFa(event.target.value)}
+              placeholder="نام کالا"
+            />
+          </FormField>
+          <FormField label="نام انگلیسی" hint="اختیاری">
+            <Input
+              dir="ltr"
+              className="text-left"
+              value={editNameEn}
+              onChange={(event) => setEditNameEn(event.target.value)}
+              placeholder="Product name"
+            />
+          </FormField>
+          <FormField label="دسته‌بندی" required>
+            <Select
+              options={categoryOptions}
+              value={editCategoryId}
+              placeholder="انتخاب دسته‌بندی"
+              loading={categoriesQuery.isLoading}
+              disabled={categoriesQuery.isError}
+              onChange={(event) => setEditCategoryId(event.target.value)}
+            />
+          </FormField>
+          <FormField label="وضعیت" required>
+            <Select
+              options={EDITABLE_STATUSES.map((option) => ({ value: option.value, label: option.label }))}
+              value={editStatus}
+              onChange={(event) => setEditStatus(event.target.value)}
+            />
+          </FormField>
+        </div>
+      </Modal>
+
+      <Modal
+        open={editVariant !== null}
+        onClose={() => setEditVariant(null)}
+        title="ویرایش تنوع کالا"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setEditVariant(null)}>
+              انصراف
+            </Button>
+            <Button
+              loading={updateVariantMutation.isPending}
+              disabled={editVariantSku.trim() === ''}
+              onClick={() => {
+                if (editVariant !== null) updateVariantMutation.mutate(editVariant);
+              }}
+            >
+              ذخیره تغییرات
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <FormField label="شناسه تنوع (SKU)" required>
+            <Input
+              dir="ltr"
+              className="text-left"
+              value={editVariantSku}
+              onChange={(event) => setEditVariantSku(event.target.value)}
+              placeholder="SKU-001"
+            />
+          </FormField>
+          <FormField label="بارکد" hint="برای حذف بارکد، مقدار را خالی بگذارید.">
+            <Input
+              dir="ltr"
+              className="text-left"
+              value={editVariantBarcode}
+              onChange={(event) => setEditVariantBarcode(event.target.value)}
+              placeholder="6260000000000"
+            />
+          </FormField>
         </div>
       </Modal>
     </>

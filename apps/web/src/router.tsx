@@ -41,6 +41,10 @@ const ProductsListPage = lazyRouteComponent(() => import('./pages/ProductsListPa
 const ProductNewPage = lazyRouteComponent(() => import('./pages/ProductNewPage'), 'ProductNewPage');
 const ProductDetailPage = lazyRouteComponent(() => import('./pages/ProductDetailPage'), 'ProductDetailPage');
 const InventoryPage = lazyRouteComponent(() => import('./pages/InventoryPage'), 'InventoryPage');
+const InventoryStockPage = lazyRouteComponent(
+  () => import('./pages/InventoryStockPage'),
+  'InventoryStockPage',
+);
 const WarehousesPage = lazyRouteComponent(() => import('./pages/WarehousesPage'), 'WarehousesPage');
 const WarehouseLocationsPage = lazyRouteComponent(
   () => import('./pages/WarehouseLocationsPage'),
@@ -157,6 +161,13 @@ const inventoryRoute = createRoute({
   path: '/inventory',
   beforeLoad: () => guardPermission(PERM.inventoryBalanceRead),
   component: InventoryPage,
+});
+
+const inventoryStockRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/inventory/stock',
+  beforeLoad: () => guardPermission(PERM.inventoryRead),
+  component: InventoryStockPage,
 });
 
 const warehousesRoute = createRoute({
@@ -309,6 +320,7 @@ const routeTree = rootRoute.addChildren([
     productNewRoute,
     productDetailRoute,
     inventoryRoute,
+    inventoryStockRoute,
     warehousesRoute,
     warehouseLocationsRoute,
     ordersRoute,
