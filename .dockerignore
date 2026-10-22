@@ -24,6 +24,10 @@ node_modules
 **/*.tsbuildinfo
 **/.vite
 
+# the admin SPA is prebuilt in CI/local and copied into the image
+!apps/web/dist
+!apps/web/dist/**
+
 # secrets and local env (NEVER in images)
 .env
 .env.*
