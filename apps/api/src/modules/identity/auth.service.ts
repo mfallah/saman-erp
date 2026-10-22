@@ -1,8 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Optional, Logger } from '@nestjs/common';
 
 import { APP_CONFIG, type AppConfig } from '../../config/env.schema';
 import { AUDIT, DB, type AuditPort, type Db } from '../../common/contracts';
 import type { AuthenticatedActor } from '../../common/auth/authenticated-actor';
+import { ModuleRef } from '@nestjs/core';
 import { AppError, PERMISSION_COUNT } from '@saman/shared';
 
 import { AuthRepository } from './auth.repository';
@@ -111,6 +112,7 @@ export class AuthService {
     private readonly repository: AuthRepository,
     private readonly passwords: PasswordService,
     private readonly rateLimits: AuthRateLimitService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {
     this.tokenService = new TokenService({
       secret: config.jwtAccessSecret,
@@ -228,6 +230,14 @@ export class AuthService {
         status: 'pending',
       });
       this.logMockSms(challenge.mobile, code, challenge.purpose);
+      const resendOrg = await this.repository.loadOrganization();
+      await this.deliverOtpSms({
+        organizationId: resendOrg.id,
+        userId: challenge.userId,
+        mobile: challenge.mobile,
+        code,
+        purpose: challenge.purpose,
+      });
       return { status: 202, body: { challengeId: challenge.publicId, expiresIn: this.otpService.ttlSeconds, resendAfter: 60 } };
     }
 
@@ -695,6 +705,39 @@ export class AuthService {
     return { trusted: true, deviceId: device.id, reason: 'trusted' };
   }
 
+
+  /**
+   * Sends the OTP through the real SMS provider (Limo). The identity module
+   * owns challenge storage; delivery lives in the integrations module, so it is
+   * resolved lazily to avoid a module cycle. Failures never block login: the
+   * challenge is already persisted and the operator sees the reason in logs.
+   */
+  private async deliverOtpSms(input: {
+    organizationId: bigint;
+    userId: bigint | null;
+    mobile: string;
+    code: string;
+    purpose: string;
+  }): Promise<void> {
+    console.error(`[auth] deliverOtpSms mode=${this.config.smsMode} moduleRef=${this.moduleRef !== undefined}`);
+    if (this.config.smsMode !== 'limo' || this.moduleRef === undefined) return;
+    try {
+      const { SmsService } = await import('../integrations/sms/sms.service');
+      const sms = this.moduleRef.get(SmsService, { strict: false });
+      await sms.sendOtp({
+        organizationId: String(input.organizationId),
+        userId: input.userId === null ? null : String(input.userId),
+        mobile: input.mobile,
+        code: input.code,
+        purpose: input.purpose,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // eslint-disable-next-line no-console
+      console.error(`[auth] OTP SMS delivery failed: ${message}`);
+    }
+  }
+
   private async createOtpChallenge(input: {
     organizationId: bigint;
     userId: bigint | null;
@@ -714,6 +757,13 @@ export class AuthService {
       ip: input.context.ip ?? null,
     });
     this.logMockSms(input.mobile, code, input.purpose);
+    await this.deliverOtpSms({
+      organizationId: input.organizationId,
+      userId: input.userId,
+      mobile: input.mobile,
+      code,
+      purpose: input.purpose,
+    });
     await this.repository.recordLoginAttempt({
       ipPrefix: input.context.ipPrefix ?? null,
       username: null,

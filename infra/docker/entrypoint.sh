@@ -19,6 +19,10 @@ DATABASE_URL="$(clean_env "${DATABASE_URL:-}")"; export DATABASE_URL
 MIGRATION_DATABASE_URL="$(clean_env "${MIGRATION_DATABASE_URL:-}")"; export MIGRATION_DATABASE_URL
 REDIS_URL="$(clean_env "${REDIS_URL:-}")"; export REDIS_URL
 APP_PORT="$(clean_env "${APP_PORT:-}")"; export APP_PORT
+LIMO_API_KEY="$(clean_env "${LIMO_API_KEY:-}")"; export LIMO_API_KEY
+LIMO_SENDER="$(clean_env "${LIMO_SENDER:-}")"; export LIMO_SENDER
+LIMO_OTP_PATTERN_ID="$(clean_env "${LIMO_OTP_PATTERN_ID:-}")"; export LIMO_OTP_PATTERN_ID
+SMS_MODE="$(clean_env "${SMS_MODE:-}")"; export SMS_MODE
 
 ROLE="${APP_ROLE:-api}"
 if [ -n "${DATABASE_URL:-}" ]; then echo "[entrypoint] DATABASE_URL is set"; else echo "[entrypoint] DATABASE_URL is MISSING" >&2; fi
