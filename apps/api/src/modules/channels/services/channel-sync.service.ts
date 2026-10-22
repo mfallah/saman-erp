@@ -111,7 +111,7 @@ export class ChannelSyncService {
           : input.type === 'order_pull'
             ? `orders:${input.accountId}`
             : input.type === 'product_import' || input.type === 'product_push'
-              ? `products:${input.scope?.dryRun === true ? 'dry:' : ''}${input.accountId}:${this.now().toISOString().slice(0, 10)}`
+              ? `products:${input.scope?.dryRun === true ? 'dry:' : ''}${input.accountId}:${this.now().getTime()}`
               : `reconcile:${input.accountId}:${this.now().toISOString().slice(0, 10)}`;
 
     const job = await this.sync.enqueue({

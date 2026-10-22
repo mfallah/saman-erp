@@ -163,7 +163,7 @@ export function ChannelsPage() {
     onSuccess: () => {
       toast.success('همگام‌سازی در صف قرار گرفت', 'نتیجه در فهرست کارهای همگام‌سازی قابل پیگیری است.');
       setSyncOpen(false);
-      void queryClient.invalidateQueries({ queryKey: ['channel-sync-jobs'] });
+      void queryClient.invalidateQueries();
     },
     onError: (error) => {
       if (isNotImplemented(error)) {
