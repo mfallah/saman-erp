@@ -11,6 +11,7 @@ import {
   NOTIFICATION_KV,
   type KeyValueStore,
 } from './infrastructure/key-value';
+import { NotificationsController } from './notifications.controller';
 import { SqlNotificationRepository } from './repositories/notification.repository';
 import {
   NotificationPreferenceService,
@@ -19,6 +20,7 @@ import {
 } from './services/notifications.service';
 
 @Module({
+  controllers: [NotificationsController],
   providers: [
     { provide: NOTIFICATION_LOGGER, useFactory: (): Logger => createNotificationLogger() },
     {

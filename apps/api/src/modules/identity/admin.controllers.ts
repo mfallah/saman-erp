@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
-import { AppError, PERMISSION_COUNT, PERMISSION_KEYS } from '@saman/shared';
+import { AppError, PERMISSION_COUNT, PERMISSION_KEYS, buildOffsetMeta } from '@saman/shared';
 import { z } from 'zod';
 import type { FastifyRequest } from 'fastify';
 
@@ -7,6 +7,7 @@ import type { AuthenticatedActor } from '../../common/auth/authenticated-actor';
 import type { RequestWithContext } from '../../common/decorators/current-context.decorator';
 import { RequireStepUp } from '../../common/decorators/require-step-up.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { apiData } from '../../common/interceptors/response.interceptor';
 import { getRequestId } from '../../common/request-id/request-id';
 // AdminService is a DI value (constructor metadata), not only a type.
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -67,7 +68,25 @@ const updateRoleSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   scopeMode: z.enum(['all', 'branch', 'warehouse', 'self']).optional(),
 });
-const rolePermissionsSchema = z.object({ permissions: z.array(z.string()).max(600) });
+const rolePermissionsSchema = z
+  .object({
+    permissions: z.array(z.string()).max(600).optional(),
+    permissionKeys: z.array(z.string()).max(600).optional(),
+  })
+  .refine((value) => value.permissions !== undefined || value.permissionKeys !== undefined, {
+    message: 'required',
+    path: ['permissionKeys'],
+  });
+const userStatusSchema = z.enum(['active', 'inactive', 'locked', 'password_reset_required']);
+const usersQuerySchema = z.object({
+  q: z.string().max(200).optional(),
+  search: z.string().max(200).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).optional(),
+  perPage: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  status: userStatusSchema.optional(),
+  'filter[status]': userStatusSchema.optional(),
+});
 const orgPatchSchema = z.object({
   name: z.string().min(2).max(200).optional(),
   legal_name: z.string().max(300).nullable().optional(),
@@ -89,6 +108,26 @@ const updateBranchSchema = z.object({
 const createDepartmentSchema = z.object({ code: z.string().min(2).max(30), name: z.string().min(2).max(150) });
 const settingsSchema = z.record(z.unknown());
 
+/** `API.md` §5: registry grouped by the first key segment (`accounting.journal.post` → `accounting`). */
+function permissionRegistry(): { version: number; groups: Array<{ resource: string; permissions: Array<{ key: string; action: string }> }> } {
+  const groups = new Map<string, Array<{ key: string; action: string }>>();
+  for (const key of PERMISSION_KEYS) {
+    const dot = key.indexOf('.');
+    const resource = dot === -1 ? key : key.slice(0, dot);
+    const action = dot === -1 ? key : key.slice(dot + 1);
+    const bucket = groups.get(resource);
+    if (bucket === undefined) {
+      groups.set(resource, [{ key, action }]);
+    } else {
+      bucket.push({ key, action });
+    }
+  }
+  return {
+    version: PERMISSION_COUNT,
+    groups: [...groups].map(([resource, permissions]) => ({ resource, permissions })),
+  };
+}
+
 /** `/users` administration (`API.md` §4.1). */
 @Controller('users')
 export class UsersAdminController {
@@ -96,8 +135,21 @@ export class UsersAdminController {
 
   @Get()
   @Permissions('user.read')
-  list(@Req() request: FastifyRequest, @Query('search') search?: string, @Query('limit') limit?: string) {
-    return this.admin.listUsers(actorOf(request), { search, limit: Number(limit ?? '50') });
+  async list(@Req() request: FastifyRequest, @Query() query: unknown) {
+    const q = parse(usersQuerySchema, query);
+    const search = q.q ?? q.search;
+    const status = q.status ?? q['filter[status]'];
+    const result = await this.admin.listUsers(actorOf(request), {
+      ...(search === undefined ? {} : { search }),
+      ...(status === undefined ? {} : { status }),
+      ...(q.page === undefined ? {} : { page: q.page }),
+      ...(q.perPage === undefined ? {} : { perPage: q.perPage }),
+      ...(q.limit === undefined ? {} : { limit: q.limit }),
+    });
+    return apiData(result.items, {
+      pagination: buildOffsetMeta(result.page, result.perPage, result.total),
+      total: result.total,
+    });
   }
 
   @Post()
@@ -122,6 +174,35 @@ export class UsersAdminController {
   @Post(':id/reset-password')
   @Permissions('user.reset_password')
   resetPassword(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Headers('x-step-up-token') stepUpToken: string | undefined,
+    @Req() request: FastifyRequest,
+  ) {
+    return this.admin.resetPassword(
+      actorOf(request),
+      parse(idSchema, id),
+      { ...parse(resetPasswordSchema, body), ...(stepUpToken === undefined ? {} : { stepUpToken }) },
+      metaOf(request),
+    );
+  }
+
+  @Post(':id/activate')
+  @Permissions('user.update')
+  activate(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return this.admin.updateUser(actorOf(request), parse(idSchema, id), { status: 'active' }, metaOf(request));
+  }
+
+  @Post(':id/deactivate')
+  @Permissions('user.update')
+  deactivate(@Param('id') id: string, @Req() request: FastifyRequest) {
+    return this.admin.updateUser(actorOf(request), parse(idSchema, id), { status: 'inactive' }, metaOf(request));
+  }
+
+  @RequireStepUp('admin.user.reset_password')
+  @Post(':id/password/reset')
+  @Permissions('user.reset_password')
+  resetPasswordAlias(
     @Param('id') id: string,
     @Body() body: unknown,
     @Headers('x-step-up-token') stepUpToken: string | undefined,
@@ -194,10 +275,11 @@ export class RolesAdminController {
   @Put(':id/permissions')
   @Permissions('role.assign')
   setPermissions(@Param('id') id: string, @Body() body: unknown, @Req() request: FastifyRequest) {
+    const input = parse(rolePermissionsSchema, body);
     return this.admin.setRolePermissions(
       actorOf(request),
       parse(idSchema, id),
-      parse(rolePermissionsSchema, body).permissions,
+      input.permissionKeys ?? input.permissions ?? [],
       metaOf(request),
     );
   }
@@ -205,12 +287,10 @@ export class RolesAdminController {
 
 @Controller('permissions')
 export class PermissionsAdminController {
-  constructor(private readonly admin: AdminService) {}
-
   @Get()
   @Permissions('permission.read')
-  list(@Req() request: FastifyRequest) {
-    return { version: PERMISSION_COUNT, keys: PERMISSION_KEYS, actor: actorOf(request).permissions };
+  list() {
+    return permissionRegistry();
   }
 }
 

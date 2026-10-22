@@ -112,7 +112,7 @@ export class ReportingController {
   async summary(
     @Tenant() ctx: TenantContext,
     @Query('date') date?: string,
-  ): Promise<{ data: Record<string, string> }> {
+  ): Promise<{ data: Record<string, unknown> }> {
     await this.reporting.dashboardAccess(ctx);
     return { data: await this.reporting.summary(ctx, date ?? new Date().toISOString().slice(0, 10)) };
   }

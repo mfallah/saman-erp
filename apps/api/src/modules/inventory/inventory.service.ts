@@ -809,7 +809,7 @@ export class InventoryService {
       warehouseId: string;
       type: 'increase' | 'decrease' | 'writeoff' | 'damage' | 'correction';
       reason: string;
-      lines: readonly { variantId: string; locationId: string; quantity: string; unitCost?: string | undefined }[];
+      lines: readonly { variantId: string; locationId?: string | undefined; quantity: string; unitCost?: string | undefined }[];
       attachmentFileIds?: readonly string[] | undefined;
     },
   ): Promise<Record<string, unknown>> {
@@ -819,9 +819,13 @@ export class InventoryService {
       const reasonCode = mapAdjustmentReason(body.type, body.reason);
       const lines = [];
       let totalValue = 0n;
+      let defaultLocationInternalId: bigint | null = null;
       for (const [index, line] of body.lines.entries()) {
         const variant = await this.catalog.requireVariant(ctx, line.variantId);
-        const locationInternalId = await this.requireLocation(tx, ctx, line.locationId);
+        const locationInternalId =
+          line.locationId === undefined
+            ? (defaultLocationInternalId ??= await this.resolveDefaultAdjustmentLocation(tx, ctx, warehouseInternalId))
+            : await this.requireLocation(tx, ctx, line.locationId);
         const balance = await this.repo.lockBalances(tx, ctx.orgId, [
           { warehouseInternalId, locationInternalId, variantInternalId: variant.internalId },
         ]);
@@ -1769,6 +1773,13 @@ export class InventoryService {
 
   private async requireLocation(tx: Db, ctx: TenantContext, publicId: string): Promise<bigint> {
     const internalId = await this.repo.resolveLocationId(tx, ctx.orgId, publicId);
+    if (internalId === null) throw notFound('location');
+    return internalId;
+  }
+
+  /** Defaults a location-less adjustment line to the warehouse's first active location. */
+  private async resolveDefaultAdjustmentLocation(tx: Db, ctx: TenantContext, warehouseInternalId: bigint): Promise<bigint> {
+    const internalId = await this.repo.resolveFirstActiveLocationId(tx, ctx.orgId, warehouseInternalId);
     if (internalId === null) throw notFound('location');
     return internalId;
   }

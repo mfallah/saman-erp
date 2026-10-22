@@ -364,15 +364,14 @@ function BrandingTab({ editable }: { readonly editable: boolean }) {
 
   const query = useQuery({
     queryKey: ['branding'],
-    queryFn: () => api.get<{ items: readonly { key: string; value: unknown }[] }>('/settings/branding'),
+    queryFn: () => api.get<Record<string, unknown>>('/settings/branding'),
     retry: false,
   });
 
   useEffect(() => {
     if (query.data === undefined) return;
-    const map = new Map(query.data.items.map((item) => [item.key, item.value]));
     const pick = (key: string): string | undefined => {
-      const value = map.get(key);
+      const value = query.data[key];
       if (typeof value !== 'string') return undefined;
       try {
         const parsed: unknown = JSON.parse(value);

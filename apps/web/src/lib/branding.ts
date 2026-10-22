@@ -14,10 +14,9 @@ export function useBranding() {
     queryKey: ['branding'],
     queryFn: async (): Promise<Branding> => {
       try {
-        const data = await api.get<{ items: readonly { key: string; value: unknown }[] }>('/settings/branding');
-        const map = new Map(data.items.map((item) => [item.key, item.value]));
+        const data = await api.get<Record<string, unknown>>('/settings/branding');
         const pick = (key: string): string | undefined => {
-          const value = map.get(key);
+          const value = data[key];
           if (typeof value !== 'string' || value.length === 0) return undefined;
           try {
             const parsed: unknown = JSON.parse(value);

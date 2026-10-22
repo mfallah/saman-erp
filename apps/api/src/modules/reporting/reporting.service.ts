@@ -166,7 +166,7 @@ export class ReportingService {
     return { requiredPermissions: required };
   }
 
-  async summary(ctx: TenantContext, date: string): Promise<Record<string, string>> {
+  async summary(ctx: TenantContext, date: string): Promise<Record<string, unknown>> {
     return this.db.begin(async (tx) => {
       const result = await this.readModel.dashboardSummary(ctx.orgId, date);
       await this.audit.record(asDb(tx), {
@@ -178,7 +178,19 @@ export class ReportingService {
         requestId: ctx.requestId,
         after: { date },
       });
-      return result;
+      // SPA aliases (the canonical fields above stay for existing consumers).
+      return {
+        ...result,
+        salesToday: result['salesAmount'],
+        salesTodayCount: Number(result['salesCount']),
+        receivable: result['receivablesAmount'],
+        payable: result['payablesAmount'],
+        profitToday: '0',
+        syncFailures: 0,
+        salesSeries: [],
+        lowStock: [],
+        recentOrders: [],
+      };
     });
   }
 

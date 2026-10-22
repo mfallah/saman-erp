@@ -89,8 +89,10 @@ function orderView(row: OrderRow): Record<string, unknown> {
   return {
     id: row.id,
     orderNo: row.orderNo,
+    orderNumber: row.orderNo,
     customerId: row.customerId,
     customerName: row.customerName,
+    customer: { id: row.customerId, name: row.customerName },
     channelCode: row.channelCode,
     externalOrderId: row.externalOrderId,
     warehouseId: row.warehouseId,
@@ -98,6 +100,8 @@ function orderView(row: OrderRow): Record<string, unknown> {
     paymentStatus: row.paymentStatus,
     fulfillmentStatus: row.fulfillmentStatus,
     currency: row.currency,
+    itemCount: row.itemCount,
+    total: row.grandTotalAmount,
     totals: {
       subtotal: row.subtotalAmount,
       discount: row.discountAmount,

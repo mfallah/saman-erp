@@ -402,19 +402,17 @@ export class AuthService {
 
   // --- Sessions / devices --------------------------------------------------
 
-  async listSessions(actor: AuthenticatedActor): Promise<Record<string, unknown>> {
+  async listSessions(actor: AuthenticatedActor): Promise<Array<Record<string, unknown>>> {
     const sessions = await this.repository.listSessions(actor.id, actor.sessionId);
-    return {
-      items: sessions.map((session) => ({
-        id: session.publicId,
-        deviceLabel: session.deviceLabel,
-        ipPrefix: session.ipPrefix,
-        createdAt: session.createdAt.toISOString(),
-        lastUsedAt: session.lastUsedAt?.toISOString() ?? null,
-        revokedAt: session.revokedAt?.toISOString() ?? null,
-        current: session.current,
-      })),
-    };
+    return sessions.map((session) => ({
+      id: session.publicId,
+      deviceLabel: session.deviceLabel,
+      ip: session.ipPrefix,
+      createdAt: session.createdAt.toISOString(),
+      lastUsedAt: session.lastUsedAt?.toISOString() ?? null,
+      revokedAt: session.revokedAt?.toISOString() ?? null,
+      current: session.current,
+    }));
   }
 
   async revokeSession(actor: AuthenticatedActor, publicId: string, meta: RequestMeta): Promise<AuthOutcome> {

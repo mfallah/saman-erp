@@ -2,6 +2,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { TenantContext } from '../../../common/contracts';
+import { apiData } from '../../../common/interceptors/response.interceptor';
 import { AccountingReportsService } from '../reports/accounting-reports.service';
 import { BalanceQuerySchema, JournalBookQuerySchema, LedgerQuerySchema, SubLedgerQuerySchema, parseDto, toBigInt } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
@@ -18,7 +19,7 @@ export class AccountingReportsController {
   @Get('account-balances')
   @RequirePermissions('accounting.balance.read')
   @ApiOperation({ summary: 'مانده حساب‌ها به تفکیک دوره (منبع تراز آزمایشی)' })
-  async balances(@Tenant() ctx: TenantContext, @Query() query: unknown): Promise<{ data: unknown }> {
+  async balances(@Tenant() ctx: TenantContext, @Query() query: unknown) {
     const filter = parseDto(BalanceQuerySchema, query);
     const trial = await this.reports.trialBalance(ctx, {
       ...(filter.fiscalYearId === undefined ? {} : { fiscalYearId: toBigInt(filter.fiscalYearId) }),
@@ -27,22 +28,23 @@ export class AccountingReportsController {
     const rows = filter.accountId === undefined
       ? trial.rows
       : trial.rows.filter((row) => row.accountCode !== undefined && row.accountCode.length > 0);
-    return {
-      data: {
-        rows: rows.map((row) => ({
-          accountCode: row.accountCode,
-          nameFa: row.nameFa,
-          type: row.accountType,
-          normalBalance: row.normalBalance,
-          debit: moneyOut(row.debit),
-          credit: moneyOut(row.credit),
-          balance: moneyOut(row.balance),
-        })),
+    return apiData(
+      rows.map((row) => ({
+        accountCode: row.accountCode,
+        nameFa: row.nameFa,
+        type: row.accountType,
+        account: { code: row.accountCode, nameFa: row.nameFa, type: row.accountType },
+        normalBalance: row.normalBalance,
+        debit: moneyOut(row.debit),
+        credit: moneyOut(row.credit),
+        balance: moneyOut(row.balance),
+      })),
+      {
         totalDebit: moneyOut(trial.totalDebit),
         totalCredit: moneyOut(trial.totalCredit),
         balanced: trial.balanced,
       },
-    };
+    );
   }
 
   @Get('general-ledger')

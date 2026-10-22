@@ -5,6 +5,7 @@
  */
 import { BadRequestException, Body, Controller, Get, Inject, Param, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AppError } from '@saman/shared';
 
 import { DB, type Db } from '../../../common/contracts';
 import type { TenantContext } from '../../../common/contracts';
@@ -285,6 +286,57 @@ export class ChannelsAdminController {
         channel: { code: row['channel_code'] },
       })),
     );
+  }
+
+  @Post('channel-sync-jobs')
+  @Permissions('channel.sync.trigger')
+  @ApiOperation({ summary: 'Queue a sync run for the first active account of a channel' })
+  async triggerSync(@CurrentTenant() ctx: TenantContext, @Body() body: unknown) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const channelId = text(payload['channelId']);
+    const type = text(payload['type']);
+    if (channelId.length === 0 || type.length === 0) {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'channelId and type are required',
+      });
+    }
+    if (type.length > 50) {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'type is too long',
+      });
+    }
+
+    const accounts = await this.sql`
+      select a.id::text as id
+      from erp.channel_accounts a
+      join erp.sales_channels c on c.id = a.channel_id
+      where c.public_id = ${channelId}
+        and c.organization_id = ${ctx.orgId}
+        and a.organization_id = ${ctx.orgId}
+        and a.is_active = true
+        and a.deleted_at is null
+      order by a.id
+      limit 1
+    `;
+    const account = accounts[0];
+    if (account === undefined) {
+      throw new AppError('NOT_FOUND', {
+        message: 'حساب فعالی برای این کانال یافت نشد.',
+      });
+    }
+
+    const inserted = await this.sql`
+      insert into erp.channel_sync_jobs
+        (organization_id, channel_account_id, job_type, status, next_run_at)
+      values
+        (${ctx.orgId}, ${String(account['id'])}::bigint, ${type}, 'queued', now())
+      returning public_id::text as id
+    `;
+    const job = inserted[0];
+    if (job === undefined) throw new Error('channel_sync_job_insert_failed');
+    return apiData({ id: String(job['id']), status: 'queued' });
   }
 
   @Post('channel-sync-jobs/:jobId/retry')

@@ -202,7 +202,7 @@ export class WarehouseService {
 
   // ============================================================ location tree
 
-  async locationTree(ctx: TenantContext, warehousePublicId: string): Promise<Record<string, unknown>> {
+  async locationTree(ctx: TenantContext, warehousePublicId: string): Promise<Record<string, unknown>[]> {
     const warehouse = await this.requireWarehouse(this.db, ctx, warehousePublicId);
     const flat = await this.repo.locationTree(this.db, toBigInt(warehouse.internalId));
     const byParent = new Map<string, typeof flat>();
@@ -216,6 +216,8 @@ export class WarehouseService {
       (byParent.get(parentId ?? 'root') ?? []).map((node) => ({
         id: node.id,
         code: node.code,
+        name: node.code,
+        type: 'location',
         level: node.level,
         fullCode: node.fullCode,
         abcClass: node.abcClass,
@@ -223,7 +225,7 @@ export class WarehouseService {
         pickPriority: node.pickPriority,
         children: build(node.id),
       }));
-    return { warehouseId: warehouse.id, tree: build(null) };
+    return build(null);
   }
 
   async listLocations(ctx: TenantContext, query: { limit: number; code?: string | undefined; type?: string | undefined; q?: string | undefined }) {

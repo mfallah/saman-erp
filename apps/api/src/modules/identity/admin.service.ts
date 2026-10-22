@@ -45,8 +45,35 @@ export class AdminService {
 
   // --- users ---------------------------------------------------------------
 
-  async listUsers(actor: AuthenticatedActor, query: { search?: string; limit?: number }) {
-    return this.repository.listUsers(actor.orgId, query.search, Math.min(query.limit ?? 50, 200));
+  async listUsers(
+    actor: AuthenticatedActor,
+    query: { search?: string; status?: string; page?: number; perPage?: number; limit?: number },
+  ) {
+    const perPage = Math.min(query.perPage ?? query.limit ?? 50, 200);
+    const page = Math.max(query.page ?? 1, 1);
+    const { items, total } = await this.repository.listUsers(actor.orgId, {
+      ...(query.search === undefined ? {} : { search: query.search }),
+      ...(query.status === undefined ? {} : { status: query.status }),
+      limit: perPage,
+      offset: (page - 1) * perPage,
+    });
+    return {
+      items: items.map((row) => ({
+        id: row.publicId,
+        username: row.username,
+        fullName: row.fullName,
+        mobile: row.mobile,
+        email: row.email,
+        status: row.status,
+        roles: row.roles,
+        mustChangePassword: row.mustChangePassword,
+        lastLoginAt: row.lastLoginAt,
+        createdAt: row.createdAt,
+      })),
+      total,
+      page,
+      perPage,
+    };
   }
 
   async createUser(
@@ -158,8 +185,7 @@ export class AdminService {
   // --- roles ---------------------------------------------------------------
 
   async listRoles(actor: AuthenticatedActor) {
-    const roles = await this.repository.listRoles(actor.orgId);
-    return { items: roles, total: roles.length };
+    return this.repository.listRoles(actor.orgId);
   }
 
   async createRole(
@@ -181,7 +207,15 @@ export class AdminService {
   async getRole(actor: AuthenticatedActor, publicId: string) {
     const role = await this.repository.findRole(actor.orgId, publicId);
     if (role === null) throw new AppError('NOT_FOUND');
-    return { id: publicId, isSystem: role.isSystem, permissions: role.permissions };
+    return {
+      id: publicId,
+      code: role.code,
+      name: role.name,
+      nameFa: role.name,
+      descriptionFa: role.description,
+      isSystem: role.isSystem,
+      permissions: role.permissions,
+    };
   }
 
   async updateRole(
@@ -226,7 +260,7 @@ export class AdminService {
     const updated = await this.repository.setRolePermissions(actor.orgId, role.id, permissions);
     if (!updated) throw new AppError('VALIDATION_ERROR');
     await this.auditAction(actor, 'identity.role.permissions_assigned', publicId, meta);
-    return { id: publicId, permissions };
+    return { id: publicId, keys: [...permissions] };
   }
 
   // --- org / settings / audit ---------------------------------------------
@@ -272,11 +306,16 @@ export class AdminService {
     return department;
   }
 
-  async settings(actor: AuthenticatedActor, group?: string) {
+  async settings(actor: AuthenticatedActor, group?: string): Promise<{ items: Array<Record<string, unknown>> } | Record<string, unknown>> {
     if (group !== undefined && !SETTINGS_GROUPS.includes(group)) {
       throw new AppError('VALIDATION_ERROR', { details: [{ field: 'group', rule: 'unknown_settings_group' }] });
     }
-    return { items: await this.repository.listSettings(actor.orgId, group) };
+    const rows = await this.repository.listSettings(actor.orgId, group);
+    if (group === undefined) return { items: rows };
+    // One group is a flat `{ key: value }` map so the settings UI can bind directly.
+    const flat: Record<string, unknown> = {};
+    for (const row of rows) flat[String(row['key'])] = row['value'];
+    return flat;
   }
 
   async updateSettings(actor: AuthenticatedActor, group: string, values: Record<string, unknown>, meta: AdminMutationMeta) {

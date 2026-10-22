@@ -196,7 +196,7 @@ export function RolesPage() {
                     }`}
                   >
                     <span className="flex items-center justify-between gap-1">
-                      <span>{role.nameFa}</span>
+                      <span>{role.nameFa ?? role.name ?? role.code}</span>
                       {role.isSystem === true && <Badge tone="neutral">سیستمی</Badge>}
                     </span>
                     <span dir="ltr" className="mt-0.5 block text-[11px] text-slate-400">
@@ -211,7 +211,7 @@ export function RolesPage() {
 
         <Card className="lg:col-span-3">
           <CardHeader
-            title={selectedRole?.nameFa ?? 'دسترسی‌ها'}
+            title={selectedRole?.nameFa ?? selectedRole?.name ?? selectedRole?.code ?? 'دسترسی‌ها'}
             description={
               isSystemRole
                 ? 'نقش سیستمی قابل ویرایش نیست؛ برای سفارشی‌سازی یک نقش جدید بسازید.'
@@ -242,7 +242,7 @@ export function RolesPage() {
             />
           ) : (
             <div className="space-y-4">
-              {registry.groups.map((group) => (
+              {(registry.groups ?? []).map((group) => (
                 <section key={group.resource}>
                   <h3 dir="ltr" className="mb-1 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">
                     {group.resource}

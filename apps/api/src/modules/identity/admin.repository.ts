@@ -31,9 +31,21 @@ export interface AdminUserRow {
   readonly status: string;
   readonly mustChangePassword: boolean;
   readonly permissionsVersion: number;
-  readonly roles: string[];
+  readonly roles: Array<{ id: string; name: string }>;
   readonly lastLoginAt: string | null;
   readonly createdAt: string;
+}
+
+export interface RoleRow {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly nameFa: string;
+  readonly description: string | null;
+  readonly descriptionFa: string | null;
+  readonly isSystem: boolean;
+  readonly scopeMode: string;
+  readonly permissions: string[];
 }
 
 /** Admin/platform repositories (`API.md` §4.1, §4.2, §4.17, §4.18). */
@@ -47,25 +59,36 @@ export class AdminRepository {
 
   // --- users ---------------------------------------------------------------
 
-  async listUsers(orgId: bigint, search?: string, limit = 50): Promise<{ items: AdminUserRow[]; total: number }> {
-    const pattern = search === undefined ? null : `%${search}%`;
+  async listUsers(
+    orgId: bigint,
+    query: { search?: string; status?: string; limit?: number; offset?: number } = {},
+  ): Promise<{ items: AdminUserRow[]; total: number }> {
+    const pattern = query.search === undefined ? null : `%${query.search}%`;
+    const status = query.status ?? null;
+    const limit = Math.min(query.limit ?? 50, 200);
+    const offset = Math.max(query.offset ?? 0, 0);
     const rows = await this.sql`
       select u.public_id, u.username, u.mobile, u.full_name, u.email, u.status,
              u.must_change_password, u.permissions_version, u.last_login_at, u.created_at,
-             coalesce(array_agg(distinct r.code) filter (where r.code is not null), '{}') as roles
+             coalesce(
+               jsonb_agg(distinct jsonb_build_object('id', r.public_id, 'name', r.name)) filter (where r.id is not null),
+               '[]'::jsonb
+             ) as roles
       from erp.users u
       left join erp.user_roles ur on ur.user_id = u.id
-      left join erp.roles r on r.id = ur.role_id
+      left join erp.roles r on r.id = ur.role_id and r.deleted_at is null
       where u.organization_id = ${orgId} and u.deleted_at is null
         and (${pattern}::text is null or u.full_name ilike ${pattern} or u.username ilike ${pattern} or u.mobile like ${pattern})
+        and (${status}::text is null or u.status = ${status})
       group by u.id
       order by u.created_at desc
-      limit ${limit}
+      limit ${limit} offset ${offset}
     `;
     const countRows = await this.sql`
       select count(*)::int as total from erp.users
       where organization_id = ${orgId} and deleted_at is null
         and (${pattern}::text is null or full_name ilike ${pattern} or username ilike ${pattern} or mobile like ${pattern})
+        and (${status}::text is null or status = ${status})
     `;
     return {
       items: rows.map((row) => ({
@@ -77,7 +100,10 @@ export class AdminRepository {
         status: String(row['status']),
         mustChangePassword: row['must_change_password'] === true,
         permissionsVersion: Number(row['permissions_version']),
-        roles: ((row['roles'] as unknown[]) ?? []).map(String),
+        roles: ((row['roles'] as Array<Record<string, unknown>> | null) ?? []).map((role) => ({
+          id: String(role['id']),
+          name: String(role['name']),
+        })),
         lastLoginAt: row['last_login_at'] === null ? null : new Date(String(row['last_login_at'])).toISOString(),
         createdAt: new Date(String(row['created_at'])).toISOString(),
       })),
@@ -180,7 +206,7 @@ export class AdminRepository {
 
   // --- roles ---------------------------------------------------------------
 
-  async listRoles(orgId: bigint): Promise<Array<Record<string, unknown>>> {
+  async listRoles(orgId: bigint): Promise<RoleRow[]> {
     const rows = await this.sql`
       select r.public_id, r.code, r.name, r.description, r.is_system, r.scope_mode,
              coalesce(array_agg(p.key order by p.key) filter (where p.key is not null), '{}') as permissions
@@ -191,21 +217,30 @@ export class AdminRepository {
       group by r.id
       order by r.is_system desc, r.code
     `;
-    return rows.map((row) => ({
-      id: String(row['public_id']),
-      code: String(row['code']),
-      name: String(row['name']),
-      description: row['description'] === null ? null : String(row['description']),
-      isSystem: row['is_system'] === true,
-      scopeMode: String(row['scope_mode']),
-      permissions: ((row['permissions'] as unknown[]) ?? []).map(String),
-    }));
+    return rows.map((row) => {
+      const name = String(row['name']);
+      const description = row['description'] === null ? null : String(row['description']);
+      return {
+        id: String(row['public_id']),
+        code: String(row['code']),
+        name,
+        nameFa: name,
+        description,
+        descriptionFa: description,
+        isSystem: row['is_system'] === true,
+        scopeMode: String(row['scope_mode']),
+        permissions: ((row['permissions'] as unknown[]) ?? []).map(String),
+      };
+    });
   }
 
-  async findRole(orgId: bigint, publicId: string): Promise<{ id: bigint; isSystem: boolean; permissions: string[] } | null> {
+  async findRole(
+    orgId: bigint,
+    publicId: string,
+  ): Promise<{ id: bigint; code: string; name: string; description: string | null; isSystem: boolean; permissions: string[] } | null> {
     if (!isUuid(publicId)) return null;
     const rows = await this.sql`
-      select r.id, r.is_system,
+      select r.id, r.code, r.name, r.description, r.is_system,
              coalesce(array_agg(p.key) filter (where p.key is not null), '{}') as permissions
       from erp.roles r
       left join erp.role_permissions rp on rp.role_id = r.id
@@ -217,6 +252,9 @@ export class AdminRepository {
     if (row === undefined) return null;
     return {
       id: toBigInt(row['id']),
+      code: String(row['code']),
+      name: String(row['name']),
+      description: row['description'] === null ? null : String(row['description']),
       isSystem: row['is_system'] === true,
       permissions: ((row['permissions'] as unknown[]) ?? []).map(String),
     };

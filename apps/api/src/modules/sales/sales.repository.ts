@@ -61,6 +61,7 @@ export interface OrderRow {
   taxAmount: string;
   shippingAmount: string;
   grandTotalAmount: string;
+  itemCount: number;
   paidAmount: string;
   refundedAmount: string;
   customerNote: string | null;
@@ -523,6 +524,7 @@ export class SalesRepository {
       o.tax_amount::text as "taxAmount",
       o.shipping_amount::text as "shippingAmount",
       o.grand_total_amount::text as "grandTotalAmount",
+      (select count(*)::int from erp.sales_order_lines ol where ol.order_id = o.id) as "itemCount",
       o.paid_amount::text as "paidAmount",
       o.refunded_amount::text as "refundedAmount",
       o.customer_note as "customerNote",

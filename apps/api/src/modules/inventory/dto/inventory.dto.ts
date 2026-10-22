@@ -94,7 +94,7 @@ export type AdjustmentListQuery = z.infer<typeof AdjustmentListQuery>;
 
 export const AdjustmentLineInput = z.object({
   variantId: PublicId,
-  locationId: PublicId,
+  locationId: PublicId.optional(),
   quantity: PositiveQuantity,
   unitCost: MoneyString.optional(),
 });

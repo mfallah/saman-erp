@@ -34,6 +34,7 @@ import { ReportingModule } from './modules/reporting/reporting.module';
 
 /* channels & integrations */
 import { ChannelsModule } from './modules/channels/channels.module';
+import { FilesModule } from './modules/files/files.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AutomationModule } from './modules/automation/automation.module';
@@ -76,6 +77,7 @@ import { AutomationModule } from './modules/automation/automation.module';
 
     /* channels & integrations */
     ChannelsModule,
+    FilesModule,
     IntegrationsModule,
     NotificationsModule,
     AutomationModule,

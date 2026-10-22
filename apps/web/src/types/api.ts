@@ -434,8 +434,9 @@ export interface UserSummary {
 export interface Role {
   readonly id: string;
   readonly version?: number;
+  readonly code?: string;
   readonly name: string;
-  readonly nameFa: string;
+  readonly nameFa?: string;
   readonly descriptionFa?: string | null;
   readonly isSystem?: boolean;
   readonly permissions?: readonly string[];

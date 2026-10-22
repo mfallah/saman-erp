@@ -25,6 +25,8 @@ const otpRequestSchema = z.object({
   challengeId: z.string().uuid().optional(),
   captchaToken: z.string().max(2048).optional(),
 });
+const loginOtpSchema = otpRequestSchema.omit({ purpose: true });
+const mfaResendSchema = z.object({ challengeId: z.string().uuid() });
 const otpVerifySchema = z.object({
   challengeId: z.string().uuid(),
   code: z.string().regex(/^\d{6}$/),
@@ -125,6 +127,27 @@ export class AuthController {
   }
 
   @Public()
+  @Post('login/otp')
+  @HttpCode(202)
+  async requestLoginOtp(@Body() body: unknown, @Req() request: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
+    const input = parse(loginOtpSchema, body);
+    const outcome = await this.auth.requestOtp({ ...input, purpose: 'login' }, requestContext(request));
+    return this.applyOutcome(outcome, reply);
+  }
+
+  @Public()
+  @Post('mfa/resend')
+  @HttpCode(202)
+  async resendMfa(@Body() body: unknown, @Req() request: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
+    const input = parse(mfaResendSchema, body);
+    const outcome = await this.auth.requestOtp(
+      { challengeId: input.challengeId, purpose: 'mfa' },
+      requestContext(request),
+    );
+    return this.applyOutcome(outcome, reply);
+  }
+
+  @Public()
   @Post('otp/verify')
   @HttpCode(200)
   async verifyOtp(@Body() body: unknown, @Req() request: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
@@ -173,7 +196,7 @@ export class AuthController {
   }
 
   @Get('sessions')
-  sessions(@Req() request: FastifyRequest): Promise<Record<string, unknown>> {
+  sessions(@Req() request: FastifyRequest): Promise<Array<Record<string, unknown>>> {
     return this.auth.listSessions(this.actor(request));
   }
 

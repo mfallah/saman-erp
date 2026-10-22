@@ -629,6 +629,19 @@ export class InventoryRepository {
     return rows[0] === undefined ? null : BigInt(rows[0].id);
   }
 
+  /** First active location of a warehouse (default for location-less adjustments). */
+  async resolveFirstActiveLocationId(tx: Db, orgId: bigint, warehouseInternalId: bigint): Promise<bigint | null> {
+    const rows = await tx<{ id: string }[]>`
+      select l.id::text as id from erp.warehouse_locations l
+      join erp.warehouses w on w.id = l.warehouse_id
+      where w.organization_id = ${orgId} and l.warehouse_id = ${warehouseInternalId}
+        and l.is_active and w.deleted_at is null
+      order by l.pick_priority asc, l.full_code asc
+      limit 1
+    `;
+    return rows[0] === undefined ? null : BigInt(rows[0].id);
+  }
+
   /** Public ids for warehouse/location internals (event payloads). */
   async publicIds(
     tx: Db,
