@@ -719,7 +719,6 @@ export class AuthService {
     code: string;
     purpose: string;
   }): Promise<void> {
-    console.error(`[auth] deliverOtpSms mode=${this.config.smsMode} moduleRef=${this.moduleRef !== undefined}`);
     if (this.config.smsMode !== 'limo' || this.moduleRef === undefined) return;
     try {
       const { SmsService } = await import('../integrations/sms/sms.service');

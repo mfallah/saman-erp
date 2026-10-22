@@ -33,9 +33,13 @@ export interface LimoVoiceOtpRequest {
 }
 
 export interface LimoProviderResponse {
+  // Limo returns camelCase in the live API and PascalCase in older docs; accept both.
   readonly Success?: boolean;
+  readonly success?: boolean;
   readonly Message?: string;
-  readonly MessageId?: readonly string[];
+  readonly message?: string;
+  readonly MessageId?: readonly string[] | string | number;
+  readonly messageId?: string | number;
   readonly TotalAmount?: number | null;
   readonly GenerateCode?: string | null;
 }

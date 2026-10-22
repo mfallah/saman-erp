@@ -224,7 +224,8 @@ export class LimoSmsClient {
         if (!response.ok) {
           throw new LimoError('PROVIDER_REJECTED', { providerMessage: payload.Message ?? null });
         }
-        if (payload.Success !== true) throw mapProviderFailure(payload.Message);
+        const providerOk = payload.Success ?? payload.success;
+    if (providerOk !== true) throw mapProviderFailure(payload.Message ?? payload.message);
 
         const messageIds = Array.isArray(payload.MessageId)
           ? payload.MessageId.filter((id): id is string => typeof id === 'string')
@@ -234,7 +235,7 @@ export class LimoSmsClient {
           messageIds,
           totalAmount: typeof payload.TotalAmount === 'number' ? payload.TotalAmount : null,
           generatedCode: typeof payload.GenerateCode === 'string' ? payload.GenerateCode : null,
-          providerMessage: typeof payload.Message === 'string' ? payload.Message.slice(0, 300) : '',
+          providerMessage: typeof (payload.Message ?? payload.message) === 'string' ? String(payload.Message ?? payload.message).slice(0, 300) : '',
           mock: false,
         };
       } catch (error) {
