@@ -16,6 +16,7 @@ import { ChannelAccountService } from '../services/channel-accounts.service';
 import { publicKeyFingerprint, publicKeyFromPrivate } from '../domain/rsa-keypair';
 import {
   activateDigikalaToken,
+  decryptValidationCode,
   RsaDecryptionError,
 } from '../adapters/digikala/digikala-activation.service';
 import {
@@ -322,6 +323,40 @@ export class ChannelsAdminController {
    * Flow: base64-decode the code -> RSA-decrypt with the stored private key ->
    * POST /open-api/v1/auth/token -> store access_token/refresh_token.
    */
+  /**
+   * Decrypt-only check: tells the operator whether the panel validation code
+   * matches the stored private key, without consuming it for a token exchange.
+   */
+  @Post('channel-accounts/:accountId/rsa-keypair/verify')
+  @Permissions('channel.account.read')
+  @ApiOperation({ summary: 'Check that a validation code matches the stored RSA key' })
+  async verifyRsaKey(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const validationCode = text(payload['validationCode']);
+    if (validationCode.length === 0) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'validationCode is required' });
+    }
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const credentials = await this.accounts.decryptActive(accountInternal);
+    const privateKey = credentials['private_key'];
+    if (privateKey === undefined || privateKey.length === 0) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'کلید خصوصی ثبت نشده است.' });
+    }
+    try {
+      const result = decryptValidationCode(validationCode, privateKey);
+      return apiData({ ok: true, decryption: result.decryption });
+    } catch (error) {
+      return apiData({ ok: false, message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   @Post('channel-accounts/:accountId/digikala/token')
   @Permissions('channel.credential.write')
   @ApiOperation({ summary: 'Activate Digikala tokens from the panel validation code' })

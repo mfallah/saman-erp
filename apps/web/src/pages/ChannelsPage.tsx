@@ -126,6 +126,9 @@ export function ChannelsPage() {
   const [dkValidationCode, setDkValidationCode] = useState('');
   const [dkBusy, setDkBusy] = useState(false);
   const [dkResult, setDkResult] = useState('');
+  const [rsaVerifyBusy, setRsaVerifyBusy] = useState(false);
+  const [rsaVerifyResult, setRsaVerifyResult] = useState('');
+  const [rsaFormat, setRsaFormat] = useState<'pem' | 'raw'>('pem');
 
   const channelsQuery = useQuery({
     queryKey: queryKeys.channels.list,
@@ -230,6 +233,28 @@ export function ChannelsPage() {
     },
     onError: (error) => toast.error('آزمایش اتصال ناموفق بود', toFaErrorMessage(error)),
   });
+
+  const verifyRsaCode = async (): Promise<void> => {
+    if (rsaAccount === null) return;
+    setRsaVerifyBusy(true);
+    setRsaVerifyResult('');
+    try {
+      const result = await api.post<{ ok: boolean; decryption?: string; message?: string }>(
+        `/channel-accounts/${rsaAccount.id}/rsa-keypair/verify`,
+        { validationCode: dkValidationCode },
+        { idempotencyKey: newRequestId() },
+      );
+      setRsaVerifyResult(
+        result.ok
+          ? `رمزگشایی موفق بود (${result.decryption})؛ کلید درست است و می‌توانی توکن بگیری.`
+          : `رمزگشایی ناموفق: ${result.message ?? 'کلید با پنل هم‌خوان نیست.'}`,
+      );
+    } catch (error) {
+      setRsaVerifyResult(toFaErrorMessage(error));
+    } finally {
+      setRsaVerifyBusy(false);
+    }
+  };
 
   const activateDigikala = async (): Promise<void> => {
     if (rsaAccount === null) return;
@@ -787,14 +812,28 @@ export function ChannelsPage() {
                   </div>
                 </details>
 
-                <Button
-                  size="sm"
-                  loading={dkBusy}
-                  disabled={dkValidationCode.trim().length === 0 || !rsaHasPrivateKey}
-                  onClick={() => void activateDigikala()}
-                >
-                  تبدیل کد به توکن
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    loading={rsaVerifyBusy}
+                    disabled={dkValidationCode.trim().length === 0 || !rsaHasPrivateKey}
+                    onClick={() => void verifyRsaCode()}
+                  >
+                    تست رمزگشایی
+                  </Button>
+                  <Button
+                    size="sm"
+                    loading={dkBusy}
+                    disabled={dkValidationCode.trim().length === 0 || !rsaHasPrivateKey}
+                    onClick={() => void activateDigikala()}
+                  >
+                    تبدیل کد به توکن
+                  </Button>
+                </div>
+                {rsaVerifyResult === '' ? null : (
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300">{rsaVerifyResult}</p>
+                )}
                 {dkResult === '' ? null : <p className="text-[11px] text-slate-600 dark:text-slate-300">{dkResult}</p>}
               </div>
             </div>
