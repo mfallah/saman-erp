@@ -55,6 +55,10 @@ const JournalCreatePage = lazyRouteComponent(() => import('./pages/JournalCreate
 const TrialBalancePage = lazyRouteComponent(() => import('./pages/TrialBalancePage'), 'TrialBalancePage');
 const ProfitLossPage = lazyRouteComponent(() => import('./pages/ProfitLossPage'), 'ProfitLossPage');
 const ChannelsPage = lazyRouteComponent(() => import('./pages/ChannelsPage'), 'ChannelsPage');
+const ChannelPricingPage = lazyRouteComponent(
+  () => import('./pages/ChannelPricingPage'),
+  'ChannelPricingPage',
+);
 const UsersPage = lazyRouteComponent(() => import('./pages/UsersPage'), 'UsersPage');
 const RolesPage = lazyRouteComponent(() => import('./pages/RolesPage'), 'RolesPage');
 const SettingsPage = lazyRouteComponent(() => import('./pages/SettingsPage'), 'SettingsPage');
@@ -272,6 +276,13 @@ const pricingRoute = createRoute({
   component: PricingPage,
 });
 
+const channelPricingRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/pricing/channels',
+  beforeLoad: () => guardPermission(PERM.accountRead),
+  component: ChannelPricingPage,
+});
+
 const partnersRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/partners',
@@ -315,6 +326,7 @@ const routeTree = rootRoute.addChildren([
     reportsRoute,
     procurementRoute,
     pricingRoute,
+    channelPricingRoute,
     partnersRoute,
     automationRoute,
     forbiddenRoute,

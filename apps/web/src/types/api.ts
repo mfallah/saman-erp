@@ -414,6 +414,66 @@ export interface ChannelAccountRsaKeypair {
   readonly hasPrivateKey?: boolean;
 }
 
+export type PricingMode = 'margin' | 'cost_plus_fees';
+export type CostSource = 'last_purchase' | 'avg_cost' | 'manual';
+export type RoundingStep = 'none' | '1000' | '500';
+
+export interface ChannelPricingPolicy {
+  readonly mode: PricingMode;
+  readonly costSource: CostSource;
+  readonly marginPercent: number;
+  readonly commissionPercent: number;
+  readonly processingFee: number;
+  readonly shippingFee: number;
+  readonly fixedCommission: number;
+  readonly vatPercent: number;
+  readonly rounding: RoundingStep;
+  readonly updatedAt: string | null;
+}
+
+export interface ChannelPricingPolicyRow {
+  readonly accountId: string;
+  readonly accountName: string;
+  readonly channelId: string;
+  readonly channelName: string;
+  readonly channelCode: string;
+  readonly isActive: boolean;
+  readonly policy: ChannelPricingPolicy;
+}
+
+export interface PriceBreakdown {
+  readonly cost: string;
+  readonly marginPercent: number;
+  readonly marginAmount: string;
+  readonly commissionPercent: number;
+  readonly commissionAmount: string;
+  readonly processingFee: string;
+  readonly shippingFee: string;
+  readonly fixedCommission: string;
+  readonly vatPercent: number;
+  readonly vatAmount: string;
+  readonly preVatPrice: string;
+  readonly preRoundingPrice: string;
+  readonly roundingAdjustment: string;
+}
+
+export interface PricePreview {
+  readonly accountId: string;
+  readonly variantId: string;
+  readonly sku: string | null;
+  readonly productName: string | null;
+  readonly mode: PricingMode;
+  readonly cost: string;
+  readonly marginAmount: string;
+  readonly commissionPercent: number;
+  readonly commissionAmount: string;
+  readonly processingFee: string;
+  readonly shippingFee: string;
+  readonly vatAmount: string;
+  readonly finalPrice: string;
+  readonly breakdown: PriceBreakdown;
+}
+
 export interface SyncJob {
   readonly id: string;
   readonly type: string;

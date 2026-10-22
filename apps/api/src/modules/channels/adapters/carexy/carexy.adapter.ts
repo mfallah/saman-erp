@@ -39,6 +39,10 @@ import {
   type CarexyInventorySnapshot,
 } from './carexy.types';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function scalar(value: unknown): string | undefined {
   if (typeof value === 'string') {
     const trimmed = value.trim();
@@ -48,31 +52,55 @@ function scalar(value: unknown): string | undefined {
   return undefined;
 }
 
-function productListPayload(json: unknown): unknown[] {
-  const direct = listPayload(json);
-  if (direct.length > 0) return direct;
-  if (typeof json === 'object' && json !== null) {
-    const data = (json as Record<string, unknown>)['data'];
-    if (typeof data === 'object' && data !== null) {
-      const nested = data as Record<string, unknown>;
-      for (const key of ['data', 'products', 'items', 'result']) {
-        if (Array.isArray(nested[key])) return nested[key] as unknown[];
+/** Money/quantity as text; Carexy returns numbers and comma-grouped strings. */
+function numeric(value: unknown): string | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : undefined;
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value.replace(/[,\s]/g, '');
+  if (cleaned.length === 0) return undefined;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? String(parsed) : undefined;
+}
+
+function pick(record: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return undefined;
+}
+
+const LIST_KEYS = ['data', 'products', 'items', 'result', 'results', 'inventories'] as const;
+const STOCK_KEYS = ['stock', 'quantity', 'available', 'count', 'qty'] as const;
+
+/** `[…]`, `{data: […]}` or `{data: {data|products|items: […]}}` (Laravel-ish). */
+function listPayload(json: unknown): unknown[] {
+  if (Array.isArray(json)) return json;
+  if (!isRecord(json)) return [];
+  for (const key of LIST_KEYS) {
+    const value = json[key];
+    if (Array.isArray(value)) return value;
+    if (isRecord(value)) {
+      for (const inner of LIST_KEYS) {
+        if (Array.isArray(value[inner])) return value[inner] as unknown[];
       }
     }
   }
   return [];
 }
 
-function listPayload(json: unknown): unknown[] {
-  if (Array.isArray(json)) return json;
-  if (typeof json === 'object' && json !== null) {
-    const body = json as Record<string, unknown>;
-    for (const key of ['data', 'items', 'result', 'inventories', 'products']) {
-      const value = body[key];
-      if (Array.isArray(value)) return value;
-    }
+/** Sum of one stock field across inventory-like rows; `undefined` when absent. */
+function sumStock(rows: readonly unknown[]): string | undefined {
+  let total = 0;
+  let found = false;
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const value = numeric(pick(row, STOCK_KEYS));
+    if (value === undefined) continue;
+    total += Number(value);
+    found = true;
   }
-  return [];
+  return found ? String(total) : undefined;
 }
 
 export class CarexyAdapter implements ChannelAdapter {
@@ -251,12 +279,16 @@ export class CarexyAdapter implements ChannelAdapter {
 
   /**
    * First-sync catalogue import. Reads `GET /api/v1/products` page by page and
-   * maps only fields that the contract exposes, tolerating the common Laravel
-   * envelope shapes (`{data: [...]}`, `{data: {data: [...]}}`).
+   * maps only fields the contract exposes, tolerating the common Laravel
+   * envelopes (`{data: [...]}`, `{data: {data: [...]}}`).
    */
   async *pullProducts(account: AdapterAccount): AsyncIterable<ExternalProduct> {
     const perPage = 50;
-    const maxPages = 3;
+    const maxPages = 20;
+    // List rows without stock cost one extra request each; bound that blast radius.
+    const maxInventoryLookups = 50;
+    let inventoryLookups = 0;
+
     for (let page = 1; page <= maxPages; page += 1) {
       const response = await this.deps.http.request(account, {
         operation: 'carexy.products.list',
@@ -266,47 +298,59 @@ export class CarexyAdapter implements ChannelAdapter {
         authHeaders: this.auth(account),
         idempotent: true,
       });
-      const items = productListPayload(response.json);
+      const items = listPayload(response.json);
       for (const raw of items) {
-        if (typeof raw !== 'object' || raw === null) continue;
-        const item = raw as Record<string, unknown>;
-        const externalProductId =
-          scalar(item['product_uuid']) ??
-          scalar(item['uuid']) ??
-          scalar(item['id']) ??
-          scalar(item['product_id']);
+        if (!isRecord(raw)) continue;
+        const externalProductId = scalar(pick(raw, ['uuid', 'product_uuid', 'id', 'product_id']));
         if (externalProductId === undefined) continue;
 
-        const inventories = Array.isArray(item['inventories'])
-          ? item['inventories']
-          : Array.isArray(item['inventory'])
-            ? item['inventory']
-            : [];
-        const firstInventory = inventories[0];
-        const inventory =
-          typeof firstInventory === 'object' && firstInventory !== null
-            ? (firstInventory as Record<string, unknown>)
-            : {};
+        const inline = ['inventories', 'inventory', 'stocks'].flatMap((key) => {
+          const value = raw[key];
+          if (Array.isArray(value)) return value as unknown[];
+          return isRecord(value) ? [value] : [];
+        });
+        const firstInventory = inline.find(isRecord);
 
-        const externalVariantId =
-          scalar(inventory['inventory_uuid']) ?? scalar(item['variant_uuid']);
+        let externalVariantId =
+          (firstInventory === undefined
+            ? undefined
+            : scalar(firstInventory['inventory_uuid'])) ?? scalar(raw['variant_uuid']);
         const sku =
-          scalar(item['sku']) ??
-          scalar(item['product_code']) ??
-          scalar(item['code']) ??
-          scalar(inventory['sku']);
-        const barcode = scalar(item['barcode']) ?? scalar(inventory['barcode']);
-        const price = scalar(item['price']) ?? scalar(inventory['price']);
-        const available =
-          scalar(inventory['count']) ??
-          scalar(inventory['stock']) ??
-          scalar(item['stock']) ??
-          scalar(item['available']);
+          scalar(pick(raw, ['sku', 'product_code', 'code'])) ??
+          (firstInventory === undefined
+            ? undefined
+            : scalar(pick(firstInventory, ['sku', 'code'])));
+        const barcode =
+          scalar(pick(raw, ['barcode'])) ??
+          (firstInventory === undefined ? undefined : scalar(pick(firstInventory, ['barcode'])));
+        const price =
+          numeric(pick(raw, ['price', 'sale_price', 'final_price'])) ??
+          (firstInventory === undefined
+            ? undefined
+            : numeric(pick(firstInventory, ['price', 'sale_price', 'final_price'])));
+        let available = sumStock(inline) ?? numeric(pick(raw, ['stock', 'quantity', 'available']));
+
+        if (available === undefined && inventoryLookups < maxInventoryLookups) {
+          inventoryLookups += 1;
+          try {
+            const inventories = await this.listInventories(account, externalProductId);
+            available = sumStock(
+              inventories.map((inventory) => ({ count: inventory.available })),
+            );
+            externalVariantId ??= inventories[0]?.inventoryUuid;
+          } catch (error) {
+            this.deps.logger.warn(
+              {
+                externalProductId,
+                error: error instanceof Error ? error.message : 'inventory_lookup_failed',
+              },
+              'carexy inventory lookup failed during product pull',
+            );
+          }
+        }
+
         const title =
-          scalar(item['title']) ??
-          scalar(item['name']) ??
-          scalar(item['product_name']) ??
-          externalProductId;
+          scalar(pick(raw, ['title', 'name', 'name_fa', 'product_name'])) ?? externalProductId;
 
         yield {
           externalProductId,

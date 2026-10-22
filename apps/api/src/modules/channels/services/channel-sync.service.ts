@@ -17,7 +17,7 @@ import { hashNaturalKey } from '../infrastructure/backoff';
 import { backoffDelayMs, shouldDeadLetter } from '../infrastructure/backoff';
 import { debounceKey } from '../infrastructure/backoff';
 import { maxDecimalZero, subtractDecimal, unitsToDecimal, decimalToUnits } from '../domain/decimal';
-import { withTransaction, asNumber, asString } from '../infrastructure/sql';
+import { withTransaction, asNumber, asString, isUniqueViolation } from '../infrastructure/sql';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import { CHANNEL_PRICE_SOURCE, type ChannelPriceSourcePort } from '../ports/channel-price.port';
@@ -42,6 +42,8 @@ export interface SyncScope {
   readonly variantIds?: readonly string[];
   readonly from?: Date;
   readonly to?: Date;
+  /** Read-only run: the job reports counts and writes nothing. */
+  readonly dryRun?: boolean;
 }
 
 export interface SyncJobResult {
@@ -109,7 +111,7 @@ export class ChannelSyncService {
           : input.type === 'order_pull'
             ? `orders:${input.accountId}`
             : input.type === 'product_import' || input.type === 'product_push'
-              ? `products:${input.accountId}:${this.now().toISOString().slice(0, 10)}`
+              ? `products:${input.scope?.dryRun === true ? 'dry:' : ''}${input.accountId}:${this.now().toISOString().slice(0, 10)}`
               : `reconcile:${input.accountId}:${this.now().toISOString().slice(0, 10)}`;
 
     const job = await this.sync.enqueue({
@@ -389,6 +391,9 @@ export class ChannelSyncService {
    * First-sync catalogue import (Carexy/Digikala): reads the channel's product
    * list, deduplicates by external product id and upserts product → variant →
    * channel mapping. Counts are reported in the job summary.
+   *
+   * `dryRun` (trigger flag or account settings) reads everything and writes
+   * nothing.
    */
   private async importProducts(
     resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
@@ -401,27 +406,46 @@ export class ChannelSyncService {
       });
     }
 
+    const dryRun =
+      resolved.row.settings['dryRun'] === true ||
+      resolved.row.settings['dry_run'] === true ||
+      job.operationKey?.startsWith('products:dry:') === true;
+
     // The pull is bounded per adapter call, but still deduplicate by external id
     // so a paging overlap or a product with several inventory rows counts once.
     const products = new Map<string, ExternalProduct>();
     for await (const item of resolved.adapter.pullProducts(resolved.account)) {
       const externalId = item.externalProductId.trim();
       if (externalId.length === 0) continue;
-      products.set(externalId, item);
+      if (!products.has(externalId)) products.set(externalId, item);
+    }
+    const samples = [...products.keys()].slice(0, 3);
+    const baseUomId = await this.firstBaseUomId(resolved.row.organizationId);
+
+    if (dryRun) {
+      const known = await this.countMappedProducts(resolved.row.id, [...products.keys()]);
+      return {
+        mode: 'dry_run',
+        found: products.size,
+        wouldImport: products.size - known,
+        wouldUpdate: known,
+        imported: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+        samples,
+        ...(baseUomId === null ? { reason: 'no_base_uom' } : {}),
+        jobId: job.id,
+      };
     }
 
-    const uomRows = await this.db<{ id: unknown }[]>`
-      select id from erp.units_of_measure
-      where organization_id = ${resolved.row.organizationId}::bigint
-        and deleted_at is null
-      order by id asc
-      limit 1`;
-    const baseUomId = uomRows[0] === undefined ? null : asString(uomRows[0].id);
     if (baseUomId === null) {
       return {
         imported: 0,
         updated: 0,
         skipped: products.size,
+        failed: 0,
+        samples,
         reason: 'no_base_uom',
         jobId: job.id,
       };
@@ -431,6 +455,7 @@ export class ChannelSyncService {
     let imported = 0;
     let updated = 0;
     let skipped = 0;
+    let failed = 0;
     for (const [externalId, item] of products) {
       try {
         const outcome = await this.importProduct(resolved, item, externalId, baseUomId, prefix);
@@ -438,18 +463,42 @@ export class ChannelSyncService {
         else if (outcome === 'updated') updated += 1;
         else skipped += 1;
       } catch (error) {
-        skipped += 1;
+        failed += 1;
+        const message = error instanceof Error ? error.message : 'import_failed';
+        await this.recordImportError(resolved.row.id, externalId, message);
         this.logger.warn(
-          {
-            accountId: resolved.row.id,
-            externalProductId: externalId,
-            error: error instanceof Error ? error.message : 'import_failed',
-          },
-          'channel product import row skipped',
+          { accountId: resolved.row.id, externalProductId: externalId, error: message },
+          'channel product import row failed',
         );
       }
     }
-    return { imported, updated, skipped, jobId: job.id };
+    return { imported, updated, skipped, failed, samples, jobId: job.id };
+  }
+
+  private async firstBaseUomId(organizationId: string): Promise<string | null> {
+    const rows = await this.db<{ id: unknown }[]>`
+      select id from erp.units_of_measure
+      where organization_id = ${organizationId}::bigint
+        and deleted_at is null
+      order by is_base desc, id asc
+      limit 1`;
+    return rows[0] === undefined ? null : asString(rows[0].id);
+  }
+
+  private async countMappedProducts(
+    accountId: string,
+    externalIds: readonly string[],
+  ): Promise<number> {
+    if (externalIds.length === 0) return 0;
+    const rows = await this.db<{ count: unknown }[]>`
+      select count(*)::int as count
+      from erp.channel_product_mappings
+      where channel_account_id = ${accountId}::bigint
+        and deleted_at is null
+        and external_product_id in (
+          select jsonb_array_elements_text(${JSON.stringify(externalIds)}::jsonb)
+        )`;
+    return rows[0] === undefined ? 0 : asNumber(rows[0].count);
   }
 
   private async importProduct(
@@ -470,7 +519,7 @@ export class ChannelSyncService {
 
     // A mapping for this external product already exists: refresh it and the
     // local title/barcode without creating duplicate products.
-    const existing = await this.db<{ id: unknown; product_variant_id: unknown }[]>`
+    const mapped = await this.db<{ id: unknown; product_variant_id: unknown }[]>`
       select id, product_variant_id
       from erp.channel_product_mappings
       where channel_account_id = ${accountId}::bigint
@@ -478,9 +527,8 @@ export class ChannelSyncService {
         and deleted_at is null
       order by id desc
       limit 1`;
-    const existingMapping = existing[0];
-    if (existingMapping !== undefined) {
-      const variantId = asString(existingMapping.product_variant_id);
+    if (mapped[0] !== undefined) {
+      const variantId = asString(mapped[0].product_variant_id);
       await this.db`
         update erp.channel_product_mappings
         set external_variant_id = coalesce(${externalVariantId}::text, external_variant_id),
@@ -488,67 +536,210 @@ export class ChannelSyncService {
             sync_status = 'synced',
             last_synced_at = now(),
             last_error = null
-        where id = ${asString(existingMapping.id)}::bigint`;
+        where id = ${asString(mapped[0].id)}::bigint`;
       await this.refreshProductText(organizationId, variantId, title, barcode);
       return 'updated';
     }
 
-    const productRows = await this.db<{ id: unknown }[]>`
-      insert into erp.products (organization_id, product_no, name, base_uom_id)
-      values (${organizationId}::bigint, ${productNo}, ${title}, ${baseUomId}::bigint)
-      on conflict (organization_id, product_no) where deleted_at is null
-      do update set name = excluded.name, updated_at = now()
-      returning id`;
-    const productId = productRows[0] === undefined ? null : asString(productRows[0].id);
+    const productId = await this.productIdFor(
+      organizationId,
+      accountId,
+      externalId,
+      productNo,
+      title,
+      baseUomId,
+    );
     if (productId === null) return 'skipped';
 
-    // `product_variants.sku` is globally unique; reuse an existing variant only
-    // when it already belongs to this product, otherwise leave it untouched.
-    const variantRows = await this.db<{ id: unknown; product_id: unknown }[]>`
-      insert into erp.product_variants as pv (product_id, sku, title, barcode)
-      values (${productId}::bigint, ${sku}, ${title}, ${barcode})
-      on conflict (sku) do update set
-        title = excluded.title,
-        barcode = coalesce(excluded.barcode, pv.barcode),
-        updated_at = now()
-      returning id, product_id`;
-    const variant = variantRows[0];
-    if (variant === undefined) return 'skipped';
-    const variantId = asString(variant.id);
-    if (asString(variant.product_id) !== productId) return 'skipped';
+    const variantId = await this.variantIdFor(productId, sku, externalId, title, barcode);
+    if (variantId === null) return 'skipped';
 
-    // There is no unique index on (channel_account_id, external_product_id), but
-    // one variant can only have one live mapping: update that row instead of
-    // hitting the (channel_account_id, product_variant_id) unique index.
+    const outcome = await this.upsertMapping(
+      accountId,
+      variantId,
+      externalId,
+      externalVariantId,
+      externalSku,
+    );
+    return outcome;
+  }
+
+  /**
+   * Creates the product once per external id. `product_no` is derived from the
+   * external id, so a re-run reuses its own row; a genuine collision (another
+   * product already owns that number) falls back to a suffixed number.
+   */
+  private async productIdFor(
+    organizationId: string,
+    accountId: string,
+    externalId: string,
+    productNo: string,
+    title: string,
+    baseUomId: string,
+  ): Promise<string | null> {
+    const base = productNo.length > 35 ? productNo.slice(0, 35) : productNo;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const candidate = attempt === 1 ? productNo : `${base}-${attempt}`;
+      const rows = await this.db<{ id: unknown }[]>`
+        insert into erp.products (organization_id, product_no, name, base_uom_id)
+        values (${organizationId}::bigint, ${candidate}, ${title}, ${baseUomId}::bigint)
+        on conflict (organization_id, product_no) where deleted_at is null do nothing
+        returning id`;
+      if (rows[0] !== undefined) return asString(rows[0].id);
+
+      const existing = await this.productByNumber(organizationId, accountId, externalId, candidate);
+      if (existing === null) continue;
+      if (!existing.takenByOther) return existing.id;
+    }
+    return null;
+  }
+
+  private async productByNumber(
+    organizationId: string,
+    accountId: string,
+    externalId: string,
+    productNo: string,
+  ): Promise<{ id: string; takenByOther: boolean } | null> {
+    const rows = await this.db<{ id: unknown; taken_by_other: unknown }[]>`
+      select p.id,
+             exists (
+               select 1
+               from erp.channel_product_mappings m
+               join erp.product_variants v on v.id = m.product_variant_id
+               where v.product_id = p.id
+                 and m.channel_account_id = ${accountId}::bigint
+                 and m.deleted_at is null
+                 and m.external_product_id is distinct from ${externalId}
+             ) as taken_by_other
+      from erp.products p
+      where p.organization_id = ${organizationId}::bigint
+        and p.product_no = ${productNo}
+        and p.deleted_at is null
+      limit 1`;
+    if (rows[0] === undefined) return null;
+    return { id: asString(rows[0].id), takenByOther: rows[0].taken_by_other === true };
+  }
+
+  /** `sku` is globally unique: reuse this product's variant, else suffix the sku. */
+  private async variantIdFor(
+    productId: string,
+    sku: string,
+    externalId: string,
+    title: string,
+    barcode: string | null,
+  ): Promise<string | null> {
+    const suffixed = `${sku.slice(0, 80)}-${externalId}`.slice(0, 100);
+    for (const candidate of [sku, suffixed]) {
+      const inserted = await this.db<{ id: unknown; product_id: unknown }[]>`
+        insert into erp.product_variants (product_id, sku, title, barcode)
+        values (${productId}::bigint, ${candidate}, ${title}, ${barcode})
+        on conflict (sku) do nothing
+        returning id, product_id`;
+      if (inserted[0] !== undefined) return asString(inserted[0].id);
+
+      const owner = await this.db<{ id: unknown; product_id: unknown }[]>`
+        select id, product_id from erp.product_variants where sku = ${candidate} limit 1`;
+      const row = owner[0];
+      if (row === undefined || asString(row.product_id) !== productId) continue;
+      const variantId = asString(row.id);
+      await this.db`
+        update erp.product_variants
+        set title = ${title}, barcode = coalesce(${barcode}::text, barcode), updated_at = now()
+        where id = ${variantId}::bigint`;
+      return variantId;
+    }
+    return null;
+  }
+
+  /**
+   * Upserts by (channel_account_id, external_product_id). The DDL has no unique
+   * index on that pair, so it is update-then-insert; the (account, variant)
+   * unique index is handled on conflict.
+   */
+  private async upsertMapping(
+    accountId: string,
+    variantId: string,
+    externalId: string,
+    externalVariantId: string | null,
+    externalSku: string | null,
+  ): Promise<'imported' | 'updated'> {
     const byVariant = await this.db<{ id: unknown }[]>`
-      select id from erp.channel_product_mappings
+      update erp.channel_product_mappings
+      set external_product_id = ${externalId},
+          external_variant_id = ${externalVariantId},
+          external_sku = ${externalSku},
+          sync_status = 'synced',
+          last_synced_at = now(),
+          last_error = null
       where channel_account_id = ${accountId}::bigint
         and product_variant_id = ${variantId}::bigint
         and deleted_at is null
-      limit 1`;
-    const variantMapping = byVariant[0];
-    if (variantMapping !== undefined) {
+      returning id`;
+    if (byVariant.length > 0) return 'updated';
+
+    const byExternal = await this.db<{ id: unknown }[]>`
+      update erp.channel_product_mappings
+      set product_variant_id = ${variantId}::bigint,
+          external_variant_id = ${externalVariantId},
+          external_sku = ${externalSku},
+          sync_status = 'synced',
+          last_synced_at = now(),
+          last_error = null
+      where channel_account_id = ${accountId}::bigint
+        and external_product_id = ${externalId}
+        and deleted_at is null
+      returning id`;
+    if (byExternal.length > 0) return 'updated';
+
+    try {
+      await this.db`
+        insert into erp.channel_product_mappings (
+          channel_account_id, product_variant_id, external_product_id,
+          external_variant_id, external_sku, sync_status, last_synced_at
+        ) values (
+          ${accountId}::bigint, ${variantId}::bigint, ${externalId},
+          ${externalVariantId}, ${externalSku}, 'synced', now()
+        )`;
+      return 'imported';
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
       await this.db`
         update erp.channel_product_mappings
         set external_product_id = ${externalId},
-            external_variant_id = coalesce(${externalVariantId}::text, external_variant_id),
-            external_sku = coalesce(${externalSku}::text, external_sku),
+            external_variant_id = ${externalVariantId},
+            external_sku = ${externalSku},
             sync_status = 'synced',
             last_synced_at = now(),
             last_error = null
-        where id = ${asString(variantMapping.id)}::bigint`;
+        where channel_account_id = ${accountId}::bigint
+          and product_variant_id = ${variantId}::bigint
+          and deleted_at is null`;
       return 'updated';
     }
+  }
 
-    await this.db`
-      insert into erp.channel_product_mappings (
-        channel_account_id, product_variant_id, external_product_id,
-        external_variant_id, external_sku, sync_status, last_synced_at
-      ) values (
-        ${accountId}::bigint, ${variantId}::bigint, ${externalId},
-        ${externalVariantId}, ${externalSku}, 'synced', now()
-      )`;
-    return 'imported';
+  private async recordImportError(
+    accountId: string,
+    externalId: string,
+    message: string,
+  ): Promise<void> {
+    try {
+      await this.db`
+        update erp.channel_product_mappings
+        set sync_status = 'failed', last_error = ${message.slice(0, 500)}
+        where channel_account_id = ${accountId}::bigint
+          and external_product_id = ${externalId}
+          and deleted_at is null`;
+    } catch (error) {
+      this.logger.warn(
+        {
+          accountId,
+          externalProductId: externalId,
+          error: error instanceof Error ? error.message : 'error_record_failed',
+        },
+        'channel product import error could not be recorded',
+      );
+    }
   }
 
   private async refreshProductText(

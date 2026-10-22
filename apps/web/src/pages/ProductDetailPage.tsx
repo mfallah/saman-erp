@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ImagePlus, Plus, Send, Trash2 } from 'lucide-react';
+import { Archive, ImagePlus, Link2, Plus, Send, Trash2, Unlink } from 'lucide-react';
 import { api, newRequestId, toFaErrorMessage, uploadFile } from '../lib/api-client';
 import { formatJalali, formatJalaliDateTime } from '../lib/dates';
 import { useDocumentTitle } from '../lib/hooks';
@@ -8,8 +8,8 @@ import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { usePathParam } from '../lib/router';
 import { useHasPermission } from '../lib/use-auth';
-import type { ProductDetail, Unit, VariantSummary } from '../types/api';
-import { Can } from '../components/auth/Can';
+import type { Channel, ChannelAccount, ProductDetail, Unit, VariantSummary } from '../types/api';
+import { Can, PermissionNotice } from '../components/auth/Can';
 import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
@@ -25,6 +25,24 @@ import { Select } from '../components/ui/Select';
 import { Tabs, TabPanel } from '../components/ui/Tabs';
 import { DataTable, type Column } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
+
+interface ChannelMappingView {
+  readonly id: string;
+  readonly accountId: string;
+  readonly accountName?: string | null;
+  readonly channelCode?: string | null;
+  readonly channelName?: string | null;
+  readonly externalProductId?: string | null;
+  readonly externalVariantId?: string | null;
+  readonly externalSku?: string | null;
+  readonly syncStatus?: string | null;
+  readonly lastSyncedAt?: string | null;
+  readonly variantId?: string | null;
+  readonly variantSku?: string | null;
+  readonly variantTitle?: string | null;
+  readonly productName?: string | null;
+  readonly isMapped?: boolean;
+}
 
 const variantColumns: readonly Column<VariantSummary>[] = [
   { key: 'sku', header: 'شناسه تنوع', render: (variant) => <span dir="ltr">{variant.sku}</span> },
@@ -50,10 +68,18 @@ export function ProductDetailPage() {
   const [variantBarcode, setVariantBarcode] = useState('');
   const [variantUnitId, setVariantUnitId] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [channelVariantId, setChannelVariantId] = useState('');
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+  const [mappingChannelId, setMappingChannelId] = useState('');
+  const [mappingAccountId, setMappingAccountId] = useState('');
+  const [mappingSearch, setMappingSearch] = useState('');
 
   const canUpdate = useHasPermission(PERM.productUpdate);
   const canAddVariant = useHasPermission(PERM.variantCreate);
   const canManageMedia = useHasPermission(PERM.mediaCreate);
+  const canReadMappings = useHasPermission(PERM.mappingRead);
+  const canLinkMapping = useHasPermission(PERM.mappingCreate);
+  const canUnlinkMapping = useHasPermission(PERM.mappingDelete);
 
   const productQuery = useQuery({
     queryKey: queryKeys.catalog.product(id),
@@ -69,8 +95,58 @@ export function ProductDetailPage() {
     enabled: variantModalOpen,
   });
 
+  const channelVariants = productQuery.data?.variants ?? [];
+  const activeChannelVariantId = channelVariantId || channelVariants[0]?.id || '';
+
+  const channelMappingsQuery = useQuery({
+    queryKey: ['channel-mappings', 'variant', activeChannelVariantId],
+    queryFn: () =>
+      api.get<readonly ChannelMappingView[]>(
+        `/variants/${activeChannelVariantId}/channel-mappings`,
+      ),
+    enabled: tab === 'channels' && activeChannelVariantId !== '' && canReadMappings,
+  });
+  const channelsQuery = useQuery({
+    queryKey: queryKeys.channels.list,
+    queryFn: () => api.get<readonly Channel[]>('/channels', { perPage: 100 }),
+    staleTime: 5 * 60_000,
+    enabled: linkModalOpen,
+  });
+  const channelAccountsQuery = useQuery({
+    queryKey: queryKeys.channels.accounts(mappingChannelId),
+    queryFn: () =>
+      api.get<readonly ChannelAccount[]>(`/channels/${mappingChannelId}/accounts`, {
+        perPage: 100,
+      }),
+    enabled: linkModalOpen && mappingChannelId !== '',
+  });
+  const importedProductsQuery = useQuery({
+    queryKey: [
+      'channel-mappings',
+      'imported',
+      mappingAccountId,
+      activeChannelVariantId,
+      mappingSearch,
+    ],
+    queryFn: () =>
+      api.get<readonly ChannelMappingView[]>('/channel-mappings', {
+        accountId: mappingAccountId,
+        search: mappingSearch.trim(),
+        unmapped: true,
+        variantId: activeChannelVariantId,
+      }),
+    enabled:
+      linkModalOpen &&
+      mappingAccountId !== '' &&
+      activeChannelVariantId !== '' &&
+      canReadMappings,
+  });
+
   const invalidate = (): void => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.product(id) });
+  };
+  const invalidateChannelMappings = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ['channel-mappings'] });
   };
 
   const publishMutation = useMutation({
@@ -134,6 +210,35 @@ export function ProductDetailPage() {
     onError: (error) => toast.error('حذف رسانه ناموفق بود', toFaErrorMessage(error)),
   });
 
+  const linkChannelMutation = useMutation({
+    mutationFn: (externalProductId: string) =>
+      api.post<{ id: string }>(
+        '/channel-mappings/link',
+        {
+          accountId: mappingAccountId,
+          externalProductId,
+          variantId: activeChannelVariantId,
+        },
+        { idempotencyKey: newRequestId() },
+      ),
+    onSuccess: () => {
+      toast.success('محصول کانال به تنوع کالا متصل شد');
+      setLinkModalOpen(false);
+      setMappingSearch('');
+      invalidateChannelMappings();
+    },
+    onError: (error) => toast.error('اتصال محصول کانال ناموفق بود', toFaErrorMessage(error)),
+  });
+
+  const unlinkChannelMutation = useMutation({
+    mutationFn: (mappingId: string) => api.del<void>(`/channel-mappings/${mappingId}`),
+    onSuccess: () => {
+      toast.success('اتصال کانال قطع شد');
+      invalidateChannelMappings();
+    },
+    onError: (error) => toast.error('قطع اتصال کانال ناموفق بود', toFaErrorMessage(error)),
+  });
+
   if (productQuery.isLoading) {
     return <Card>در حال دریافت اطلاعات کالا…</Card>;
   }
@@ -148,8 +253,73 @@ export function ProductDetailPage() {
   }
 
   const product = productQuery.data;
-  const variants = product.variants ?? [];
+  const variants = channelVariants;
   const media = product.media ?? [];
+
+  const channelMappingColumns: readonly Column<ChannelMappingView>[] = [
+    {
+      key: 'channel',
+      header: 'کانال',
+      render: (mapping) => mapping.channelName ?? mapping.channelCode ?? '—',
+    },
+    {
+      key: 'account',
+      header: 'حساب',
+      render: (mapping) => mapping.accountName ?? '—',
+    },
+    {
+      key: 'externalProduct',
+      header: 'شناسه محصول کانال',
+      render: (mapping) => (
+        <span dir="ltr" className="text-xs">
+          {mapping.externalProductId ?? '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'externalVariant',
+      header: 'شناسه تنوع کانال',
+      render: (mapping) => (
+        <span dir="ltr" className="text-xs">
+          {mapping.externalVariantId ?? mapping.externalSku ?? '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'syncStatus',
+      header: 'وضعیت همگام‌سازی',
+      render: (mapping) =>
+        mapping.syncStatus === undefined || mapping.syncStatus === null ? (
+          '—'
+        ) : (
+          <StatusBadge status={mapping.syncStatus} />
+        ),
+    },
+    {
+      key: 'lastSyncedAt',
+      header: 'آخرین همگام‌سازی',
+      render: (mapping) =>
+        mapping.lastSyncedAt === undefined || mapping.lastSyncedAt === null
+          ? '—'
+          : formatJalaliDateTime(mapping.lastSyncedAt),
+    },
+    {
+      key: 'actions',
+      header: 'عملیات',
+      render: (mapping) =>
+        canUnlinkMapping ? (
+          <Button
+            size="sm"
+            variant="outline"
+            icon={<Unlink className="size-3.5" />}
+            loading={unlinkChannelMutation.isPending}
+            onClick={() => unlinkChannelMutation.mutate(mapping.id)}
+          >
+            قطع اتصال
+          </Button>
+        ) : null,
+    },
+  ];
 
   return (
     <>
@@ -204,6 +374,7 @@ export function ProductDetailPage() {
           { value: 'info', label: 'اطلاعات' },
           { value: 'variants', label: 'تنوع‌ها', badge: <Badge>{variants.length.toLocaleString('fa-IR')}</Badge> },
           { value: 'media', label: 'رسانه', badge: <Badge>{media.length.toLocaleString('fa-IR')}</Badge> },
+          { value: 'channels', label: 'کانال‌ها' },
         ]}
       />
 
@@ -342,6 +513,66 @@ export function ProductDetailPage() {
             )}
           </Card>
         )}
+
+        {tab === 'channels' && (
+          <Card>
+            <CardHeader
+              title="کانال‌های متصل"
+              description="محصولات واردشده از کانال‌ها را به تنوع کالای مرجع متصل کنید."
+              actions={
+                canLinkMapping ? (
+                  <Button
+                    size="sm"
+                    icon={<Link2 className="size-4" />}
+                    disabled={activeChannelVariantId === ''}
+                    onClick={() => setLinkModalOpen(true)}
+                  >
+                    اتصال به محصول کانال
+                  </Button>
+                ) : undefined
+              }
+            />
+            {variants.length === 0 ? (
+              <EmptyState
+                title="تنوعی برای این کالا ثبت نشده است"
+                description="برای اتصال به کانال، ابتدا یک تنوع برای کالا ایجاد کنید."
+              />
+            ) : !canReadMappings ? (
+              <PermissionNotice permission={PERM.mappingRead} />
+            ) : (
+              <>
+                <div className="mb-4 max-w-sm">
+                  <FormField label="تنوع کالا" hint="اتصال‌ها برای تنوع انتخاب‌شده نمایش داده می‌شوند.">
+                    <Select
+                      options={variants.map((variant) => ({
+                        value: variant.id,
+                        label: variant.sku,
+                      }))}
+                      value={activeChannelVariantId}
+                      onChange={(event) => setChannelVariantId(event.target.value)}
+                    />
+                  </FormField>
+                </div>
+                {channelMappingsQuery.isError ? (
+                  <ErrorState
+                    error={channelMappingsQuery.error}
+                    onRetry={() => void channelMappingsQuery.refetch()}
+                  />
+                ) : (
+                  <DataTable
+                    columns={channelMappingColumns}
+                    rows={channelMappingsQuery.data ?? []}
+                    rowKey={(mapping) => mapping.id}
+                    loading={channelMappingsQuery.isLoading}
+                    caption="کانال‌های متصل به تنوع کالا"
+                    emptyTitle="این تنوع به کانالی متصل نیست"
+                    emptyDescription="با دکمه «اتصال به محصول کانال» یکی از محصولات واردشده را به این تنوع متصل کنید."
+                  />
+                )}
+              </>
+            )}
+          </Card>
+        )}
       </TabPanel>
 
       <ConfirmDialog
@@ -414,6 +645,137 @@ export function ProductDetailPage() {
               loading={unitsQuery.isLoading}
             />
           </FormField>
+        </div>
+      </Modal>
+
+      <Modal
+        open={linkModalOpen}
+        onClose={() => setLinkModalOpen(false)}
+        title="اتصال به محصول کانال"
+        description="محصول واردشده از کانال را به تنوع انتخاب‌شده این کالا متصل کنید."
+        size="lg"
+        footer={
+          <Button variant="outline" onClick={() => setLinkModalOpen(false)}>
+            بستن
+          </Button>
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField label="کانال" required>
+              <Select
+                options={(channelsQuery.data ?? []).map((channel) => ({
+                  value: channel.id,
+                  label: channel.nameFa ?? channel.name ?? channel.code,
+                }))}
+                value={mappingChannelId}
+                placeholder="انتخاب کانال"
+                loading={channelsQuery.isLoading}
+                onChange={(event) => {
+                  setMappingChannelId(event.target.value);
+                  setMappingAccountId('');
+                  setMappingSearch('');
+                }}
+              />
+            </FormField>
+            <FormField label="حساب کانال" required>
+              <Select
+                options={(channelAccountsQuery.data ?? []).map((account) => ({
+                  value: account.id,
+                  label: account.nameFa ?? account.name ?? account.id,
+                }))}
+                value={mappingAccountId}
+                placeholder={
+                  mappingChannelId === '' ? 'ابتدا کانال را انتخاب کنید' : 'انتخاب حساب کانال'
+                }
+                disabled={mappingChannelId === ''}
+                loading={channelAccountsQuery.isLoading}
+                onChange={(event) => setMappingAccountId(event.target.value)}
+              />
+            </FormField>
+          </div>
+
+          {channelsQuery.isError && (
+            <ErrorState
+              message="دریافت کانال‌ها ناموفق بود."
+              error={channelsQuery.error}
+              onRetry={() => void channelsQuery.refetch()}
+            />
+          )}
+          {channelAccountsQuery.isError && (
+            <ErrorState
+              message="دریافت حساب‌های کانال ناموفق بود."
+              error={channelAccountsQuery.error}
+              onRetry={() => void channelAccountsQuery.refetch()}
+            />
+          )}
+
+          <FormField label="جستجوی محصول کانال" hint="نام، شناسه محصول یا شناسه تنوع کانال">
+            <Input
+              value={mappingSearch}
+              onChange={(event) => setMappingSearch(event.target.value)}
+              placeholder="جستجو…"
+              disabled={mappingAccountId === ''}
+            />
+          </FormField>
+
+          {mappingAccountId === '' ? (
+            <EmptyState
+              icon={<Link2 className="size-8" />}
+              title="حساب کانال را انتخاب کنید"
+              description="پس از انتخاب حساب، محصولات واردشده از آن کانال نمایش داده می‌شوند."
+            />
+          ) : importedProductsQuery.isError ? (
+            <ErrorState
+              error={importedProductsQuery.error}
+              onRetry={() => void importedProductsQuery.refetch()}
+            />
+          ) : importedProductsQuery.isLoading ? (
+            <p className="text-sm text-slate-500">در حال دریافت محصولات کانال…</p>
+          ) : (importedProductsQuery.data ?? []).length === 0 ? (
+            <EmptyState
+              icon={<Link2 className="size-8" />}
+              title="محصول واردشده‌ای برای اتصال پیدا نشد"
+              description="همه محصولات این حساب به تنوع فعلی متصل هستند یا با عبارت جستجو مطابقت ندارند."
+            />
+          ) : (
+            <ul className="space-y-2">
+              {(importedProductsQuery.data ?? []).map((mapping) => (
+                <li
+                  key={mapping.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">
+                      {mapping.productName ?? mapping.externalProductId ?? '—'}
+                    </p>
+                    <p dir="ltr" className="truncate text-xs text-slate-500">
+                      {mapping.externalProductId ?? '—'}
+                      {mapping.externalSku === undefined || mapping.externalSku === null
+                        ? ''
+                        : ` · ${mapping.externalSku}`}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {mapping.variantSku === undefined || mapping.variantSku === null
+                        ? 'بدون اتصال'
+                        : `اکنون متصل به ${mapping.variantSku}`}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    loading={linkChannelMutation.isPending}
+                    disabled={
+                      mapping.externalProductId === undefined ||
+                      mapping.externalProductId === null
+                    }
+                    onClick={() => linkChannelMutation.mutate(mapping.externalProductId ?? '')}
+                  >
+                    اتصال
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </Modal>
     </>

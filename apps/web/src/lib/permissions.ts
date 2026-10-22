@@ -51,7 +51,10 @@ export const PERM = {
   syncRead: 'channel.sync.read',
   syncTrigger: 'channel.sync.trigger',
   mappingRead: 'channel.mapping.read',
+  mappingCreate: 'channel.mapping.create',
+  mappingDelete: 'channel.mapping.delete',
   accountRead: 'channel.account.read',
+  accountUpdate: 'channel.account.update',
   accountTest: 'channel.account.test',
   credentialWrite: 'channel.credential.write',
   // identity

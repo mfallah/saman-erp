@@ -30,6 +30,7 @@ import { WarehouseModule } from './modules/warehouse/warehouse.module';
 import { AccountingModule } from './modules/accounting/accounting.module';
 import { TreasuryModule } from './modules/treasury/treasury.module';
 import { PartnersModule } from './modules/partners/partners.module';
+import { PricingModule } from './modules/pricing/pricing.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 
 /* channels & integrations */
@@ -49,7 +50,7 @@ import { AutomationModule } from './modules/automation/automation.module';
  * here, so every route is authenticated unless explicitly `@Public()`.
  *
  * Modules intentionally NOT built in v1.0 (documented in docs/09-roadmap):
- * procurement, pricing, fulfillment, HR/payroll, e-invoicing.
+ * procurement, fulfillment, HR/payroll, e-invoicing.
  */
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { AutomationModule } from './modules/automation/automation.module';
     AccountingModule,
     TreasuryModule,
     PartnersModule,
+    PricingModule,
     ReportingModule,
 
     /* channels & integrations */

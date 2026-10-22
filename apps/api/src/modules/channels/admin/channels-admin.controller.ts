@@ -405,10 +405,12 @@ export class ChannelsAdminController {
 
     // The service owns debouncing, capability checks and the mirrored job row;
     // `product_push` from the SPA is normalised to the product_import job type.
+    // `dryRun` is carried on the operation key so the worker can see it.
     const triggered = await this.sync.trigger({
       organizationId: ctx.orgId.toString(),
       accountId: String(account['id']),
       type: type as SyncTriggerType,
+      scope: { dryRun: payload['dryRun'] === true },
     });
 
     // Execute after the HTTP response: the caller gets the job id immediately.

@@ -88,8 +88,10 @@ export const NAV_ITEMS: readonly NavItem[] = [
     key: 'pricing',
     label: 'قیمت‌گذاری',
     icon: BadgeDollarSign,
-    to: '/pricing',
-    permission: 'price.list.read',
+    children: [
+      { label: 'قیمت‌گذاری کانال‌ها', to: '/pricing/channels', permission: PERM.accountRead },
+      { label: 'فهرست‌ها و قواعد قیمت', to: '/pricing', permission: 'price.list.read' },
+    ],
   },
   {
     key: 'finance',

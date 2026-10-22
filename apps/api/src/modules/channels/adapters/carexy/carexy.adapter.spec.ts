@@ -9,6 +9,7 @@ import { TokenBucket } from '../../infrastructure/token-bucket';
 import { CarexyAdapter } from './carexy.adapter';
 import { mapCarexyInventory, toCarexyInventoryWrite } from './carexy.types';
 import type { ChannelMappingRepositoryPort } from '../../repositories/channel-mapping.repository';
+import type { ExternalProduct } from '../../ports/channel-adapter.port';
 import type { AdapterAccount } from '../../domain/channel.types';
 
 const account: AdapterAccount = {
@@ -133,6 +134,72 @@ describe('Carexy mapping (§8.2, §53–54)', () => {
     // API log never persists credentials or raw headers.
     assert.equal(JSON.stringify(logs).includes('secret-key'), false);
     assert.equal(JSON.stringify(logs).includes('headers'), false);
+  });
+
+  it('reads the Laravel envelope, maps field fallbacks and paginates to a short page', async () => {
+    const requests: string[] = [];
+    const json = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const productsOf = (page: number): unknown[] =>
+      page === 1
+        ? Array.from({ length: 50 }, (_, index) => ({
+            uuid: `p-${index}`,
+            name_fa: `کالا ${index}`,
+            sale_price: '2,500,000',
+            inventories: [{ inventory_uuid: `i-${index}`, count: 2 }],
+          }))
+        : [{ id: 'p-last', title: 'آخرین', price: 1000 }];
+
+    const http = new PartnerHttpClient(
+      {
+        logger: new SilentLogger(),
+        apiCalls: apiCalls([]),
+        rateLimiter: new TokenBucket(new InMemoryKeyValueStore(), {
+          capacity: 100,
+          refillPerSecond: 100,
+        }),
+        declaredHosts: ['carexy.shop'],
+      },
+      {
+        fetchImpl: async (url) => {
+          requests.push(url);
+          const parsed = new URL(url);
+          if (parsed.pathname === '/api/v1/inventories/product/p-last') {
+            return json({
+              data: [
+                { inventory_uuid: 'i-last', count: 3 },
+                { inventory_uuid: 'i-extra', count: 4 },
+              ],
+            });
+          }
+          return json({ data: { data: productsOf(Number(parsed.searchParams.get('page') ?? '1')) } });
+        },
+      },
+    );
+    const adapter = new CarexyAdapter({ http, mappings: noopMappings, logger: new SilentLogger() });
+
+    const products: ExternalProduct[] = [];
+    for await (const product of adapter.pullProducts(account)) products.push(product);
+
+    assert.equal(products.length, 51);
+    assert.equal(products[0]?.externalProductId, 'p-0');
+    assert.equal(products[0]?.title, 'کالا 0');
+    assert.equal(products[0]?.price, '2500000');
+    assert.equal(products[0]?.available, '2');
+    assert.equal(products[0]?.externalVariantId, 'i-0');
+    // No stock in the list row: inventories are summed, variant id comes from them.
+    assert.equal(products[50]?.externalProductId, 'p-last');
+    assert.equal(products[50]?.available, '7');
+    assert.equal(products[50]?.externalVariantId, 'i-last');
+    assert.equal(requests.filter((url) => new URL(url).pathname === '/api/v1/products').length, 2);
+    assert.equal(
+      requests.filter((url) => new URL(url).pathname.startsWith('/api/v1/inventories/product/'))
+        .length,
+      1,
+    );
   });
 
   it('refuses to push without a mapping instead of guessing an inventory id', async () => {

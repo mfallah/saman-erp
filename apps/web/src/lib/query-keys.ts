@@ -57,6 +57,10 @@ export const queryKeys = {
     syncJobs: (params?: QueryParams) => ['channel-sync-jobs', params ?? {}] as const,
     mappings: (channelId: string, params?: QueryParams) =>
       ['channels', channelId, 'product-mappings', params ?? {}] as const,
+    pricingPolicies: (channelId: string) => ['channels', channelId, 'pricing-policy'] as const,
+    allPricingPolicies: ['pricing', 'policies'] as const,
+    pricePreview: (accountId: string, variantId: string) =>
+      ['pricing', 'preview', accountId, variantId] as const,
   },
   identity: {
     users: (params?: QueryParams) => ['users', params ?? {}] as const,
