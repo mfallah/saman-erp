@@ -119,6 +119,10 @@ export function ChannelsPage() {
   const [rsaBusy, setRsaBusy] = useState(false);
   const [rsaLoading, setRsaLoading] = useState(false);
   const [rsaError, setRsaError] = useState('');
+  const [dkClientCode, setDkClientCode] = useState('');
+  const [dkValidationCode, setDkValidationCode] = useState('');
+  const [dkBusy, setDkBusy] = useState(false);
+  const [dkResult, setDkResult] = useState('');
 
   const channelsQuery = useQuery({
     queryKey: queryKeys.channels.list,
@@ -223,6 +227,29 @@ export function ChannelsPage() {
     },
     onError: (error) => toast.error('آزمایش اتصال ناموفق بود', toFaErrorMessage(error)),
   });
+
+  const activateDigikala = async (): Promise<void> => {
+    if (rsaAccount === null) return;
+    setDkBusy(true);
+    setDkResult('');
+    try {
+      const result = await api.post<{ ok: boolean; decryption: string; expiresIn?: number | null; hasRefreshToken?: boolean }>(
+        `/channel-accounts/${rsaAccount.id}/digikala/token`,
+        { validationCode: dkValidationCode, clientCode: dkClientCode },
+        { idempotencyKey: newRequestId() },
+      );
+      setDkResult(
+        `توکن دریافت شد (${result.decryption}) — ${result.hasRefreshToken ? 'refresh token ذخیره شد' : 'بدون refresh token'}${result.expiresIn ? ` · انقضا ${result.expiresIn} ثانیه` : ''}`,
+      );
+      toast.success('توکن دیجی‌کالا فعال شد');
+      setDkValidationCode('');
+    } catch (error) {
+      setDkResult(toFaErrorMessage(error));
+      toast.error('فعال‌سازی توکن ناموفق بود', toFaErrorMessage(error));
+    } finally {
+      setDkBusy(false);
+    }
+  };
 
   const loadRsaKeypair = async (account: ChannelAccount): Promise<void> => {
     setRsaLoading(true);
@@ -633,6 +660,39 @@ export function ChannelsPage() {
               <p dir="ltr" className="break-all font-mono text-[10px] text-slate-500">
                 SHA-256: {rsaFingerprint}
               </p>
+
+              <div className="mt-4 space-y-2 rounded-lg border border-dashed border-slate-300 p-3 dark:border-slate-700">
+                <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                  فعال‌سازی توکن دیجی‌کالا
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  از پنل دیجی‌کالا «کد کلاینت» و «کد اعتبارسنجی» را کپی کن و اینجا بچسبان؛ سامانه کد را
+                  با کلید خصوصی رمزگشایی و به توکن تبدیل می‌کند.
+                </p>
+                <Input
+                  dir="ltr"
+                  placeholder="Client code"
+                  value={dkClientCode}
+                  onChange={(event) => setDkClientCode(event.target.value)}
+                />
+                <Textarea
+                  dir="ltr"
+                  rows={4}
+                  placeholder="Validation code (base64)"
+                  className="font-mono text-[11px]"
+                  value={dkValidationCode}
+                  onChange={(event) => setDkValidationCode(event.target.value)}
+                />
+                <Button
+                  size="sm"
+                  loading={dkBusy}
+                  disabled={dkValidationCode.trim().length === 0 || !rsaHasPrivateKey}
+                  onClick={() => void activateDigikala()}
+                >
+                  تبدیل کد به توکن
+                </Button>
+                {dkResult === '' ? null : <p className="text-[11px] text-slate-600 dark:text-slate-300">{dkResult}</p>}
+              </div>
             </div>
           ) : (
             <p className="text-xs text-slate-500">

@@ -13,6 +13,7 @@ import { CurrentTenant } from '../../../common/decorators/current-context.decora
 import { Permissions } from '../../..//common/decorators/permissions.decorator';
 import { apiData } from '../../../common/interceptors/response.interceptor';
 import { ChannelAccountService } from '../services/channel-accounts.service';
+import { activateDigikalaToken } from '../adapters/digikala/digikala-activation.service';
 import {
   ChannelSyncService,
   SYNC_TRIGGER_TYPES,
@@ -286,6 +287,71 @@ export class ChannelsAdminController {
       userAgent: ctx.userAgent,
     });
     return apiData(result);
+  }
+
+  /**
+   * Exchanges Digikala's short-lived validation code for access/refresh tokens.
+   * Flow: base64-decode the code -> RSA-decrypt with the stored private key ->
+   * POST /open-api/v1/auth/token -> store access_token/refresh_token.
+   */
+  @Post('channel-accounts/:accountId/digikala/token')
+  @Permissions('channel.credential.write')
+  @ApiOperation({ summary: 'Activate Digikala tokens from the panel validation code' })
+  async digikalaToken(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const validationCode = text(payload['validationCode']);
+    if (validationCode.length === 0) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'validationCode is required' });
+    }
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const credentials = await this.accounts.decryptActive(accountInternal);
+    const privateKey = credentials['private_key'];
+    if (privateKey === undefined || privateKey.length === 0) {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'ابتدا در همین پنجره جفت‌کلید RSA را بسازید یا کلید خصوصی را بارگذاری کنید.',
+      });
+    }
+    const clientCode = text(payload['clientCode']) || credentials['client_code'] || credentials['client_id'] || '';
+    try {
+      const result = await activateDigikalaToken({
+        validationCode,
+        privateKeyPem: privateKey,
+        ...(clientCode.length > 0 ? { clientCode } : {}),
+        ...(credentials['base_url'] === undefined ? {} : { baseUrl: credentials['base_url'] }),
+      });
+      const toStore: Record<string, string> = { access_token: result.accessToken };
+      if (result.refreshToken !== null) toStore['refresh_token'] = result.refreshToken;
+      if (clientCode.length > 0) toStore['client_code'] = clientCode;
+      await this.accounts.setCredentials({
+        organizationId: ctx.orgId.toString(),
+        accountId: accountInternal,
+        credentials: toStore,
+        actorId: ctx.actorId === null ? null : ctx.actorId.toString(),
+        requestId: ctx.requestId,
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      });
+      return apiData({
+        ok: true,
+        decryption: result.decryption,
+        payloadVariant: result.payloadVariant,
+        expiresIn: result.expiresIn,
+        hasRefreshToken: result.refreshToken !== null,
+      });
+    } catch (error) {
+      throw new BadRequestException({
+        code: 'DIGIKALA_TOKEN_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   @Post('channel-accounts/:accountId/test')

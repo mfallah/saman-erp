@@ -11,6 +11,7 @@ export const CREDENTIAL_KEY_NAMES = [
   'api_secret',
   'client_id',
   'client_secret',
+  'client_code',
   'refresh_token',
   'access_token',
   'webhook_secret',
