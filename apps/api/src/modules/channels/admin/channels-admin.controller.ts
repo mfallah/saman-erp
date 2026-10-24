@@ -3,7 +3,7 @@
  * connection test and sync jobs. The SPA already called these paths, but no
  * controller existed, so every channel screen returned `NOT_FOUND`.
  */
-import { BadRequestException, Body, Controller, Get, Inject, Param, Post, Put, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AppError } from '@saman/shared';
 
@@ -584,6 +584,43 @@ export class ChannelsAdminController {
     } catch (error) {
       return apiData({ ok: false, message: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+
+  @Put('channel-accounts/:accountId')
+  @Permissions('channel.account.update')
+  @ApiOperation({ summary: 'Update a channel account (name/active)' })
+  async updateAccount(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const name = typeof payload['name'] === 'string' && payload['name'].trim().length >= 2 ? payload['name'].trim() : null;
+    const isActive = typeof payload['isActive'] === 'boolean' ? payload['isActive'] : null;
+    const rows = await this.sql`
+      update erp.channel_accounts
+      set name = coalesce(${name}, name),
+          is_active = coalesce(${isActive}::boolean, is_active),
+          updated_at = now(), updated_by = ${ctx.actorId}
+      where public_id = ${accountId} and organization_id = ${ctx.orgId} and deleted_at is null
+      returning public_id::text as id
+    `;
+    if (rows.length === 0) throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    return apiData({ id: String(rows[0]!['id']) });
+  }
+
+  @Delete('channel-accounts/:accountId')
+  @HttpCode(200)
+  @Permissions('channel.account.delete')
+  @ApiOperation({ summary: 'Soft-delete a channel account' })
+  async deleteAccount(@CurrentTenant() ctx: TenantContext, @Param('accountId') accountId: string) {
+    await this.sql`
+      update erp.channel_accounts
+      set deleted_at = now(), is_active = false, updated_at = now(), updated_by = ${ctx.actorId}
+      where public_id = ${accountId} and organization_id = ${ctx.orgId} and deleted_at is null
+    `;
+    return apiData({ id: accountId, deleted: true });
   }
 
   @Get('channel-sync-jobs')

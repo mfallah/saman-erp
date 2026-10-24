@@ -65,7 +65,7 @@ const healthColumns: readonly Column<ChannelHealthRow>[] = [
     align: 'end',
     render: (row) => formatNumber(row.failureStreak ?? 0),
   },
-  { key: 'rateLimit', header: 'محدودیت نرخ', render: (row) => row.rateLimitState ?? '—' },
+  { key: 'latency', header: 'تأخیر', align: 'end', render: (row) => (row.latencyMs === undefined || row.latencyMs === null ? '—' : `${formatNumber(row.latencyMs)} ms`) },
 ];
 
 const SYNC_TYPE_LABELS: Record<string, string> = {
@@ -512,6 +512,43 @@ export function ChannelsPage() {
               onClick={() => testAccountMutation.mutate(account.id)}
             >
               آزمایش اتصال
+            </Button>
+          ) : null}
+          {canWriteCredentials ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const name = window.prompt('نام جدید حساب', account.name);
+                if (name === null || name.trim().length < 2) return;
+                void api
+                  .put(`/channel-accounts/${account.id}`, { name: name.trim() })
+                  .then(() => {
+                    toast.success('حساب ویرایش شد');
+                    void queryClient.invalidateQueries({ queryKey: ['channels'] });
+                  })
+                  .catch((error) => toast.error('ویرایش ناموفق بود', toFaErrorMessage(error)));
+              }}
+            >
+              ویرایش
+            </Button>
+          ) : null}
+          {canWriteCredentials ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (!window.confirm(`حساب «${account.name}» حذف شود؟`)) return;
+                void api
+                  .del(`/channel-accounts/${account.id}`)
+                  .then(() => {
+                    toast.success('حساب حذف شد');
+                    void queryClient.invalidateQueries({ queryKey: ['channels'] });
+                  })
+                  .catch((error) => toast.error('حذف ناموفق بود', toFaErrorMessage(error)));
+              }}
+            >
+              حذف
             </Button>
           ) : null}
         </div>

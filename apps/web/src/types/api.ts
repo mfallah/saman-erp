@@ -487,6 +487,7 @@ export interface Channel extends Ref {
 }
 
 export interface ChannelHealthRow {
+  readonly latencyMs?: number | null;
   readonly id?: string;
   readonly channel?: Channel;
   readonly account?: Ref;
