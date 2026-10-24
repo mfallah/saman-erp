@@ -120,6 +120,7 @@ export function ChannelsPage() {
   const canTest = useHasPermission(PERM.accountTest);
   const canWriteCredentials = useHasPermission(PERM.credentialWrite);
   const [tab, setTab] = useState('health');
+  const [reveal, setReveal] = useState<{ name: string; values: Record<string, string> } | null>(null);
   const [selectedChannelId, setSelectedChannelId] = useState('');
   const [syncOpen, setSyncOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -512,6 +513,20 @@ export function ChannelsPage() {
               onClick={() => testAccountMutation.mutate(account.id)}
             >
               آزمایش اتصال
+            </Button>
+          ) : null}
+          {canWriteCredentials ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void api
+                  .get<{ credentials: Record<string, string> }>(`/channel-accounts/${account.id}/credentials/reveal`)
+                  .then((data) => setReveal({ name: account.name ?? account.id, values: data.credentials }))
+                  .catch((error) => toast.error('نمایش اعتبارنامه ناموفق بود', toFaErrorMessage(error)));
+              }}
+            >
+              نمایش اعتبارنامه
             </Button>
           ) : null}
           {canWriteCredentials ? (
@@ -1080,6 +1095,28 @@ export function ChannelsPage() {
           <FormField label="نوع همگام‌سازی" required>
             <Select options={SYNC_TYPES} value={syncType} onChange={(event) => setSyncType(event.target.value)} />
           </FormField>
+        </div>
+      </Modal>
+
+      <Modal
+        open={reveal !== null}
+        onClose={() => setReveal(null)}
+        title={`اعتبارنامهٔ ${reveal?.name ?? ''}`}
+        size="md"
+      >
+        <div className="space-y-2">
+          <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+            این مقادیر محرمانه‌اند؛ پس از استفاده پنجره را ببند.
+          </p>
+          {Object.entries(reveal?.values ?? {}).map(([key, value]) => (
+            <div key={key} className="rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+              <div className="text-xs text-slate-500">{key}</div>
+              <div dir="ltr" className="select-all break-all font-mono text-xs">{value}</div>
+            </div>
+          ))}
+          {Object.keys(reveal?.values ?? {}).length === 0 && (
+            <p className="text-sm text-slate-500">اعتبارنامه‌ای ثبت نشده است.</p>
+          )}
         </div>
       </Modal>
     </>

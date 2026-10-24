@@ -623,6 +623,20 @@ export class ChannelsAdminController {
     return apiData({ id: accountId, deleted: true });
   }
 
+
+  @Get('channel-accounts/:accountId/credentials/reveal')
+  @Permissions('channel.credential.write')
+  @ApiOperation({ summary: 'Reveal decrypted credentials (audited read)' })
+  async revealCredentials(@CurrentTenant() ctx: TenantContext, @Param('accountId') accountId: string) {
+    const rows = await this.sql`
+      select id::text as id from erp.channel_accounts
+      where public_id = ${accountId} and organization_id = ${ctx.orgId} and deleted_at is null limit 1
+    `;
+    if (rows.length === 0) throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    const credentials = await this.accounts.decryptActive(String(rows[0]!['id']));
+    return apiData({ credentials });
+  }
+
   @Get('channel-sync-jobs')
   @Permissions('channel.sync.read')
   @ApiOperation({ summary: 'Recent sync jobs' })

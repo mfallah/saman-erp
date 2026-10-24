@@ -6,6 +6,7 @@
  * them through `POST /channel-accounts/:id/pricing/apply`.
  */
 import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Put } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
 
@@ -68,10 +69,43 @@ export class PricingRulesController {
   constructor(
     @Inject(DB) private readonly db: Db,
     @Inject(TENANT) private readonly tenant: TenantAccessor,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   private get sql(): Raw {
     return this.db as unknown as Raw;
+  }
+
+
+  /** Best-effort recompute + push for every account that uses this price list. */
+  private async applyToAccounts(ctx: TenantContext, priceListId: string): Promise<void> {
+    try {
+      const accounts = await this.sql`
+        select a.public_id::text as id, a.id::text as internal_id
+        from erp.channel_accounts a
+        join erp.price_lists l on l.id = ${priceListId}::bigint
+        where a.organization_id = ${ctx.orgId} and a.deleted_at is null and a.is_active = true
+          and (a.price_list_id = l.id or a.id = l.channel_account_id)
+      `;
+      const { PricingService } = await import('./pricing.service');
+      const { ChannelSyncService } = await import('../channels/services/channel-sync.service');
+      const pricing = this.moduleRef.get(PricingService, { strict: false });
+      const sync = this.moduleRef.get(ChannelSyncService, { strict: false });
+      for (const account of accounts) {
+        await pricing.applyToAccount({ accountId: String(account['id']) });
+        const job = await sync.trigger({
+          organizationId: ctx.orgId.toString(),
+          accountId: String(account['internal_id']),
+          type: 'price_push',
+          force: true,
+        });
+        setImmediate(() => {
+          void sync.runJob(job.jobId).catch(() => undefined);
+        });
+      }
+    } catch {
+      // Recompute is best-effort; a failure must not reject the rule save.
+    }
   }
 
   private async baseListId(ctx: TenantContext, publicId?: string): Promise<string> {
@@ -164,7 +198,9 @@ export class PricingRulesController {
          ${input.minimumMarginPercent}, ${input.roundingIncrement}, ${input.isActive}, ${ctx.actorId})
       returning public_id::text as id
     `;
-    return apiData({ id: String(rows[0]!['id']) });
+    const createdRuleId = String(rows[0]!['id']);
+    setImmediate(() => void this.applyToAccounts(ctx, listId));
+    return apiData({ id: createdRuleId });
   }
 
   @Put('pricing/rules/:id')
@@ -191,6 +227,7 @@ export class PricingRulesController {
     if (rows.length === 0) {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'rule not found' });
     }
+    setImmediate(() => void this.applyToAccounts(ctx, listId));
     return apiData({ id: String(rows[0]!['id']) });
   }
 
@@ -203,6 +240,8 @@ export class PricingRulesController {
       update erp.pricing_rules set deleted_at = now(), updated_at = now(), updated_by = ${ctx.actorId}
       where public_id = ${id} and organization_id = ${ctx.orgId} and deleted_at is null
     `;
+    const listRow = await this.sql`select price_list_id::text as id from erp.pricing_rules where public_id = ${id} limit 1`;
+    if (listRow[0] !== undefined) setImmediate(() => void this.applyToAccounts(ctx, String(listRow[0]!['id'])));
     return apiData({ id, deleted: true });
   }
 }
