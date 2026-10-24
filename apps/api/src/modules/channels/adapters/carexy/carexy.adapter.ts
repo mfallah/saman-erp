@@ -601,7 +601,20 @@ export class CarexyAdapter implements ChannelAdapter {
         ([key, value]) => inventory.variables[key] === value,
       ),
     );
-    const target = matched ?? (inventories.length === 1 ? inventories[0] : undefined);
+    // Prefer the inventory id recorded on the product mapping, then variable
+    // matching, then the single inventory. Older imports stored the product id
+    // in external_variant_id, so a multi-inventory product could never match;
+    // fall back to the first inventory (deterministic) and log the guess so the
+    // operator can fix the mapping later instead of blocking every push.
+    const byId = inventories.find((inventory) => inventory.inventoryUuid === item.externalVariantId);
+    let target = byId ?? matched ?? (inventories.length === 1 ? inventories[0] : undefined);
+    if (target === undefined && inventories.length > 1) {
+      target = inventories[0];
+      this.deps.logger.warn(
+        { externalProductId: item.externalProductId, externalVariantId: item.externalVariantId, candidates: inventories.length },
+        'carexy inventory mapping ambiguous; using first inventory',
+      );
+    }
     if (target === undefined) {
       throw new IntegrationError('MAPPING_REQUIRED', {
         messageFa: 'موجودی متناظر با تنوع محصول در کرکسی یافت نشد.',
