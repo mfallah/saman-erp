@@ -594,7 +594,7 @@ export class ChannelsAdminController {
     const rows = await this.sql`
       select j.public_id::text as id, j.job_type, j.status, j.attempts, j.max_attempts,
              j.last_error, j.created_at, j.started_at, j.finished_at, j.response_summary,
-             a.name as account_name, c.code as channel_code
+             a.name as account_name, c.code as channel_code, c.name as channel_name
       from erp.channel_sync_jobs j
       join erp.channel_accounts a on a.id = j.channel_account_id
       join erp.sales_channels c on c.id = a.channel_id
@@ -615,7 +615,7 @@ export class ChannelsAdminController {
         progress: row['response_summary'] ?? {},
         summary: normalizeSyncSummary(row['response_summary']),
         account: { name: row['account_name'] },
-        channel: { code: row['channel_code'] },
+        channel: { code: row['channel_code'], nameFa: row['channel_name'], name: row['channel_name'] },
       })),
     );
   }

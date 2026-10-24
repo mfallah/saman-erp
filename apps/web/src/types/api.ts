@@ -580,6 +580,7 @@ export interface PricePreview {
 }
 
 export interface SyncJob {
+  readonly jobType?: string;
   readonly id: string;
   readonly type: string;
   readonly status: string;

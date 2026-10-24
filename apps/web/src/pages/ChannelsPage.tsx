@@ -68,8 +68,26 @@ const healthColumns: readonly Column<ChannelHealthRow>[] = [
   { key: 'rateLimit', header: 'محدودیت نرخ', render: (row) => row.rateLimitState ?? '—' },
 ];
 
+const SYNC_TYPE_LABELS: Record<string, string> = {
+  push_inventory: 'ارسال موجودی',
+  push_price: 'ارسال قیمت',
+  pull_orders: 'دریافت سفارش',
+  product_import: 'ورود محصولات',
+  full_reconcile: 'مغایرت‌گیری',
+  settlement_pull: 'دریافت تسویه',
+  inventory_push: 'ارسال موجودی',
+  price_push: 'ارسال قیمت',
+  order_pull: 'دریافت سفارش',
+};
+
 const jobColumns: readonly Column<SyncJob>[] = [
-  { key: 'type', header: 'نوع', render: (job) => <Badge tone="info">{job.type}</Badge> },
+  {
+      key: 'type',
+      header: 'نوع',
+      render: (job) => (
+        <Badge tone="info">{SYNC_TYPE_LABELS[job.jobType ?? job.type] ?? job.type}</Badge>
+      ),
+    },
   { key: 'channel', header: 'کانال', render: (job) => job.channel?.nameFa ?? job.channel?.name ?? '—' },
   {
     key: 'status',

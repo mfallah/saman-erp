@@ -70,7 +70,7 @@ async function listAutoSyncAccounts(db: Db): Promise<AutoSyncAccount[]> {
     return {
       organizationId: asString(row.organization_id),
       accountId: asString(row.account_id),
-      autoOrderPull: settings['autoOrderPull'] !== false,
+      autoOrderPull: settings['autoOrderPull'] === true,
     };
   });
 }

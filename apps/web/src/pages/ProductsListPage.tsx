@@ -90,7 +90,7 @@ export function ProductsListPage() {
         page,
         perPage: 20,
         ...(debouncedSearch.length >= 2 ? { q: debouncedSearch } : {}),
-        ...(status === '' ? {} : { 'filter[status]': status }),
+        ...(status === '' ? {} : { status }),
       }),
   });
 
