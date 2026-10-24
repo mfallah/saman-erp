@@ -181,8 +181,8 @@ importers:
         specifier: ^1.6.7
         version: 1.6.11
       seroval-plugins:
-        specifier: ^1.6.7
-        version: 1.6.11(seroval@1.6.11)
+        specifier: ^1.6.12
+        version: 1.6.12(seroval@1.6.11)
       use-sync-external-store:
         specifier: ^1.6.0
         version: 1.7.0(react@19.3.1)
@@ -2601,8 +2601,8 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
-  seroval-plugins@1.6.11:
-    resolution: {integrity: sha512-LmB3nd8pL39jKHKvnpTUjcjBtNwR8MLty/ydAR8qbfXt5j6/6KqR1atuw8cVmD2/lDxAkvAwq5tI/HsisD9Fqg==}
+  seroval-plugins@1.6.12:
+    resolution: {integrity: sha512-+reiwp/lYxiyctSrdvX7OQ1YLrcbWYgBiZrhSFL+V43b0/DGRLNVSDyZINbQe+tWplPOI2fw2dPrdv6hcc09kQ==}
     engines: {node: '>=10'}
     peerDependencies:
       seroval: ^1.0
@@ -3725,7 +3725,7 @@ snapshots:
       '@tanstack/history': 1.162.5
       cookie-es: 3.1.1
       seroval: 1.6.11
-      seroval-plugins: 1.6.11(seroval@1.6.11)
+      seroval-plugins: 1.6.12(seroval@1.6.11)
 
   '@tanstack/store@0.11.2': {}
 
@@ -5087,7 +5087,7 @@ snapshots:
 
   semver@7.8.5: {}
 
-  seroval-plugins@1.6.11(seroval@1.6.11):
+  seroval-plugins@1.6.12(seroval@1.6.11):
     dependencies:
       seroval: 1.6.11
 
