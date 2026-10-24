@@ -4,7 +4,7 @@ import { BadgeDollarSign, Calculator, Save, Search } from 'lucide-react';
 import { api, toFaErrorMessage } from '../lib/api-client';
 import { formatJalaliDateTime } from '../lib/dates';
 import { useDebouncedValue, useDocumentTitle } from '../lib/hooks';
-import { formatMoney } from '../lib/money';
+import { formatMoney, formatNumber } from '../lib/money';
 import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { useHasPermission } from '../lib/use-auth';
@@ -140,6 +140,7 @@ export function ChannelPricingPage() {
   const [productSearch, setProductSearch] = useState('');
   const [productId, setProductId] = useState('');
   const [variantId, setVariantId] = useState('');
+  const [applyBasePrice, setApplyBasePrice] = useState('');
   const debouncedSearch = useDebouncedValue(productSearch, 350);
 
   const policiesQuery = useQuery({
@@ -210,6 +211,25 @@ export function ChannelPricingPage() {
     onError: (error) => toast.error('ذخیره سیاست ناموفق بود', toFaErrorMessage(error)),
   });
 
+  const applyMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ applied: readonly { variantId: string; price: string }[]; queued?: boolean; jobId?: string; queueError?: string }>(
+        `/channel-accounts/${accountId}/pricing/apply`,
+        { ...(applyBasePrice.trim().length > 0 ? { basePrice: applyBasePrice.trim() } : {}) },
+      ),
+    onSuccess: (result) => {
+      if (result.queued === false) {
+        toast.warning('قیمت‌ها ذخیره شد', `صف ارسال ناموفق: ${result.queueError ?? 'نامشخص'}`);
+      } else {
+        toast.success(
+          'قیمت کانال اعمال شد',
+          `${formatNumber(result.applied.length)} قیمت ذخیره و برای ارسال به کانال صف شد.`,
+        );
+      }
+    },
+    onError: (error) => toast.error('اعمال قیمت ناموفق بود', toFaErrorMessage(error)),
+  });
+
   const save = (): void => {
     const validation = validateForm(form);
     if (validation !== null) {
@@ -247,14 +267,33 @@ export function ChannelPricingPage() {
         breadcrumbs={[{ label: 'قیمت‌گذاری', to: '/pricing' }, { label: 'قیمت‌گذاری کانال‌ها' }]}
         actions={
           canEdit ? (
-            <Button
-              icon={<Save className="size-4" />}
-              loading={saveMutation.isPending}
-              disabled={accountId === ''}
-              onClick={save}
-            >
-              ذخیره سیاست
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                icon={<Save className="size-4" />}
+                loading={saveMutation.isPending}
+                disabled={accountId === ''}
+                onClick={save}
+              >
+                ذخیره سیاست
+              </Button>
+              <div className="flex items-end gap-2">
+                <Input
+                  dir="ltr"
+                  placeholder="قیمت پایه (ریال، اختیاری)"
+                  value={applyBasePrice}
+                  onChange={(event) => setApplyBasePrice(event.target.value)}
+                  className="w-40"
+                />
+                <Button
+                  variant="outline"
+                  loading={applyMutation.isPending}
+                  disabled={accountId === ''}
+                  onClick={() => applyMutation.mutate()}
+                >
+                  اعمال و ارسال قیمت
+                </Button>
+              </div>
+            </div>
           ) : undefined
         }
       />

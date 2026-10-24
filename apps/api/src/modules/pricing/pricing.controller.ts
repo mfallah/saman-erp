@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post, Put, Query } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { TENANT, type TenantAccessor, type TenantContext } from '../../common/contracts';
@@ -22,6 +23,7 @@ export class PricingController {
   constructor(
     private readonly pricing: PricingService,
     @Inject(TENANT) private readonly tenant: TenantAccessor,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   /** PricingService reads the tenant from AsyncLocalStorage; bind the resolved request context. */
@@ -55,6 +57,52 @@ export class PricingController {
     const { accountId } = parseWith(AccountPricingParam, params);
     const input = parseWith(PricingPolicyBody, body);
     return apiData(await this.withTenant(ctx, () => this.pricing.setPolicy(accountId, input)));
+  }
+
+
+  @Post('channel-accounts/:accountId/pricing/apply')
+  @HttpCode(200)
+  @Permissions('channel.account.update')
+  @ApiOperation({ summary: 'Compute and publish per-channel prices, then push them to the channel' })
+  async apply(
+    @CurrentTenant() ctx: TenantContext,
+    @Param() params: unknown,
+    @Body() body: unknown,
+  ) {
+    const { accountId } = parseWith(AccountPricingParam, params);
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const rawIds = Array.isArray(payload['variantIds']) ? payload['variantIds'] : undefined;
+    const variantIds = rawIds?.filter((value): value is string => typeof value === 'string');
+    const basePriceRaw = payload['basePrice'];
+    const basePrice =
+      typeof basePriceRaw === 'number' || typeof basePriceRaw === 'string' ? String(basePriceRaw) : undefined;
+    const result = await this.withTenant(ctx, () =>
+      this.pricing.applyToAccount({
+        accountId,
+        ...(variantIds === undefined ? {} : { variantIds }),
+        ...(basePrice === undefined ? {} : { basePrice }),
+      }),
+    );
+    try {
+      const { ChannelSyncService } = await import('../channels/services/channel-sync.service');
+      const sync = this.moduleRef.get(ChannelSyncService, { strict: false });
+      const job = await sync.trigger({
+        organizationId: ctx.orgId.toString(),
+        accountId: result.accountInternalId,
+        type: 'price_push',
+        force: true,
+      });
+      setImmediate(() => {
+        void sync.runJob(job.jobId).catch(() => undefined);
+      });
+      return apiData({ ...result, jobId: job.jobId, queued: true });
+    } catch (error) {
+      return apiData({
+        ...result,
+        queued: false,
+        queueError: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   @Get('pricing/preview')

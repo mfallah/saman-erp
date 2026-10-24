@@ -116,6 +116,80 @@ export class PricingService {
     @Optional() @Inject(AUDIT) private readonly audit?: AuditPort,
   ) {}
 
+
+  /**
+   * Computes the channel price for the given variants (default: every mapped
+   * variant of the account), stores it in the account's channel price list and
+   * returns the list id so the caller can queue a price push.
+   */
+  async applyToAccount(input: {
+    accountId: string;
+    variantIds?: readonly string[];
+    basePrice?: string;
+  }): Promise<{ priceListId: string; accountInternalId: string; applied: readonly { variantId: string; price: string }[] }> {
+    const ctx = this.tenant.get();
+    const sql = this.db as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
+    const account = await this.getAccount(input.accountId);
+    const orgId = ctx.orgId;
+
+    let listRows = await sql`
+      select l.id::text as id
+      from erp.price_lists l
+      left join erp.channel_accounts a on a.price_list_id = l.id
+      where l.organization_id = ${orgId}
+        and l.deleted_at is null
+        and l.is_active = true
+        and (l.channel_account_id = ${account.id}::bigint or a.id = ${account.id}::bigint)
+      order by l.priority desc, l.id
+      limit 1
+    `;
+    if (listRows.length === 0) {
+      listRows = await sql`
+        insert into erp.price_lists
+          (organization_id, code, name, list_type, currency, channel_account_id, rounding_mode, priority, is_active, created_by)
+        values
+          (${orgId}, ${`CH-${account.public_id.slice(0, 8)}`}, ${`قیمت ${account.name}`.slice(0, 120)}, 'channel', 'IRR', ${account.id}::bigint, 'none', 100, true, ${ctx.actorId})
+        returning id::text as id
+      `;
+      await sql`
+        update erp.channel_accounts set price_list_id = ${String(listRows[0]!['id'])}::bigint where id = ${account.id}::bigint
+      `;
+    }
+    const priceListId = String(listRows[0]!['id']);
+
+    let variants: readonly string[] = input.variantIds ?? [];
+    if (variants.length === 0) {
+      const mapped = await sql`
+        select v.public_id::text as id
+        from erp.channel_product_mappings m
+        join erp.product_variants v on v.id = m.product_variant_id
+        where m.channel_account_id = ${account.id}::bigint
+          and m.deleted_at is null
+        group by v.public_id
+      `;
+      variants = mapped.map((row) => String(row['id']));
+    }
+
+    const applied: { variantId: string; price: string }[] = [];
+    for (const variantId of variants.slice(0, 500)) {
+      const calculation = await this.computeForVariant({
+        accountId: input.accountId,
+        variantId,
+        ...(input.basePrice === undefined ? {} : { basePrice: input.basePrice }),
+      });
+      const price = String(calculation.finalPrice);
+      await sql`
+        insert into erp.price_list_items
+          (price_list_id, product_variant_id, price_amount, min_qty, effective_from, is_active, created_by)
+        select ${priceListId}::bigint, v.id, ${price}::bigint, 1, now(), true, ${ctx.actorId}
+        from erp.product_variants v
+        where v.public_id = ${variantId}
+      `;
+      applied.push({ variantId, price });
+    }
+    return { priceListId, accountInternalId: account.id, applied };
+  }
+
   async getPolicy(accountId: string): Promise<PricingPolicy> {
     const account = await this.getAccount(accountId);
     return this.policyFrom(account.settings, account.channel_code);

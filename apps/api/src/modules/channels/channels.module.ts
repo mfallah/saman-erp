@@ -25,6 +25,7 @@ import { SqlChannelApiCallRepository } from './repositories/channel-api-call.rep
 import { SqlChannelMappingRepository } from './repositories/channel-mapping.repository';
 import { AdapterRegistry } from './services/adapter.registry';
 import { ChannelAccountService } from './services/channel-accounts.service';
+import { CHANNEL_PRICE_SOURCE_PROVIDER } from './services/channel-price-source.service';
 import { ChannelMappingService } from './services/channel-mappings.service';
 import { ChannelSyncService } from './services/channel-sync.service';
 import { ChannelWebhookService } from './services/channel-webhook.service';
@@ -44,6 +45,7 @@ import { ChannelMappingsAdminController } from './admin/channel-mappings.control
     WebhookHealthController,
   ],
   providers: [
+    CHANNEL_PRICE_SOURCE_PROVIDER,
     { provide: LOGGER, useFactory: (): AppLogger => createPinoLogger() },
     {
       provide: KEY_VALUE,
