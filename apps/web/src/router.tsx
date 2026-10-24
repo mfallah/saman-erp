@@ -8,7 +8,7 @@ import {
   type RouterHistory,
 } from '@tanstack/react-router';
 import { logger } from './lib/logger';
-import { guardAuthenticated, guardGuest, guardPermission } from './lib/guards';
+import { guardAnyPermission, guardAuthenticated, guardGuest, guardPermission } from './lib/guards';
 import { PERM } from './lib/permissions';
 import { AppShell } from './components/layout/AppShell';
 import { ComingSoonPage } from './pages/ComingSoonPage';
@@ -67,6 +67,8 @@ const UsersPage = lazyRouteComponent(() => import('./pages/UsersPage'), 'UsersPa
 const RolesPage = lazyRouteComponent(() => import('./pages/RolesPage'), 'RolesPage');
 const SettingsPage = lazyRouteComponent(() => import('./pages/SettingsPage'), 'SettingsPage');
 const ReportsPage = lazyRouteComponent(() => import('./pages/ReportsPage'), 'ReportsPage');
+const PurchasingPage = lazyRouteComponent(() => import('./pages/PurchasingPage'), 'PurchasingPage');
+const ScanPage = lazyRouteComponent(() => import('./pages/ScanPage'), 'ScanPage');
 
 /* ------------------------------------------------------- coming-soon pages */
 
@@ -275,6 +277,21 @@ const reportsRoute = createRoute({
   component: ReportsPage,
 });
 
+const purchasingRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/purchasing',
+  // Purchase or inventory visibility both open the receipt workspace.
+  beforeLoad: () => guardAnyPermission([PERM.purchaseRead, PERM.inventoryBalanceRead]),
+  component: PurchasingPage,
+});
+
+/** Scanner entry point: available to every authenticated user. */
+const scanRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/scan',
+  component: ScanPage,
+});
+
 const procurementRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/procurement',
@@ -336,6 +353,8 @@ const routeTree = rootRoute.addChildren([
     rolesRoute,
     settingsRoute,
     reportsRoute,
+    purchasingRoute,
+    scanRoute,
     procurementRoute,
     pricingRoute,
     channelPricingRoute,

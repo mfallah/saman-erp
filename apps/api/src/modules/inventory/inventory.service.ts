@@ -420,6 +420,28 @@ export class InventoryService {
     });
   }
 
+  /**
+   * Placement of an **inbound document** (purchasing receipt, return restock,
+   * opening balance): the warehouse/location pair its ledger rows and documents
+   * should use. A warehouse-less caller lands in the organization's default
+   * warehouse — bootstrapped exactly like a stock adjustment when none exists — so
+   * receiving works on a fresh install. Runs inside the caller's transaction.
+   */
+  async resolveInboundPlacement(
+    tx: Db,
+    ctx: TenantContext,
+    warehousePublicId?: string | undefined,
+  ): Promise<{ warehouseId: string; locationId: string; warehouseInternalId: bigint; locationInternalId: bigint }> {
+    const warehouseInternalId =
+      warehousePublicId === undefined
+        ? await this.ensureDefaultWarehouse(tx, ctx)
+        : await this.requireWarehouse(tx, ctx, warehousePublicId);
+    const locationInternalId = await this.resolveDefaultAdjustmentLocation(tx, ctx, warehouseInternalId);
+    const ids = await this.repo.placementPublicIds(tx, warehouseInternalId, locationInternalId);
+    if (ids === null) throw notFound('warehouse');
+    return { ...ids, warehouseInternalId, locationInternalId };
+  }
+
   // ================================================================ reservations
 
   async listReservations(

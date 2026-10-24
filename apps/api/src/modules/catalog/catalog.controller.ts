@@ -11,6 +11,7 @@ import { CurrentTenant } from '../../common/decorators/current-context.decorator
 import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { sendSvg } from '../../common/http/svg-response';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import type { TenantContext } from '../../common/contracts';
 import { CatalogService } from './catalog.service';
@@ -20,7 +21,7 @@ import { IdParam, parseWith } from './dto/common';
 import { BrandListQuery, BulkUpdateCategoriesBody, CategoryListQuery, CreateBrandBody, CreateCategoryBody, MoveCategoryBody, UpdateBrandBody, UpdateCategoryBody } from './dto/category.dto';
 import { AttributeListQuery, CreateAttributeBody, ReplaceAttributeValuesBody, ReplaceVariantAttributesBody, UpdateAttributeBody, UpdateAttributeValueBody } from './dto/attribute.dto';
 import { ConversionIdParam, CreateConversionBody, CreateUnitBody, UnitDetailQuery, UnitListQuery, UpdateUnitBody } from './dto/unit.dto';
-import { ArchiveProductBody, AttachMediaBody, BarcodeIdParam, BarcodeLookupQuery, BulkUpdateProductsBody, CostHistoryQuery, CreateBarcodeBody, CreateProductBody, CreateVariantBody, LookupProductQuery, MediaIdParam, PriceHistoryQuery, ProductDetailQuery, ProductListQuery, PublishProductBody, ReplaceSupplierLinksBody, UpdateMediaBody, UpdateProductBody, UpdateVariantBody, VariantIdParam, VariantListQuery } from './dto/product.dto';
+import { ArchiveProductBody, AttachMediaBody, BarcodeIdParam, BarcodeLookupQuery, BulkUpdateProductsBody, CostHistoryQuery, CreateBarcodeBody, CreateProductBody, CreateVariantBody, GenerateBarcodeBody, LookupProductQuery, MediaIdParam, PriceHistoryQuery, ProductDetailQuery, ProductListQuery, PublishProductBody, ReplaceSupplierLinksBody, UpdateMediaBody, UpdateProductBody, UpdateVariantBody, VariantIdParam, VariantIdRouteParam, VariantLabelQuery, VariantListQuery } from './dto/product.dto';
 
 const offset = (data: readonly unknown[], total: number, page: number, perPage: number) =>
   apiData(data, { pagination: buildOffsetMeta(page, perPage, total), total });
@@ -430,6 +431,32 @@ export class VariantsController {
   async addBarcode(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
     const { id } = parseWith(IdParam, params);
     return apiData(await this.service.addBarcode(ctx, id, parseWith(CreateBarcodeBody, body)));
+  }
+
+  @Post(':variantId/barcode/generate')
+  @HttpCode(200)
+  @Permissions('barcode.create')
+  @Idempotent()
+  @Audited('barcode.generate')
+  @ApiOperation({ summary: 'Create (or reuse) the deterministic internal barcode of a variant' })
+  async generateBarcode(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
+    const { variantId } = parseWith(VariantIdRouteParam, params);
+    const { symbology } = parseWith(GenerateBarcodeBody, body ?? {});
+    return apiData(await this.service.generateBarcode(ctx, variantId, symbology ?? 'code128'));
+  }
+
+  @Get(':variantId/label.svg')
+  @Permissions('product.read')
+  @ApiOperation({ summary: 'Printable Code 128 label (SKU, product name, optional serial)' })
+  async label(
+    @CurrentTenant() ctx: TenantContext,
+    @Param() params: unknown,
+    @Query() query: unknown,
+    @Res() reply: FastifyReply,
+  ) {
+    const { variantId } = parseWith(VariantIdRouteParam, params);
+    const { serial } = parseWith(VariantLabelQuery, query);
+    sendSvg(reply, await this.service.variantLabelSvg(ctx, variantId, serial), `label-${variantId}.svg`);
   }
 
   @Delete(':id/barcodes/:barcodeId')

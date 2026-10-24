@@ -37,6 +37,12 @@ export const queryKeys = {
     list: (params?: QueryParams) => ['orders', params ?? {}] as const,
     detail: (id: string) => ['orders', id] as const,
   },
+  purchasing: {
+    receipts: (params?: QueryParams) => ['purchasing', 'receipts', params ?? {}] as const,
+  },
+  scan: {
+    lookup: (code: string) => ['scan', 'lookup', code] as const,
+  },
   fulfillment: {
     pickTasks: (params?: QueryParams) => ['pick-tasks', params ?? {}] as const,
     pickTask: (id: string) => ['pick-tasks', id] as const,

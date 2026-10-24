@@ -31,6 +31,7 @@ import { AccountingModule } from './modules/accounting/accounting.module';
 import { TreasuryModule } from './modules/treasury/treasury.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { PricingModule } from './modules/pricing/pricing.module';
+import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 
 /* channels & integrations */
@@ -76,6 +77,9 @@ import { AutomationModule } from './modules/automation/automation.module';
     PartnersModule,
     PricingModule,
     ReportingModule,
+
+    /* procurement (purchasing receipts: suppliers + GRN + inbound stock) */
+    PurchasingModule,
 
     /* channels & integrations */
     ChannelsModule,

@@ -43,6 +43,8 @@ export interface VariantRow {
   productInternalId: string;
   productId: string;
   productNo: string;
+  /** Product display name — used by the printable label (catalog owns `products`). */
+  productName: string;
   categoryInternalId: string;
   sku: string;
   title: string | null;
@@ -168,6 +170,7 @@ function variantColumns(tx: Db) {
     v.product_id::text as "productInternalId",
     p.public_id as "productId",
     p.product_no as "productNo",
+    p.name as "productName",
     p.category_id::text as "categoryInternalId",
     v.sku,
     v.title,

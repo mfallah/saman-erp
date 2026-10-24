@@ -441,6 +441,7 @@ export class PricingService {
       optionalMoney(row.variant_last_purchase_price) ??
       optionalMoney(row.last_purchase_cost) ??
       optionalMoney(row.supplier_price) ??
+      optionalMoney(row.inventory_avg_cost) ??
       optionalMoney(row.latest_cost) ??
       0n
     );

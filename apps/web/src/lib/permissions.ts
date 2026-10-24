@@ -36,6 +36,9 @@ export const PERM = {
   orderCreate: 'sales.order.create',
   orderUpdate: 'sales.order.update',
   orderDelete: 'sales.order.delete',
+  // purchasing
+  purchaseRead: 'purchase.read',
+  purchaseOrderRead: 'purchase.order.read',
   // accounting
   journalRead: 'accounting.journal.read',
   journalCreate: 'accounting.journal.create',

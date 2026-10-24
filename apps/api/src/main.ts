@@ -7,12 +7,19 @@ import type { FastifyServerOptions } from 'fastify';
 import { AppModule } from './app.module';
 import { configureApp, JSON_BODY_LIMIT_BYTES } from './bootstrap';
 import { registerWebUi } from './common/web-ui';
+import { DB, type Db } from './common/contracts';
 import { loadConfig, type AppConfig } from './config/env.schema';
 import { LOGGER, type AppLogger } from './common/logging/logger.token';
 import { PinoNestLogger } from './common/logging/nest-logger.service';
 import { getAppVersion } from './common/version';
+import { ChannelSyncService } from './modules/channels/services/channel-sync.service';
+import { startAutoSyncScheduler } from './modules/channels/services/auto-sync.scheduler';
+
+let stopAutoSync: (() => void) | null = null;
 
 function shutdown(logger: AppLogger, signal: string): void {
+  stopAutoSync?.();
+  stopAutoSync = null;
   logger.info({ signal }, 'shutdown_started');
 }
 
@@ -56,6 +63,14 @@ async function bootstrap(): Promise<void> {
     },
     'api_started',
   );
+
+  // In-process order-pull loop (no queue, no new deps); a no-op when disabled.
+  stopAutoSync = startAutoSyncScheduler({
+    db: app.get<Db>(DB),
+    sync: app.get(ChannelSyncService),
+    logger,
+    enabled: config.autoSyncEnabled,
+  });
 }
 
 void bootstrap().catch((error: unknown) => {

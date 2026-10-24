@@ -21,6 +21,8 @@ export interface NavChild {
   readonly label: string;
   readonly to: string;
   readonly permission?: string;
+  /** Any-of permissions (used when a screen is shared by two roles). */
+  readonly permissions?: readonly string[];
 }
 
 export interface NavItem {
@@ -82,8 +84,14 @@ export const NAV_ITEMS: readonly NavItem[] = [
     key: 'procurement',
     label: 'خرید',
     icon: Truck,
-    to: '/procurement',
-    permission: 'purchase.order.read',
+    children: [
+      {
+        label: 'خرید و ورود کالا',
+        to: '/purchasing',
+        permissions: [PERM.purchaseRead, PERM.inventoryBalanceRead],
+      },
+      { label: 'اسکن و بارکد', to: '/scan' },
+    ],
   },
   {
     key: 'pricing',

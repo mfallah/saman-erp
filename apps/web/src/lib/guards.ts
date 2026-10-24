@@ -20,6 +20,13 @@ export function guardPermission(permission: string): void {
   }
 }
 
+/** Allows the route when the caller holds at least one of the permissions. */
+export function guardAnyPermission(permissions: readonly string[]): void {
+  if (!permissions.some((permission) => hasPermission(permission))) {
+    throw redirect({ to: '/forbidden' });
+  }
+}
+
 /** Login page must not be reachable when a session is already active. */
 export async function guardGuest(): Promise<void> {
   const authenticated = await ensureAuthenticated();

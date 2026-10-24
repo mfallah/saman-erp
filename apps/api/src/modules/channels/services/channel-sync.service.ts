@@ -66,6 +66,13 @@ interface PriceRow {
   externalVariantId: string;
 }
 
+/** Channel-supplied detail persisted on `erp.products` during import. */
+interface ProductSpec {
+  readonly description: string | null;
+  readonly attributes: Record<string, string> | null;
+  readonly categoryId: string | null;
+}
+
 @Injectable()
 export class ChannelSyncService {
   private readonly sync: SqlChannelSyncRepository;
@@ -115,7 +122,12 @@ export class ChannelSyncService {
             ? `price:${input.accountId}:${this.now().getTime()}`
             : debounceKey(`price:${input.accountId}`, debounceSeconds * 1000, this.now().getTime())
           : input.type === 'order_pull'
-            ? `orders:${input.accountId}`
+            ? // `enqueue` coalesces against a *succeeded* job of the same key, so a
+              // fixed key would make every later pull a no-op. A forced pull (the
+              // auto-sync loop) therefore gets its own key.
+              input.force === true
+              ? `orders:${input.accountId}:${this.now().getTime()}`
+              : `orders:${input.accountId}`
             : input.type === 'product_import' || input.type === 'product_push'
               ? `products:${input.scope?.dryRun === true ? 'dry:' : ''}${input.accountId}:${this.now().getTime()}`
               : `reconcile:${input.accountId}:${this.now().toISOString().slice(0, 10)}`;
@@ -458,13 +470,22 @@ export class ChannelSyncService {
     }
 
     const prefix = this.productPrefix(resolved.adapter.code);
+    // Category find-or-create is per import run: one lookup per distinct name.
+    const categoryCache = new Map<string, string | null>();
     let imported = 0;
     let updated = 0;
     let skipped = 0;
     let failed = 0;
     for (const [externalId, item] of products) {
       try {
-        const outcome = await this.importProduct(resolved, item, externalId, baseUomId, prefix);
+        const outcome = await this.importProduct(
+          resolved,
+          item,
+          externalId,
+          baseUomId,
+          prefix,
+          categoryCache,
+        );
         if (outcome === 'imported') imported += 1;
         else if (outcome === 'updated') updated += 1;
         else skipped += 1;
@@ -513,6 +534,7 @@ export class ChannelSyncService {
     externalId: string,
     baseUomId: string,
     prefix: string,
+    categoryCache: Map<string, string | null>,
   ): Promise<'imported' | 'updated' | 'skipped'> {
     const organizationId = resolved.row.organizationId;
     const accountId = resolved.row.id;
@@ -522,9 +544,13 @@ export class ChannelSyncService {
     const barcode = (item.barcode ?? '').trim().slice(0, 50) || null;
     const productNo = `${prefix}-${externalId}`.slice(0, 40);
     const sku = (externalSku ?? `${prefix}-${externalId}`).slice(0, 100);
+    const spec: ProductSpec = {
+      ...this.normalizedSpec(item),
+      categoryId: await this.categoryIdFor(organizationId, item.categoryName, categoryCache),
+    };
 
     // A mapping for this external product already exists: refresh it and the
-    // local title/barcode without creating duplicate products.
+    // local title/barcode/description/category without creating duplicates.
     const mapped = await this.db<{ id: unknown; product_variant_id: unknown }[]>`
       select id, product_variant_id
       from erp.channel_product_mappings
@@ -543,7 +569,7 @@ export class ChannelSyncService {
             last_synced_at = now(),
             last_error = null
         where id = ${asString(mapped[0].id)}::bigint`;
-      await this.refreshProductText(organizationId, variantId, title, barcode);
+      await this.refreshProductText(organizationId, variantId, title, barcode, spec);
       return 'updated';
     }
 
@@ -554,6 +580,7 @@ export class ChannelSyncService {
       productNo,
       title,
       baseUomId,
+      spec,
     );
     if (productId === null) return 'skipped';
 
@@ -582,20 +609,32 @@ export class ChannelSyncService {
     productNo: string,
     title: string,
     baseUomId: string,
+    spec: ProductSpec,
   ): Promise<string | null> {
     const base = productNo.length > 35 ? productNo.slice(0, 35) : productNo;
+    const attributesJson = this.attributesJson(spec.attributes);
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       const candidate = attempt === 1 ? productNo : `${base}-${attempt}`;
       const rows = await this.db<{ id: unknown }[]>`
-        insert into erp.products (organization_id, product_no, name, base_uom_id)
-        values (${organizationId}::bigint, ${candidate}, ${title}, ${baseUomId}::bigint)
+        insert into erp.products (
+          organization_id, product_no, name, base_uom_id, category_id, description, attributes_json
+        )
+        values (
+          ${organizationId}::bigint, ${candidate}, ${title}, ${baseUomId}::bigint,
+          ${spec.categoryId}::bigint, ${spec.description}, ${attributesJson}::jsonb
+        )
         on conflict (organization_id, product_no) where deleted_at is null do nothing
         returning id`;
       if (rows[0] !== undefined) return asString(rows[0].id);
 
       const existing = await this.productByNumber(organizationId, accountId, externalId, candidate);
       if (existing === null) continue;
-      if (!existing.takenByOther) return existing.id;
+      if (!existing.takenByOther) {
+        // Reused row: still enrich it with channel detail (never for a product
+        // that another channel already owns).
+        await this.applyProductSpec(organizationId, existing.id, spec);
+        return existing.id;
+      }
     }
     return null;
   }
@@ -748,23 +787,148 @@ export class ChannelSyncService {
     }
   }
 
+  /**
+   * Channel detail is optional: a blank description or empty attribute set must
+   * never erase a value the ERP already holds, so both are applied with
+   * `coalesce`/identity semantics.
+   */
   private async refreshProductText(
     organizationId: string,
     variantId: string,
     title: string,
     barcode: string | null,
+    spec: ProductSpec,
   ): Promise<void> {
     await this.db`
       update erp.product_variants
       set title = ${title}, barcode = coalesce(${barcode}::text, barcode), updated_at = now()
       where id = ${variantId}::bigint`;
+    const attributesJson = this.attributesJson(spec.attributes);
     await this.db`
       update erp.products p
-      set name = ${title}, updated_at = now()
+      set name = ${title},
+          description = coalesce(${spec.description}::text, p.description),
+          category_id = coalesce(${spec.categoryId}::bigint, p.category_id),
+          attributes_json = case
+            when ${attributesJson}::jsonb = '{}'::jsonb then p.attributes_json
+            else ${attributesJson}::jsonb
+          end,
+          updated_at = now()
       from erp.product_variants v
       where v.id = ${variantId}::bigint
         and p.id = v.product_id
         and p.organization_id = ${organizationId}::bigint`;
+  }
+
+  private async applyProductSpec(
+    organizationId: string,
+    productId: string,
+    spec: ProductSpec,
+  ): Promise<void> {
+    if (spec.description === null && spec.categoryId === null && spec.attributes === null) return;
+    const attributesJson = this.attributesJson(spec.attributes);
+    await this.db`
+      update erp.products
+      set description = coalesce(${spec.description}::text, description),
+          category_id = coalesce(${spec.categoryId}::bigint, category_id),
+          attributes_json = case
+            when ${attributesJson}::jsonb = '{}'::jsonb then attributes_json
+            else ${attributesJson}::jsonb
+          end,
+          updated_at = now()
+      where id = ${productId}::bigint
+        and organization_id = ${organizationId}::bigint`;
+  }
+
+  /** Bounded channel detail: 5000-char description, ≤50 short attribute pairs. */
+  private normalizedSpec(item: ExternalProduct): Pick<ProductSpec, 'description' | 'attributes'> {
+    const raw = typeof item.description === 'string' ? item.description.trim() : '';
+    const description = raw.length === 0 ? null : raw.slice(0, 5000);
+    const attributes: Record<string, string> = {};
+    if (typeof item.attributes === 'object' && item.attributes !== null) {
+      for (const [key, value] of Object.entries(item.attributes as Record<string, unknown>)) {
+        if (Object.keys(attributes).length >= 50) break;
+        if (typeof value !== 'string') continue;
+        const name = key.trim().slice(0, 80);
+        const text = value.trim().slice(0, 500);
+        if (name.length === 0 || text.length === 0) continue;
+        attributes[name] = text;
+      }
+    }
+    if (
+      typeof item.brand === 'string' &&
+      item.brand.trim().length > 0 &&
+      attributes['brand'] === undefined &&
+      Object.keys(attributes).length < 50
+    ) {
+      attributes['brand'] = item.brand.trim().slice(0, 200);
+    }
+    return {
+      description,
+      attributes: Object.keys(attributes).length === 0 ? null : attributes,
+    };
+  }
+
+  private attributesJson(attributes: Record<string, string> | null): string {
+    return attributes === null ? '{}' : JSON.stringify(attributes);
+  }
+
+  /**
+   * Find-or-create the org-scoped category by display name. The code is a slug
+   * (hashed when the name is non-latin) because `(organization_id, code)` is the
+   * unique key; a name match reuses the existing row.
+   */
+  private async categoryIdFor(
+    organizationId: string,
+    name: string | undefined,
+    cache: Map<string, string | null>,
+  ): Promise<string | null> {
+    const trimmed = typeof name === 'string' ? name.trim().slice(0, 200) : '';
+    if (trimmed.length === 0) return null;
+    const cacheKey = trimmed.toLowerCase();
+    const cached = cache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    const code = this.categoryCode(trimmed);
+    const found = await this.db<{ id: unknown }[]>`
+      select id from erp.product_categories
+      where organization_id = ${organizationId}::bigint
+        and deleted_at is null
+        and (lower(name) = ${cacheKey} or code = ${code})
+      order by id
+      limit 1`;
+    let id: string | null = found[0] === undefined ? null : asString(found[0].id);
+    if (id === null) {
+      const inserted = await this.db<{ id: unknown }[]>`
+        insert into erp.product_categories (organization_id, code, name)
+        values (${organizationId}::bigint, ${code}, ${trimmed})
+        on conflict (organization_id, code) where deleted_at is null do nothing
+        returning id`;
+      if (inserted[0] !== undefined) {
+        id = asString(inserted[0].id);
+      } else {
+        const raced = await this.db<{ id: unknown }[]>`
+          select id from erp.product_categories
+          where organization_id = ${organizationId}::bigint
+            and code = ${code}
+            and deleted_at is null
+          limit 1`;
+        id = raced[0] === undefined ? null : asString(raced[0].id);
+      }
+    }
+    cache.set(cacheKey, id);
+    return id;
+  }
+
+  private categoryCode(name: string): string {
+    const base = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40);
+    if (base.length > 0) return base;
+    // Persian/other non-latin names have no ascii slug: hash keeps the code stable.
+    return `cat-${hashNaturalKey(name).slice(0, 12)}`;
   }
 
   private productPrefix(code: string): string {

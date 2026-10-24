@@ -2,7 +2,7 @@ import { clsx } from 'clsx';
 import { Link, useRouterState } from '@tanstack/react-router';
 import { ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { useAuth } from '../../lib/use-auth';
-import { hasPermission } from '../../lib/auth-store';
+import { hasAnyPermission, hasPermission } from '../../lib/auth-store';
 import { NAV_ITEMS, type NavChild, type NavItem } from './nav';
 import { IconButton } from '../ui/IconButton';
 import { useBranding } from '../../lib/branding';
@@ -15,9 +15,12 @@ interface SidebarProps {
 }
 
 function visibleChildren(item: NavItem): readonly NavChild[] {
-  return (item.children ?? []).filter(
-    (child) => child.permission === undefined || hasPermission(child.permission),
-  );
+  return (item.children ?? []).filter((child) => {
+    if (child.permissions !== undefined) {
+      return hasAnyPermission(child.permissions);
+    }
+    return child.permission === undefined || hasPermission(child.permission);
+  });
 }
 
 function isVisible(item: NavItem): boolean {

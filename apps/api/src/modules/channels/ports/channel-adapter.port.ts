@@ -32,6 +32,14 @@ export interface ExternalProduct {
   readonly barcode?: string;
   readonly price?: string;
   readonly available?: string;
+  /** Long copy from the channel; persisted on `erp.products.description`. */
+  readonly description?: string;
+  /** Free-text brand name; not resolved into `erp.brands` on import. */
+  readonly brand?: string;
+  /** Category display name; find-or-created per organization on import. */
+  readonly categoryName?: string;
+  /** Scalar specification pairs from the channel; persisted as `attributes_json`. */
+  readonly attributes?: Readonly<Record<string, string>>;
   readonly raw?: unknown;
 }
 

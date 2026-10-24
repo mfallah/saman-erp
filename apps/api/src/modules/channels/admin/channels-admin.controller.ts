@@ -30,11 +30,51 @@ import {
   type SyncTriggerType,
 } from '../services/channel-sync.service';
 import { CREDENTIAL_KEY_NAMES, type CredentialKeyName } from '../repositories/channel-credential.repository';
+import { asRecord } from '../infrastructure/sql';
 
 type Row = Record<string, unknown>;
 type Raw = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Row[]>;
 
 const ALLOWED_KEYS = new Set<string>(CREDENTIAL_KEY_NAMES);
+
+/** Stable counters exposed to the SPA regardless of which job produced them. */
+interface SyncJobSummary {
+  readonly imported: number;
+  readonly updated: number;
+  readonly failed: number;
+  readonly pushed: number;
+  readonly skipped: number;
+  readonly error: string | null;
+}
+
+function summaryCount(summary: Record<string, unknown>, key: string): number {
+  const value = summary[key];
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.trunc(value));
+  // postgres.js/PgBouncer may surface numeric counters as strings.
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim());
+  return 0;
+}
+
+/**
+ * Normalises `channel_sync_jobs.response_summary` (jsonb, sometimes a JSON
+ * string) into the counters the job list renders. `error` is the first
+ * error-ish text the job reported; everything else defaults to zero so the
+ * response shape never depends on the job type.
+ */
+function normalizeSyncSummary(raw: unknown): SyncJobSummary {
+  const summary = asRecord(raw);
+  const errorCandidate = ['error', 'lastError', 'errorCode', 'messageFa', 'reason']
+    .map((key) => summary[key])
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  return {
+    imported: summaryCount(summary, 'imported'),
+    updated: summaryCount(summary, 'updated'),
+    failed: summaryCount(summary, 'failed'),
+    pushed: summaryCount(summary, 'pushed'),
+    skipped: summaryCount(summary, 'skipped'),
+    error: errorCandidate === undefined ? null : errorCandidate.trim().slice(0, 500),
+  };
+}
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -573,6 +613,7 @@ export class ChannelsAdminController {
         startedAt: row['started_at'],
         finishedAt: row['finished_at'],
         progress: row['response_summary'] ?? {},
+        summary: normalizeSyncSummary(row['response_summary']),
         account: { name: row['account_name'] },
         channel: { code: row['channel_code'] },
       })),

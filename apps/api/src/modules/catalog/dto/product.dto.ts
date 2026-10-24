@@ -5,6 +5,7 @@
 import { MoneyString, QuantityString } from '@saman/shared';
 import { z } from 'zod';
 
+import { LABEL_SYMBOLOGIES } from '../engines/label.engine';
 import {
   BarcodeSource,
   BarcodeType,
@@ -180,6 +181,22 @@ export type CreateBarcodeBody = z.infer<typeof CreateBarcodeBody>;
 
 export const BarcodeIdParam = z.object({ id: PublicId, barcodeId: PublicId });
 export type BarcodeIdParam = z.infer<typeof BarcodeIdParam>;
+
+/** `:variantId` route param of the barcode generation / label endpoints. */
+export const VariantIdRouteParam = z.object({ variantId: PublicId });
+export type VariantIdRouteParam = z.infer<typeof VariantIdRouteParam>;
+
+/** `POST /variants/:variantId/barcode/generate` — deterministic internal code. */
+export const GenerateBarcodeBody = z.object({
+  symbology: z.enum(LABEL_SYMBOLOGIES).optional(),
+});
+export type GenerateBarcodeBody = z.infer<typeof GenerateBarcodeBody>;
+
+/** `GET /variants/:variantId/label.svg` — optional serial printed on the label. */
+export const VariantLabelQuery = z.object({
+  serial: z.string().trim().min(1).max(100).optional(),
+});
+export type VariantLabelQuery = z.infer<typeof VariantLabelQuery>;
 
 export const AttachMediaBody = z.object({
   fileId: PublicId,

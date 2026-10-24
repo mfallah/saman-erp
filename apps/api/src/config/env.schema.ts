@@ -188,6 +188,8 @@ const EnvSchema = z.object({
   digikalaClientSecret: optionalString(),
   digikalaWebhookSecret: optionalString(),
   channelSyncEnabled: boolFromEnv(true),
+  /** In-process order-pull loop started by the API bootstrap (see auto-sync.scheduler). */
+  autoSyncEnabled: boolFromEnv(true),
   channelStockDebounceMs: intFromEnv(3000, 0, 60_000),
   channelHttpTimeoutMs: intFromEnv(15_000, 1000, 120_000),
 

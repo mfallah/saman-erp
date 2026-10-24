@@ -19,6 +19,7 @@ import { CatalogRepository } from './catalog.repository';import { ProductReposit
 import { type BarcodeRow, type CostHistoryRow, type PriceHistoryRow, type ProductRow, type ReorderRuleRow, type SupplierLinkRow, type VariantAttributeRow, type VariantRow } from './product.repository';
 import { CatalogService } from './catalog.service';
 import { type BarcodeIdentityScope, type BarcodeType, assertPrimaryUniqueness, resolveScannedBarcode, validateBarcodeValue } from './engines/barcode.engine';
+import { deriveInternalBarcode, renderLabelSvg, selectLabelBarcode, type LabelSymbology, type VariantLabel } from './engines/label.engine';
 import { generateSku, nextAvailableSku } from './engines/sku.engine';import { normalizeSearchQuery, toIlikePattern } from './engines/search.engine';
 import { assertAttributeValues, buildAxisSignature, assertUniqueAxisSignature } from './engines/attribute.engine';
 import { conflict, notFound, toBigInt, toBigIntOrNull, versionConflict } from './pg-support';
@@ -45,6 +46,7 @@ export interface VariantLookup {
   readonly productInternalId: bigint;
   readonly productId: string;
   readonly productNo: string;
+  readonly productName: string;
   readonly categoryInternalId: bigint | null;
   readonly unitId: string | null;
   readonly trackLot: boolean;
@@ -56,6 +58,17 @@ export interface VariantLookup {
   /** `inherit|moving_average|fifo` from `product_variants.cost_method`. */
   readonly costMethod: string;
 }
+
+/** Result of `POST /variants/:variantId/barcode/generate`. */
+export interface VariantBarcodeIdentity {
+  readonly barcode: string;
+  readonly sku: string;
+  readonly productName: string;
+  readonly variantId: string;
+}
+
+/** Label-ready identity shared through the cross-module catalog lookup surface. */
+export type VariantLabelData = VariantBarcodeIdentity;
 
 function productView(row: ProductRow): Record<string, unknown> {
   return {
@@ -849,6 +862,81 @@ export class ProductService {
     });
   }
 
+  /**
+   * Creates a deterministic internal barcode when the variant has none and returns
+   * the printable identity. A variant that already has an active barcode is left
+   * untouched, so the call is naturally idempotent (no second code is ever made).
+   */
+  async generateBarcode(
+    ctx: TenantContext,
+    variantPublicId: string,
+    symbology: LabelSymbology,
+  ): Promise<VariantBarcodeIdentity> {
+    return this.db.begin(async (tx) => {
+      const variant = await this.requireVariantInTx(tx, ctx, variantPublicId);
+      const barcodes = await this.repo.listVariantBarcodes(tx, variant.internalId);
+      const printable =
+        barcodes.find((barcode) => barcode.isActive && barcode.isPrimary) ??
+        barcodes.find((barcode) => barcode.isActive);
+      if (printable !== undefined) {
+        return {
+          barcode: printable.barcode,
+          sku: variant.sku,
+          productName: variant.productName,
+          variantId: variant.id,
+        };
+      }
+
+      const barcode = deriveInternalBarcode(variant.id, symbology);
+      if (await this.repo.barcodeExists(tx, barcode)) {
+        // The deterministic value belongs to another variant (hash collision or a
+        // manually entered code): never silently reuse someone else's barcode.
+        throw conflict('barcode_conflict', { barcode });
+      }
+      const created = await this.repo.insertBarcode(tx, {
+        variantInternalId: variant.internalId,
+        barcode,
+        barcodeType: symbology,
+        source: 'internal',
+        isPrimary: true,
+      });
+      const payload: BarcodeEventPayload = {
+        variantId: variant.id,
+        barcodeId: created.id,
+        barcode: created.barcode,
+        barcodeType: created.barcodeType,
+      };
+      await this.emit(tx, ctx, CATALOG_EVENTS.barcodeAdded, 'variant', toBigInt(variant.internalId), payload);
+      await this.record(tx, ctx, 'barcode.generate', 'variant', variant.id, null, {
+        barcode: created.barcode,
+        symbology,
+      });
+      return {
+        barcode: created.barcode,
+        sku: variant.sku,
+        productName: variant.productName,
+        variantId: variant.id,
+      };
+    });
+  }
+
+  /** Data printed on one label: primary barcode, SKU, product name and optional serial. */
+  async variantLabel(ctx: TenantContext, variantPublicId: string, serial?: string): Promise<VariantLabel> {
+    const variant = await this.requireVariant(ctx, variantPublicId);
+    const barcodes = await this.repo.listVariantBarcodes(this.db, variant.internalId);
+    return {
+      barcode: selectLabelBarcode(barcodes, variant.id, variant.barcode),
+      sku: variant.sku,
+      productName: variant.productName,
+      serial: serial ?? null,
+    };
+  }
+
+  /** One label rendered as an SVG document (`image/svg+xml`). */
+  async variantLabelSvg(ctx: TenantContext, variantPublicId: string, serial?: string): Promise<string> {
+    return renderLabelSvg(await this.variantLabel(ctx, variantPublicId, serial));
+  }
+
   async deleteBarcode(ctx: TenantContext, variantPublicId: string, barcodePublicId: string): Promise<void> {
     await this.db.begin(async (tx) => {
       const variant = await this.requireVariantInTx(tx, ctx, variantPublicId);
@@ -1484,6 +1572,7 @@ export class CatalogLookupService {
       productInternalId: toBigInt(row.productInternalId),
       productId: row.productId,
       productNo: row.productNo,
+      productName: row.productName,
       categoryInternalId: row.categoryInternalId === null || row.categoryInternalId === undefined ? null : toBigInt(row.categoryInternalId),
       unitId: row.unitId,
       trackLot: row.trackLot,
@@ -1507,6 +1596,26 @@ export class CatalogLookupService {
     if (variant === null) throw notFound('variant');
     const cost = await this.repo.latestCost(this.db, toBigInt(variant.internalId));
     return cost === null ? null : cost.costAmount;
+  }
+
+  /**
+   * Label identities for a set of variants (used by goods-receipt label printing).
+   * A variant without any active barcode gets the same deterministic internal code
+   * the generate endpoint would persist, so every label carries a scannable value.
+   */
+  async labelData(ctx: TenantContext, variantPublicIds: readonly string[]): Promise<VariantLabelData[]> {
+    const rows = await this.repo.findVariantsByPublicIds(this.db, ctx.orgId, variantPublicIds);
+    const labels: VariantLabelData[] = [];
+    for (const row of rows) {
+      const barcodes = await this.repo.listVariantBarcodes(this.db, row.internalId);
+      labels.push({
+        variantId: row.id,
+        sku: row.sku,
+        productName: row.productName,
+        barcode: selectLabelBarcode(barcodes, row.id, row.barcode),
+      });
+    }
+    return labels;
   }
 
   /** Barcode → variant resolution for scanner flows in other modules. */

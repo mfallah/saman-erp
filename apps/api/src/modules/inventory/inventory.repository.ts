@@ -698,6 +698,22 @@ export class InventoryRepository {
     return rows[0] as { warehouseId: string; locationId: string; variantId: string };
   }
 
+  /** Public ids for a warehouse/location pair (inbound document placement). */
+  async placementPublicIds(
+    tx: Db,
+    warehouseInternalId: bigint,
+    locationInternalId: bigint,
+  ): Promise<{ warehouseId: string; locationId: string } | null> {
+    const rows = await tx<{ warehouseId: string; locationId: string }[]>`
+      select w.public_id as "warehouseId", l.public_id as "locationId"
+      from erp.warehouses w
+      join erp.warehouse_locations l on l.id = ${locationInternalId}
+      where w.id = ${warehouseInternalId}
+      limit 1
+    `;
+    return rows[0] ?? null;
+  }
+
   // ------------------------------------------------------------------ ledger
 
   async insertTransaction(tx: Db, input: LedgerInsert): Promise<LedgerRow> {

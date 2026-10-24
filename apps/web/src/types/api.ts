@@ -148,6 +148,19 @@ export interface ProductDetail extends ProductSummary {
   readonly suppliers?: readonly unknown[];
 }
 
+/** Scanner lookup by barcode/SKU (`GET /catalog/lookup`). */
+export interface CatalogLookupResult {
+  readonly product?: {
+    readonly id: string;
+    readonly productNo?: string;
+    readonly nameFa: string;
+    readonly sku?: string | null;
+  };
+  readonly variant?: VariantSummary;
+  readonly barcode?: { readonly id?: string; readonly value?: string; readonly type?: string };
+  readonly location?: unknown;
+}
+
 export interface CategoryNode extends Ref {
   readonly parentId?: string | null;
   readonly children?: readonly CategoryNode[];
@@ -343,6 +356,54 @@ export interface PackingTask {
   readonly station?: Ref;
   readonly expectedItems?: readonly { readonly sku?: string; readonly barcode?: string; readonly quantity: string }[];
   readonly packageId?: string;
+  readonly createdAt?: string;
+}
+
+/* ------------------------------------------------------------ purchasing */
+
+/** One line of a new purchase receipt (POST /purchasing/receipts). */
+export interface PurchaseReceiptLineInput {
+  readonly variantId: string;
+  readonly quantity: string;
+  readonly unitCost?: string;
+  /** Serial numbers, one per unit received. */
+  readonly serials?: readonly string[];
+}
+
+/** Request body for registering a purchase receipt. */
+export interface PurchaseReceiptInput {
+  readonly supplierName: string;
+  readonly supplierId?: string;
+  readonly warehouseId?: string;
+  readonly lines: readonly PurchaseReceiptLineInput[];
+}
+
+export interface PurchaseReceiptLine {
+  readonly id?: string;
+  readonly variantId?: string;
+  readonly sku?: string;
+  readonly productName?: string;
+  readonly quantity?: string;
+  readonly unitCost?: string;
+  readonly serials?: readonly string[];
+}
+
+/** A posted purchase receipt row (GET /purchasing/receipts). */
+export interface PurchaseReceipt {
+  readonly id: string;
+  readonly receiptNumber?: string;
+  readonly number?: string;
+  readonly status?: string;
+  readonly supplierId?: string | null;
+  readonly supplierName?: string | null;
+  readonly supplier?: Ref | null;
+  readonly warehouse?: Ref | null;
+  readonly warehouseName?: string | null;
+  readonly lines?: readonly PurchaseReceiptLine[];
+  readonly itemCount?: number;
+  readonly total?: string;
+  readonly totalCost?: string;
+  readonly receivedAt?: string;
   readonly createdAt?: string;
 }
 

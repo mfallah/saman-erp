@@ -70,6 +70,76 @@ function pick(record: Record<string, unknown>, keys: readonly string[]): unknown
   return undefined;
 }
 
+/** Raw sections that carry specification key/value pairs (Carexy shape varies). */
+const ATTRIBUTE_SECTION_KEYS = [
+  'attributes',
+  'attribute',
+  'specs',
+  'specifications',
+  'properties',
+  'features',
+] as const;
+/** Fallback when the payload has no dedicated section: common scalar specs only. */
+const ATTRIBUTE_FALLBACK_KEYS = [
+  'color',
+  'colour',
+  'size',
+  'material',
+  'weight',
+  'model',
+  'warranty',
+  'origin',
+  'country',
+  'manufacturer',
+] as const;
+
+/**
+ * Flattens the attribute-ish parts of a product row into bounded scalar pairs.
+ * Only named sections (or a small whitelist) are read, so an arbitrary payload
+ * never lands in `products.attributes_json`. Returns `undefined` when empty.
+ */
+function collectAttributes(raw: Record<string, unknown>): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  const put = (key: unknown, value: unknown): void => {
+    const name = scalar(key);
+    const text = scalar(value);
+    if (name === undefined || text === undefined) return;
+    if (Object.keys(out).length >= 50) return;
+    out[name.slice(0, 80)] = text.slice(0, 500);
+  };
+  for (const sectionKey of ATTRIBUTE_SECTION_KEYS) {
+    const section = raw[sectionKey];
+    if (Array.isArray(section)) {
+      for (const entry of section.slice(0, 50)) {
+        if (!isRecord(entry)) continue;
+        put(pick(entry, ['key', 'name', 'title', 'attribute', 'label']), pick(entry, ['value', 'text', 'name']));
+      }
+      continue;
+    }
+    if (!isRecord(section)) continue;
+    for (const [key, value] of Object.entries(section).slice(0, 50)) {
+      if (isRecord(value)) {
+        put(key, pick(value, ['value', 'text', 'name', 'title']));
+      } else if (Array.isArray(value)) {
+        const joined = value
+          .map((entry) => scalar(entry))
+          .filter((entry): entry is string => entry !== undefined)
+          .join(', ');
+        if (joined.length > 0) put(key, joined);
+      } else {
+        put(key, value);
+      }
+    }
+  }
+  if (Object.keys(out).length === 0) {
+    for (const key of ATTRIBUTE_FALLBACK_KEYS) {
+      if (raw[key] === undefined) continue;
+      put(key, raw[key]);
+    }
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
 const LIST_KEYS = [
   'response',
   'data',
@@ -418,6 +488,20 @@ export class CarexyAdapter implements ChannelAdapter {
         const title =
           scalar(pick(raw, ['title', 'name', 'name_fa', 'product_name'])) ?? externalProductId;
 
+        // Detail copy/specs: only fields the list payload actually exposes.
+        const description = scalar(
+          pick(raw, ['description', 'content', 'body', 'long_description', 'short_description']),
+        );
+        const brandValue = pick(raw, ['brand', 'brand_name', 'brand_title']);
+        const brand =
+          scalar(brandValue) ??
+          (isRecord(brandValue) ? scalar(pick(brandValue, ['name', 'title'])) : undefined);
+        const categoryValue = pick(raw, ['category', 'category_name', 'categoryName', 'group']);
+        const categoryName =
+          scalar(categoryValue) ??
+          (isRecord(categoryValue) ? scalar(pick(categoryValue, ['name', 'title'])) : undefined);
+        const attributes = collectAttributes(raw);
+
         yield {
           externalProductId,
           ...(externalVariantId === undefined ? {} : { externalVariantId }),
@@ -426,6 +510,10 @@ export class CarexyAdapter implements ChannelAdapter {
           ...(barcode === undefined ? {} : { barcode }),
           ...(price === undefined ? {} : { price }),
           ...(available === undefined ? {} : { available }),
+          ...(description === undefined ? {} : { description }),
+          ...(brand === undefined ? {} : { brand }),
+          ...(categoryName === undefined ? {} : { categoryName }),
+          ...(attributes === undefined ? {} : { attributes }),
           raw,
         };
       }
