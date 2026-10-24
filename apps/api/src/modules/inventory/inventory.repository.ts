@@ -10,6 +10,9 @@
 import type { Db } from './inventory.pg-support';
 
 export interface BalanceRow {
+  readonly productName?: string | null;
+  readonly warehouseName?: string | null;
+  readonly locationCode?: string | null;
   internalId: string;
   id: string;
   warehouseId: string;
@@ -32,6 +35,10 @@ export interface BalanceRow {
 }
 
 export interface LedgerRow {
+  readonly sku?: string | null;
+  readonly productName?: string | null;
+  readonly warehouseName?: string | null;
+  readonly locationCode?: string | null;
   internalId: string;
   id: string;
   warehouseId: string;

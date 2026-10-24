@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Barcode, Minus, Plus, Search, WifiOff } from 'lucide-react';
+import { Barcode, Camera, Minus, Plus, Search, WifiOff } from 'lucide-react';
 import { ApiError, api, newRequestId, toFaErrorMessage } from '../lib/api-client';
 import { useDocumentTitle, useOnlineStatus } from '../lib/hooks';
 import { formatQuantity } from '../lib/money';
@@ -19,6 +19,7 @@ import { Card } from '../components/ui/Card';
 import { ErrorState } from '../components/ui/ErrorState';
 import { Input } from '../components/ui/Input';
 import { PageHeader } from '../components/ui/PageHeader';
+import { BarcodeScannerDialog } from '../components/scanner/BarcodeScannerDialog';
 import { useToast } from '../components/ui/Toast';
 
 interface ScanEntry {
@@ -150,6 +151,7 @@ export function ScanPage() {
   const [code, setCode] = useState('');
   const [submittedCode, setSubmittedCode] = useState('');
   const [inputError, setInputError] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   const lookupQuery = useQuery({
     queryKey: queryKeys.scan.lookup(submittedCode),
@@ -181,8 +183,8 @@ export function ScanPage() {
     onError: (error) => toast.error('تعدیل موجودی ناموفق بود', toFaErrorMessage(error)),
   });
 
-  const submit = (): void => {
-    const trimmed = code.trim();
+  const submit = (value?: string): void => {
+    const trimmed = (value ?? code).trim();
     if (trimmed.length === 0) {
       setInputError('بارکد یا سریال را وارد کنید.');
       return;
@@ -243,6 +245,16 @@ export function ScanPage() {
                 {inputError}
               </p>
             )}
+            <Button
+              type="button"
+              size="lg"
+              block
+              variant="outline"
+              icon={<Camera aria-hidden className="size-5" />}
+              onClick={() => setScannerOpen(true)}
+            >
+              اسکن با دوربین
+            </Button>
             <Button
               type="submit"
               size="lg"
@@ -329,6 +341,14 @@ export function ScanPage() {
           </p>
         )}
       </div>
+      <BarcodeScannerDialog
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={(value) => {
+          setCode(value);
+          submit(value);
+        }}
+      />
     </>
   );
 }
