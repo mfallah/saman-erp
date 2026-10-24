@@ -27,7 +27,7 @@
     "@nestjs/platform-fastify": "^11.2.7",
     "@nestjs/swagger": "^11.4.7",
     "@saman/shared": "workspace:*",
-    "fastify": "5.11.3",
+    "fastify": "5.12.7",
     "ioredis": "^5.11.1",
     "nestjs-zod": "^5.5.0",
     "pino": "^9.14.0",
