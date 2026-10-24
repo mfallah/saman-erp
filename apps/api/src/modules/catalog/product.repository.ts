@@ -35,6 +35,8 @@ export interface ProductRow {
   version: number;
   createdAt: string;
   updatedAt: string;
+  onHand?: string;
+  hasStock?: boolean;
 }
 
 export interface VariantRow {

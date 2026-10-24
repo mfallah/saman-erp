@@ -80,6 +80,7 @@ export function ProductsListPage() {
   const canCreate = useHasPermission(PERM.productCreate);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
+  const [stockFilter, setStockFilter] = useState('');
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebouncedValue(search, 350);
 
@@ -91,6 +92,7 @@ export function ProductsListPage() {
         perPage: 20,
         ...(debouncedSearch.length >= 2 ? { q: debouncedSearch } : {}),
         ...(status === '' ? {} : { status }),
+      ...(stockFilter === '' ? {} : { hasStock: stockFilter === 'in' }),
       }),
   });
 
@@ -119,6 +121,20 @@ export function ProductsListPage() {
         }}
         searchPlaceholder="جستجوی نام یا شناسه کالا…"
         filters={
+          <div className="flex gap-2">
+          <Select
+            aria-label="فیلتر موجودی"
+            options={[
+              { value: '', label: 'همه موجودی‌ها' },
+              { value: 'in', label: 'موجود' },
+              { value: 'out', label: 'ناموجود' },
+            ]}
+            value={stockFilter}
+            onChange={(event) => {
+              setStockFilter(event.target.value);
+              setPage(1);
+            }}
+          />
           <Select
             aria-label="فیلتر وضعیت"
             options={STATUS_OPTIONS}
@@ -129,6 +145,7 @@ export function ProductsListPage() {
             }}
             className="w-40"
           />
+          </div>
         }
         onRefresh={() => void query.refetch()}
         refreshing={query.isFetching}

@@ -26,6 +26,7 @@ import { Modal } from '../components/ui/Modal';
 import { MoneyInput } from '../components/ui/MoneyInput';
 import { NumberInput } from '../components/ui/NumberInput';
 import { PageHeader } from '../components/ui/PageHeader';
+import { LabelPrintModal, receiptLabelsUrl } from '../components/labels';
 import { Pagination } from '../components/ui/Pagination';
 import { Select } from '../components/ui/Select';
 import { DataTable, type Column } from '../components/ui/Table';
@@ -319,6 +320,8 @@ export function PurchasingPage() {
   const canReadWarehouses = useHasPermission(PERM.warehouseRead);
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [labelsFor, setLabelsFor] = useState<string | null>(null);
   const [supplierName, setSupplierName] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
   const [rows, setRows] = useState<readonly ReceiptRowDraft[]>(() => [emptyRow()]);
@@ -468,6 +471,12 @@ export function PurchasingPage() {
     onError: (error) => toast.error('ابطال رسید ناموفق بود', toFaErrorMessage(error)),
   });
 
+  const detailQuery = useQuery({
+    queryKey: ['purchasing', 'receipt', detailId ?? ''],
+    queryFn: () => api.get<Record<string, unknown>>(`/purchasing/receipts/${detailId ?? ''}`),
+    enabled: detailId !== null,
+  });
+
   const columns: readonly Column<PurchaseReceipt>[] = [
     {
       key: 'number',
@@ -522,18 +531,26 @@ export function PurchasingPage() {
       key: 'actions',
       header: 'عملیات',
       render: (receipt) => (
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={voidMutation.isPending}
-          onClick={() => {
-            if (window.confirm(`رسید ${receipt.receiptNumber ?? receipt.id.slice(0, 8)} ابطال شود؟ موجودی معکوس می‌شود.`)) {
-              voidMutation.mutate(receipt.id);
-            }
-          }}
-        >
-          ابطال
-        </Button>
+        <div className="flex flex-wrap gap-1">
+          <Button size="sm" variant="outline" onClick={() => setDetailId(receipt.id)}>
+            مشاهده
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setLabelsFor(receipt.id)}>
+            چاپ لیبل‌ها
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={voidMutation.isPending}
+            onClick={() => {
+              if (window.confirm(`رسید ${receipt.receiptNumber ?? receipt.id.slice(0, 8)} ابطال شود؟ موجودی معکوس می‌شود.`)) {
+                voidMutation.mutate(receipt.id);
+              }
+            }}
+          >
+            ابطال
+          </Button>
+        </div>
       ),
     },
   ];
@@ -597,6 +614,47 @@ export function PurchasingPage() {
           />
         )}
       </Card>
+
+      <Modal
+        open={detailId !== null}
+        onClose={() => setDetailId(null)}
+        title="جزئیات رسید خرید"
+        size="xl"
+      >
+        {detailQuery.isLoading ? (
+          <p className="text-sm text-slate-500">در حال بارگذاری…</p>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div>شماره رسید: <span dir="ltr">{String(detailQuery.data?.['receiptNo'] ?? '—')}</span></div>
+              <div>تأمین‌کننده: {String(detailQuery.data?.['supplierName'] ?? '—')}</div>
+              <div>وضعیت: {String(detailQuery.data?.['status'] ?? '—')}</div>
+              <div>تاریخ: {String(detailQuery.data?.['receivedAt'] ?? '—')}</div>
+            </div>
+            <table className="w-full text-xs">
+              <thead><tr><th className="p-1 text-right">کالا</th><th className="p-1">مقدار</th><th className="p-1">بهای واحد</th><th className="p-1">سریال‌ها</th></tr></thead>
+              <tbody>
+                {((detailQuery.data?.['lines'] as readonly Record<string, unknown>[] | undefined) ?? []).map((line, index) => (
+                  <tr key={index} className="border-t border-slate-100 dark:border-slate-800">
+                    <td className="p-1 text-right">{String(line['productName'] ?? line['sku'] ?? line['variantId'] ?? '—')}</td>
+                    <td className="p-1 text-center tabular">{String(line['acceptedQty'] ?? line['quantity'] ?? '—')}</td>
+                    <td className="p-1 text-center tabular">{String(line['unitCost'] ?? line['unitCostAmount'] ?? '—')}</td>
+                    <td className="p-1 text-center" dir="ltr">{(line['serials'] as readonly { serialNo?: string }[] | undefined)?.map((serial) => serial.serialNo).filter(Boolean).join(', ') || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Modal>
+
+      <LabelPrintModal
+        open={labelsFor !== null}
+        onClose={() => setLabelsFor(null)}
+        labelUrls={labelsFor === null ? [] : [receiptLabelsUrl(labelsFor)]}
+        title="چاپ لیبل محصولات رسید"
+        description="یک برچسب به‌ازای هر سریال یا هر واحد پذیرفته‌شده."
+      />
 
       <Modal
         open={open}

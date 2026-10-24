@@ -97,7 +97,7 @@ async function stockForVariant(variantId: string, sku: string): Promise<{
 async function resolveScan(raw: string): Promise<ScanEntry> {
   const code = raw.trim();
   try {
-    const lookup = await api.get<CatalogLookupResult>('/catalog/lookup', { barcode: code });
+    const lookup = await api.get<CatalogLookupResult>('/products/lookup', { barcode: code });
     const variant = lookup.variant;
     if (variant !== undefined) {
       const stock = await stockForVariant(variant.id, variant.sku);

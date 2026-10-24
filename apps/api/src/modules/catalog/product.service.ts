@@ -95,6 +95,8 @@ function productView(row: ProductRow): Record<string, unknown> {
     version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    ...(row.onHand === undefined ? {} : { onHand: row.onHand }),
+    ...(row.hasStock === undefined ? {} : { hasStock: row.hasStock }),
   };
 }
 
