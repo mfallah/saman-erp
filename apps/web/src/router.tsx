@@ -59,6 +59,7 @@ const JournalCreatePage = lazyRouteComponent(() => import('./pages/JournalCreate
 const TrialBalancePage = lazyRouteComponent(() => import('./pages/TrialBalancePage'), 'TrialBalancePage');
 const ProfitLossPage = lazyRouteComponent(() => import('./pages/ProfitLossPage'), 'ProfitLossPage');
 const ChannelsPage = lazyRouteComponent(() => import('./pages/ChannelsPage'), 'ChannelsPage');
+const PricingRulesPage = lazyRouteComponent(() => import('./pages/PricingRulesPage'), 'PricingRulesPage');
 const ChannelPricingPage = lazyRouteComponent(
   () => import('./pages/ChannelPricingPage'),
   'ChannelPricingPage',
@@ -78,12 +79,8 @@ const ProcurementPage = () => (
     description="مدیریت تأمین‌کنندگان، سفارش خرید، رسید کالا و فاکتور تأمین‌کننده در این بخش قرار می‌گیرد."
   />
 );
-const PricingPage = () => (
-  <ComingSoonPage
-    title="قیمت‌گذاری"
-    description="فهرست‌های قیمت، قواعد قیمت‌گذاری، کمیسیون کانال و محاسبه دسته‌ای قیمت‌ها در این بخش قرار می‌گیرد."
-  />
-);
+const PricingPage = PricingRulesPage;
+
 const PartnersPage = () => (
   <ComingSoonPage
     title="شرکا"

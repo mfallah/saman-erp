@@ -177,7 +177,41 @@ export class PricingService {
         variantId,
         ...(input.basePrice === undefined ? {} : { basePrice: input.basePrice }),
       });
-      const price = String(calculation.finalPrice);
+      // Active pricing rule for this variant/category/list overrides the account policy.
+      const ruleRows = await sql`
+        select r.markup_percent::text, r.fixed_markup_amount::text, r.commission_percent::text,
+               r.fixed_fee_amount::text, r.tax_percent::text, r.shipping_fee_amount::text,
+               r.rounding_increment::text
+        from erp.pricing_rules r
+        join erp.product_variants v on v.public_id = ${variantId}
+        join erp.products p on p.id = v.product_id
+        where r.organization_id = ${orgId} and r.price_list_id = ${priceListId}::bigint
+          and r.deleted_at is null and r.is_active = true
+          and (r.effective_to is null or r.effective_to > now())
+          and (r.product_variant_id is null or r.product_variant_id = v.id)
+          and (r.category_id is null or r.category_id = p.category_id)
+        order by (r.product_variant_id is not null) desc, (r.category_id is not null) desc, r.rule_priority desc, r.id desc
+        limit 1
+      `;
+      const rule = ruleRows[0];
+      let price: string;
+      if (rule === undefined) {
+        price = String(calculation.finalPrice);
+      } else {
+        const cost = Number(String(calculation.cost).replace(/[^0-9.-]/g, '')) || 0;
+        const markup = Number(rule['markup_percent'] ?? 0);
+        const fixedMarkup = Number(rule['fixed_markup_amount'] ?? 0);
+        const commission = Number(rule['commission_percent'] ?? 0);
+        const fixedFee = Number(rule['fixed_fee_amount'] ?? 0);
+        const tax = Number(rule['tax_percent'] ?? 0);
+        const shipping = Number(rule['shipping_fee_amount'] ?? 0);
+        const rounding = Number(rule['rounding_increment'] ?? 0);
+        let value = cost * (1 + markup / 100) + fixedMarkup + fixedFee + shipping;
+        if (commission > 0 && commission < 100) value = value / (1 - commission / 100);
+        value = value * (1 + tax / 100);
+        if (rounding > 0) value = Math.ceil(value / rounding) * rounding;
+        price = String(Math.max(0, Math.round(value)));
+      }
       await sql`
         insert into erp.price_list_items
           (price_list_id, product_variant_id, price_amount, min_qty, effective_from, is_active, created_by)
