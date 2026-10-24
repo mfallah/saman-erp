@@ -28,6 +28,11 @@ function useDialogBehavior(open: boolean, onClose: () => void): {
 } {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
+  // Pages pass an inline arrow as onClose, so its identity changes on every
+  // keystroke. Keeping it in a ref prevents the focus-trap effect from
+  // re-running (and stealing focus back to the first field) on each render.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) {
@@ -38,12 +43,14 @@ function useDialogBehavior(open: boolean, onClose: () => void): {
     const focusables = panel?.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
     );
-    focusables?.[0]?.focus();
+    if (previouslyFocused === null || !panel?.contains(previouslyFocused)) {
+      focusables?.[0]?.focus();
+    }
 
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab' || panel === null) {
@@ -74,7 +81,7 @@ function useDialogBehavior(open: boolean, onClose: () => void): {
       document.body.style.overflow = previousOverflow;
       previouslyFocused?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return { panelRef, titleId };
 }

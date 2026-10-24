@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { PackagePlus, Plus, Search, Trash2 } from 'lucide-react';
-import { api, isNotImplemented, newRequestId, toFaErrorMessage } from '../lib/api-client';
+import { api, ApiError, isNotImplemented, newRequestId, toFaErrorMessage } from '../lib/api-client';
 import { formatJalali } from '../lib/dates';
 import { useDebouncedValue, useDocumentTitle } from '../lib/hooks';
 import { formatMoney, formatNumber, toPersianDigits } from '../lib/money';
@@ -377,7 +377,26 @@ export function PurchasingPage() {
       if (isNotImplemented(error)) {
         toast.info('در حال توسعه', 'ثبت رسید خرید هنوز در سامانه فعال نشده است.');
       } else {
-        toast.error('ثبت خرید ناموفق بود', toFaErrorMessage(error));
+        const detail = error instanceof ApiError ? error.details?.[0] : undefined;
+      const fieldLabels: Record<string, string> = {
+        supplierId: 'نام تأمین‌کننده',
+        supplierName: 'نام تأمین‌کننده',
+        warehouseId: 'انبار',
+        lines: 'ردیف‌های کالا',
+        variantId: 'کالا/تنوع',
+        quantity: 'مقدار',
+        unitCost: 'بهای واحد',
+        serials: 'سریال‌ها',
+        receivedAt: 'تاریخ رسید',
+      };
+      const field = detail?.field ?? (detail?.path?.length ? String(detail.path[detail.path.length - 1]) : undefined);
+      const label = field === undefined ? undefined : fieldLabels[field];
+      toast.error(
+        'ثبت خرید ناموفق بود',
+        label === undefined
+          ? toFaErrorMessage(error)
+          : `${label}: ${detail?.rule ?? 'مقدار واردشده معتبر نیست.'}`,
+      );
       }
     },
   });
@@ -389,8 +408,8 @@ export function PurchasingPage() {
   }));
 
   const submit = (): void => {
-    if (supplierName.trim().length === 0) {
-      setFormError('نام تأمین‌کننده را وارد کنید.');
+    if (supplierName.trim().length < 2) {
+      setFormError('نام تأمین‌کننده باید حداقل ۲ کاراکتر باشد.');
       return;
     }
     if (rows.length === 0) {
@@ -403,6 +422,15 @@ export function PurchasingPage() {
     if (invalid !== undefined) {
       setFormError('برای هر سطر، کالا، تنوع و مقدار معتبر لازم است.');
       return;
+    }
+    for (const row of rows) {
+      const serials = parseSerials(row.serials);
+      if (serials.length > 0 && Number(row.quantity) !== serials.length) {
+        setFormError(
+          `تعداد سریال‌ها (${serials.length}) با مقدار کالا (${row.quantity}) برابر نیست؛ برای هر واحد دقیقاً یک سریال وارد کنید.`,
+        );
+        return;
+      }
     }
     setFormError(null);
     const lines = rows.map((row) => {
