@@ -753,8 +753,8 @@ packages:
   '@fastify/formbody@8.0.2':
     resolution: {integrity: sha512-84v5J2KrkXzjgBpYnaNRPqwgMsmY7ZDjuj0YVuMR3NXCJRCgKEZy/taSP1wUYGn0onfxJpLyRGDLa+NMaDJtnA==}
 
-  '@fastify/forwarded@3.1.1':
-    resolution: {integrity: sha512-XfDtW2Icvhqi6DP1YHFK4q/E8WpNd3+raBdzAyVZxmTInbFTtnEEKvEAMMOVdFuRyv+ynYipaA9D8FvjPqACkw==}
+  '@fastify/forwarded@3.1.2':
+    resolution: {integrity: sha512-89WiRG+hW3VQSfCwg4Hb8b43PeyEX15K5+lEfsZ4EUth/FyOjS/lv8HsVuswUNXWiSnxMGNouE/fq/0w3VumHQ==}
 
   '@fastify/helmet@13.2.0':
     resolution: {integrity: sha512-2u41U5hR9o1u3HUHLT3Njp7vWuWw+XXw8qCBwVY17pRQAN179YYKiU9f7/qEn1ITabgNTkq/Yk6gmrYPSraagA==}
@@ -1908,8 +1908,8 @@ packages:
   fast-json-stable-stringify@2.1.0:
     resolution: {integrity: sha512-lhd/wF+Lk98HZoTCtlVraHtfh5XYijIjalXck7saUtuanSDyLMxnHhSXEDJqHxD7msR8D0uCmqlkwjCV8xvwHw==}
 
-  fast-json-stringify@7.1.0:
-    resolution: {integrity: sha512-wAhAQ+es0aH+x5OofdCHlZZFdqwtiM6lpEosaRIwfg271WYeEQ/tPcXdu5vpzlqZpbJ4WNqaW4QR5UjfG4Dc2w==}
+  fast-json-stringify@7.1.2:
+    resolution: {integrity: sha512-qGXObwtgxbn4CZM64EpHj+w31DnQ1XYtwnJL6eaWwLB00O8huNReY40lF3YP72PIUPv9TBYwvOXYvQvMNm1ekw==}
 
   fast-levenshtein@2.0.6:
     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
@@ -1923,8 +1923,8 @@ packages:
   fast-uri@3.1.8:
     resolution: {integrity: sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg==}
 
-  fast-uri@4.2.2:
-    resolution: {integrity: sha512-EwVpUMzLVNOmcWW0zi5G3JJwkopB6XXjnVvNBGfqrMMsVew2hkQWl5e/pe/CfYUeS6jt4cIO2MnamEW7v/7wPw==}
+  fast-uri@4.2.3:
+    resolution: {integrity: sha512-I1PXwP5eAhlNlcdpjt9CgB59op2ZvZfxw+BkqGFVIUOgNpCVTcTqp3HhTX7brxj5vsip+nSY4nTvff+eIA76hg==}
 
   fastify-plugin@5.1.0:
     resolution: {integrity: sha512-FAIDA8eovSt5qcDgcBvDuX/v0Cjz0ohGhENZ/wpc3y+oZCY2afZ9Baqql3g/lC+OHRnciQol4ww7tuthOb9idw==}
@@ -2614,8 +2614,8 @@ packages:
   set-cookie-parser@2.7.2:
     resolution: {integrity: sha512-oeM1lpU/UvhTxw+g3cIfxXHyJRc/uidd3yK1P242gzHds0udQBYzs3y8j4gCCW+ZJ7ad0yctld8RYO+bdurlvw==}
 
-  set-cookie-parser@3.1.4:
-    resolution: {integrity: sha512-iEmdEew+Tn1BwMGMP8LzGBEPC7Mf1sySjglCeEPb/Vchm9bnGezePvacYcId+fGprQzIng+TBkzqfJ/qS7AsBg==}
+  set-cookie-parser@3.2.1:
+    resolution: {integrity: sha512-Npd1Pt+4zb3BrSZDPd2qFwRpS6b1EUEasRrO8xS0zMJi0fApXXK5YuzP0minyJnxwnFHoVoJwA55q0A0cu63gQ==}
 
   shebang-command@2.0.0:
     resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
@@ -3310,7 +3310,7 @@ snapshots:
     dependencies:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
-      fast-uri: 4.2.2
+      fast-uri: 4.2.3
 
   '@fastify/compress@9.2.2':
     dependencies:
@@ -3334,14 +3334,14 @@ snapshots:
 
   '@fastify/fast-json-stringify-compiler@5.1.1':
     dependencies:
-      fast-json-stringify: 7.1.0
+      fast-json-stringify: 7.1.2
 
   '@fastify/formbody@8.0.2':
     dependencies:
       fast-querystring: 1.1.2
       fastify-plugin: 5.1.0
 
-  '@fastify/forwarded@3.1.1': {}
+  '@fastify/forwarded@3.1.2': {}
 
   '@fastify/helmet@13.2.0':
     dependencies:
@@ -3362,7 +3362,7 @@ snapshots:
 
   '@fastify/proxy-addr@5.1.2':
     dependencies:
-      '@fastify/forwarded': 3.1.1
+      '@fastify/forwarded': 3.1.2
       ipaddr.js: 2.5.0
 
   '@hookform/resolvers@3.10.0(react-hook-form@7.90.0(@types/react@19.3.0)(react@19.3.1))':
@@ -4415,12 +4415,12 @@ snapshots:
 
   fast-json-stable-stringify@2.1.0: {}
 
-  fast-json-stringify@7.1.0:
+  fast-json-stringify@7.1.2:
     dependencies:
       '@fastify/merge-json-schemas': 0.2.2
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
-      fast-uri: 4.2.2
+      fast-uri: 4.2.3
       json-schema-ref-resolver: 3.0.1
       rfdc: 1.4.1
 
@@ -4434,7 +4434,7 @@ snapshots:
 
   fast-uri@3.1.8: {}
 
-  fast-uri@4.2.2: {}
+  fast-uri@4.2.3: {}
 
   fastify-plugin@5.1.0: {}
 
@@ -4448,7 +4448,7 @@ snapshots:
       '@fastify/proxy-addr': 5.1.2
       abstract-logging: 2.0.1
       avvio: 9.3.1
-      fast-json-stringify: 7.1.0
+      fast-json-stringify: 7.1.2
       find-my-way: 9.10.0
       light-my-request: 6.8.0
       pino: 9.14.0
@@ -4712,7 +4712,7 @@ snapshots:
       '@fastify/deepmerge': 3.2.2
       cookie: 2.0.1
       process-warning: 5.1.1
-      set-cookie-parser: 3.1.4
+      set-cookie-parser: 3.2.1
 
   lightningcss-android-arm64@1.32.0:
     optional: true
@@ -5095,7 +5095,7 @@ snapshots:
 
   set-cookie-parser@2.7.2: {}
 
-  set-cookie-parser@3.1.4: {}
+  set-cookie-parser@3.2.1: {}
 
   shebang-command@2.0.0:
     dependencies:
