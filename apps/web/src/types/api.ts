@@ -125,6 +125,7 @@ export interface VariantSummary {
 }
 
 export interface ProductSummary {
+  readonly onHand?: string;
   readonly id: string;
   readonly version: number;
   readonly nameFa: string;

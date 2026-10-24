@@ -39,6 +39,7 @@ export const PERM = {
   // purchasing
   purchaseRead: 'purchase.read',
   purchaseOrderRead: 'purchase.order.read',
+  purchaseOrderUpdate: 'purchase.order.update',
   // accounting
   journalRead: 'accounting.journal.read',
   journalCreate: 'accounting.journal.create',

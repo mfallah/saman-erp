@@ -159,7 +159,19 @@ function productColumns(tx: Db) {
     p.published_at::text as "publishedAt",
     p.version,
     p.created_at::text as "createdAt",
-    p.updated_at::text as "updatedAt"
+    p.updated_at::text as "updatedAt",
+  coalesce((
+    select sum(b.on_hand)
+    from erp.inventory_balances b
+    join erp.product_variants vv on vv.id = b.product_variant_id
+    where vv.product_id = p.id
+  ), 0)::text as "onHand",
+  exists(
+    select 1
+    from erp.inventory_balances b
+    join erp.product_variants vv on vv.id = b.product_variant_id
+    where vv.product_id = p.id and b.on_hand > 0
+  ) as "hasStock"
   `;
 }
 

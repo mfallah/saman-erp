@@ -220,6 +220,48 @@ export class PurchasingService {
     return { items: rows.map(receiptSummaryView), total };
   }
 
+
+  /**
+   * Void a received goods receipt: reverse stock for every accepted unit and
+   * mark its serials void. Posted documents are immutable, so "editing" a
+   * receipt means void + re-enter (auditable trail).
+   */
+  async voidReceipt(ctx: TenantContext, publicId: string): Promise<Record<string, unknown>> {
+    const receipt = await this.repo.findReceipt(this.db, ctx.orgId, publicId);
+    if (receipt === null) throw notFound('goods_receipt');
+    if (String(receipt.status) === 'voided') {
+      throw new AppError('RULE_VIOLATION', { message: 'این رسید قبلاً ابطال شده است.' });
+    }
+    const lines = await this.repo.listReceiptLines(this.db, ctx.orgId, publicId);
+    const reversed: { variantId: string; quantity: number }[] = [];
+    for (const line of lines) {
+      const quantity = Math.trunc(Number(line.acceptedQty ?? line.quantity ?? 0));
+      if (!Number.isFinite(quantity) || quantity <= 0) continue;
+      await this.inventory.quickAdjust(ctx, {
+        variantId: line.variantId,
+        quantityDelta: -quantity,
+        reason: `void receipt ${publicId}`,
+      });
+      reversed.push({ variantId: line.variantId, quantity });
+      for (const serial of line.serials ?? []) {
+        await this.db`
+          update erp.inventory_serials s
+          set status = 'void'
+          from erp.product_variants v
+          where v.id = s.product_variant_id
+            and v.public_id = ${line.variantId}
+            and s.serial_no = ${serial.serialNo}
+        `;
+      }
+    }
+    await this.db`
+      update erp.goods_receipts
+      set status = 'voided', notes = coalesce(notes, '') || ${` | voided at ${new Date().toISOString()}`}
+      where organization_id = ${ctx.orgId} and public_id = ${publicId}
+    `;
+    return { id: publicId, status: 'voided', reversed };
+  }
+
   async getReceipt(ctx: TenantContext, publicId: string): Promise<Record<string, unknown>> {
     const row = await this.repo.findReceipt(this.db, ctx.orgId, publicId);
     if (row === null) throw notFound('goods_receipt');

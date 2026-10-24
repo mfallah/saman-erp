@@ -266,6 +266,13 @@ export class ChannelSyncService {
         where channel_account_id = ${resolved.row.id}::bigint
           and external_variant_id = ${failure.externalId}`;
     }
+    if (result.failed.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[channel-push] ${resolved.adapter.code} failures: ` +
+          result.failed.map((failure) => `${failure.externalId}:${failure.code}:${failure.messageFa}`).join(' | ').slice(0, 800),
+      );
+    }
     if (result.failed.length > 0 && result.succeeded === 0) {
       const retryable = result.failed.some((failure) => failure.retryable);
       throw new IntegrationError(retryable ? 'UPSTREAM_UNAVAILABLE' : 'UPSTREAM_INVALID_RESPONSE', {

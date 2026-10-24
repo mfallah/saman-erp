@@ -458,6 +458,16 @@ export function PurchasingPage() {
     );
   }
 
+  const voidMutation = useMutation({
+    mutationFn: (receiptId: string) => api.post(`/purchasing/receipts/${receiptId}/void`, {}),
+    onSuccess: () => {
+      toast.success('رسید ابطال شد', 'موجودی معکوس و سریال‌ها باطل شدند.');
+      void queryClient.invalidateQueries({ queryKey: ['purchasing', 'receipts'] });
+      void queryClient.invalidateQueries();
+    },
+    onError: (error) => toast.error('ابطال رسید ناموفق بود', toFaErrorMessage(error)),
+  });
+
   const columns: readonly Column<PurchaseReceipt>[] = [
     {
       key: 'number',
@@ -507,6 +517,24 @@ export function PurchasingPage() {
       key: 'status',
       header: 'وضعیت',
       render: (receipt) => (receipt.status === undefined ? '—' : <StatusBadge status={receipt.status} />),
+    },
+    {
+      key: 'actions',
+      header: 'عملیات',
+      render: (receipt) => (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={voidMutation.isPending}
+          onClick={() => {
+            if (window.confirm(`رسید ${receipt.receiptNumber ?? receipt.id.slice(0, 8)} ابطال شود؟ موجودی معکوس می‌شود.`)) {
+              voidMutation.mutate(receipt.id);
+            }
+          }}
+        >
+          ابطال
+        </Button>
+      ),
     },
   ];
 

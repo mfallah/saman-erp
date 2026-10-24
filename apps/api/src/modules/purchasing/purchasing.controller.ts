@@ -85,6 +85,16 @@ export class PurchasingController {
     return apiData(await this.service.createReceipt(ctx, parseWith(CreateReceiptBody, body)));
   }
 
+
+  @Post('receipts/:id/void')
+  @Permissions('purchase.order.update')
+  @ApiOperation({ summary: 'Void a posted receipt and reverse its stock' })
+  @Audited('purchase.receipt.void')
+  async voidReceipt(@CurrentTenant() ctx: TenantContext, @Param() params: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.voidReceipt(ctx, id));
+  }
+
   @Get('receipts/:id')
   @Permissions('purchase.order.read')
   @ApiOperation({ summary: 'One goods receipt with lines and serials' })

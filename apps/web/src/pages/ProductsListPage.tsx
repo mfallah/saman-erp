@@ -5,6 +5,7 @@ import { PackagePlus } from 'lucide-react';
 import { api, toFaErrorMessage } from '../lib/api-client';
 import { formatJalali } from '../lib/dates';
 import { useDebouncedValue, useDocumentTitle } from '../lib/hooks';
+import { formatQuantity } from '../lib/money';
 import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { useHasPermission } from '../lib/use-auth';
@@ -52,10 +53,15 @@ const columns: readonly Column<ProductSummary>[] = [
     key: 'stock',
     header: 'موجودی',
     render: (product) =>
-      product.hasStock === true ? (
+      product.onHand !== undefined ? (
+        <div className="flex items-center gap-2">
+          <span className="tabular">{formatQuantity(product.onHand)}</span>
+          <Badge tone={Number(product.onHand) > 0 ? 'success' : 'neutral'}>
+            {Number(product.onHand) > 0 ? 'موجود' : 'ناموجود'}
+          </Badge>
+        </div>
+      ) : product.hasStock === true ? (
         <Badge tone="success">موجود</Badge>
-      ) : product.hasStock === false ? (
-        <Badge tone="neutral">ناموجود</Badge>
       ) : (
         '—'
       ),

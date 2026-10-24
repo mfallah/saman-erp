@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ImagePlus, Link2, Pencil, Plus, Send, Trash2, Unlink } from 'lucide-react';
+import { Archive, ImagePlus, Link2, Pencil, Plus, Printer, Send, Trash2, Unlink } from 'lucide-react';
 import { api, newRequestId, toFaErrorMessage, uploadFile } from '../lib/api-client';
 import { formatJalali, formatJalaliDateTime } from '../lib/dates';
 import { useDocumentTitle } from '../lib/hooks';
@@ -24,6 +24,7 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { Select } from '../components/ui/Select';
 import { Tabs, TabPanel } from '../components/ui/Tabs';
 import { DataTable, type Column } from '../components/ui/Table';
+import { LabelPrintModal, variantLabelUrl } from '../components/labels';
 import { useToast } from '../components/ui/Toast';
 
 interface ChannelMappingView {
@@ -83,6 +84,7 @@ export function ProductDetailPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState('info');
+  const [labelVariantId, setLabelVariantId] = useState<string | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [variantModalOpen, setVariantModalOpen] = useState(false);
   const [variantSku, setVariantSku] = useState('');
@@ -354,17 +356,38 @@ export function ProductDetailPage() {
     {
       key: 'actions',
       header: 'عملیات',
-      render: (variant) =>
-        canUpdate ? (
+      render: (variant) => (
+        <div className="flex flex-wrap gap-1">
           <Button
             size="sm"
             variant="outline"
-            icon={<Pencil className="size-3.5" />}
-            onClick={() => openEditVariant(variant)}
+            icon={<Printer className="size-3.5" />}
+            onClick={async () => {
+              try {
+                if (variant.barcode === null || variant.barcode === undefined) {
+                  await api.post(`/variants/${variant.id}/barcode/generate`, {}, { idempotencyKey: newRequestId() });
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.product(id) });
+                }
+                setLabelVariantId(variant.id);
+              } catch (error) {
+                toast.error('تولید بارکد ناموفق بود', toFaErrorMessage(error));
+              }
+            }}
           >
-            ویرایش
+            برچسب
           </Button>
-        ) : null,
+          {canUpdate ? (
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<Pencil className="size-3.5" />}
+              onClick={() => openEditVariant(variant)}
+            >
+              ویرایش
+            </Button>
+          ) : null}
+        </div>
+      ),
     },
   ];
 
@@ -1009,6 +1032,13 @@ export function ProductDetailPage() {
           </FormField>
         </div>
       </Modal>
+      <LabelPrintModal
+        open={labelVariantId !== null}
+        onClose={() => setLabelVariantId(null)}
+        labelUrls={labelVariantId === null ? [] : [variantLabelUrl(labelVariantId)]}
+        title="چاپ برچسب کالا"
+        description="بارکد، SKU و نام کالا در برچسب چاپ می‌شود."
+      />
     </>
   );
 }
