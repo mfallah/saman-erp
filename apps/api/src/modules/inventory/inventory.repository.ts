@@ -329,6 +329,7 @@ function ledgerFrom(tx: Db) {
     join erp.warehouses w on w.id = t.warehouse_id
     join erp.warehouse_locations l on l.id = t.location_id
     join erp.product_variants v on v.id = t.product_variant_id
+  join erp.products p on p.id = v.product_id
     left join erp.inventory_lots lt on lt.id = t.lot_id
   `;
 }
