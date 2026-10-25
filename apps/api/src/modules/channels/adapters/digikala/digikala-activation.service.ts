@@ -272,91 +272,31 @@ export async function activateDigikalaToken(input: DigikalaActivationInput): Pro
   const base = (input.baseUrl ?? 'https://seller.digikala.com/open-api/v1').replace(/\/$/, '');
   const endpoint = `${base}/auth/token`;
 
-  const variants: Array<{ name: string; body: Record<string, unknown>; headers?: Record<string, string>; form?: boolean }> = [];
-  if (input.clientCode !== undefined && input.clientCode.length > 0) {
-    if (input.clientSecret !== undefined && input.clientSecret.length > 0) {
-      const basic = Buffer.from(`${input.clientCode}:${input.clientSecret}`).toString('base64');
-      variants.push({
-        name: 'basic+form',
-        body: { grant_type: 'authorization_code', code },
-        headers: { authorization: `Basic ${basic}` },
-        form: true,
-      });
-      variants.push({
-        name: 'form+client_secret+code',
-        body: { grant_type: 'authorization_code', client_id: input.clientCode, client_secret: input.clientSecret, code },
-        form: true,
-      });
-      variants.push({
-        name: 'basic+client_secret+code',
-        body: { client_id: input.clientCode, client_secret: input.clientSecret, code },
-        headers: { authorization: `Basic ${basic}` },
-      });
-      variants.push({
-        name: 'client_secret+code',
-        body: { client_id: input.clientCode, client_secret: input.clientSecret, code },
-      });
-      variants.push({
-        name: 'authorization_code+secret',
-        body: { grant_type: 'authorization_code', client_id: input.clientCode, client_secret: input.clientSecret, code },
-      });
-    }
-    variants.push({ name: 'client_id+code', body: { client_id: input.clientCode, code } });
-    variants.push({ name: 'client_code+code', body: { client_code: input.clientCode, code } });
-    variants.push({
-      name: 'authorization_code',
-      body: { grant_type: 'authorization_code', client_id: input.clientCode, code },
-    });
+  // Spec (seller.digikala.com/open-api/v1/doc): exactly one payload shape.
+  // Sending the same single-use authorization_code across multiple fallback
+  // shapes consumes it on the first successful call and makes every retry fail
+  // with "seller.service.token.not.found". Post once, parse, stop.
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ authorization_code: code }),
+  });
+  const text = await response.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    parsed = { raw: text.slice(0, 500) };
   }
-
-  // The production endpoint expects the decrypted validation code in
-  // `authorization_code`. These shapes are tried first because the live API
-  // rejects `code`-only bodies with `authorization_code` required.
-  const preferred: Array<{ name: string; body: Record<string, unknown> }> = [
-    { name: 'authorization_code', body: { authorization_code: code } },
-  ];
-  if (input.clientCode !== undefined && input.clientCode.length > 0) {
-    preferred.push({
-      name: 'authorization_code+client_code',
-      body: { authorization_code: code, client_code: input.clientCode },
-    });
+  const tokens = pickTokens(parsed);
+  if (!response.ok || tokens === null) {
+    throw new Error(`Digikala token rejected → HTTP ${response.status} ${text.slice(0, 400)}`);
   }
-  variants.unshift(...preferred);
-  variants.push({ name: 'code-only', body: { code } });
-
-  const errors: string[] = [];
-  for (const variant of variants) {
-    try {
-      const payload = variant.form === true ? new URLSearchParams(Object.entries(variant.body).map(([k, v]): [string, string] => [k, String(v)])) : JSON.stringify(variant.body);
-      const contentType = variant.form === true ? 'application/x-www-form-urlencoded' : 'application/json';
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': contentType, accept: 'application/json', ...(variant.headers ?? {}) },
-        body: payload,
-      });
-      const text = await response.text();
-      let parsed: Record<string, unknown> = {};
-      try {
-        parsed = JSON.parse(text) as Record<string, unknown>;
-      } catch {
-        parsed = { raw: text.slice(0, 500) };
-      }
-      const tokens = pickTokens(parsed);
-      if (response.ok && tokens !== null) {
-        return {
-          ...tokens,
-          decryption,
-          endpoint,
-          payloadVariant: variant.name,
-          raw: parsed,
-        };
-      }
-      errors.push(`${variant.name}: HTTP ${response.status} ${text.slice(0, 160)}`);
-      // A 401/422 on the first shape usually means the shape itself is wrong.
-    } catch (error) {
-      errors.push(`${variant.name}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  throw new Error(`Digikala token endpoint rejected every payload shape → ${errors.join(' | ')}`);
+  return {
+    ...tokens,
+    decryption,
+    endpoint,
+    payloadVariant: 'authorization_code',
+    raw: parsed,
+  };
 }
