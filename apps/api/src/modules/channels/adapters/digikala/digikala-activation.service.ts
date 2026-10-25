@@ -213,6 +213,22 @@ export function decryptValidationCode(
 
   const attempts: string[] = [];
   for (const candidate of candidates) {
+    // Node 20.12+/22 removed RSA_PKCS1_PADDING for privateDecrypt, and Digikala
+    // encrypts the authorization code with PKCS#1 v1.5 — so the manual
+    // RSA_NO_PADDING + unpad path must run FIRST. The pure-`privateDecrypt`
+    // OAEP attempts below stay as fallbacks for panels that use OAEP.
+    attempts.push(`pkcs1-manual:${candidate.label}`);
+    const manualPkcs1 = tryManualPkcs1(candidate.bytes, privateKeyPem);
+    if (manualPkcs1 !== null && manualPkcs1.trim().length > 0) {
+      return unwrap(manualPkcs1, 'pkcs1');
+    }
+
+    attempts.push(`oaep-manual:${candidate.label}`);
+    const manualOaep = tryOaepVariants(candidate.bytes, privateKeyPem);
+    if (manualOaep !== null && manualOaep.code.trim().length > 0) {
+      return unwrap(manualOaep.code, manualOaep.method);
+    }
+
     for (const method of DECRYPTION_METHODS) {
       attempts.push(`${method.name}:${candidate.label}`);
       try {
