@@ -499,6 +499,7 @@ export interface ChannelHealthRow {
 
 export interface ChannelAccount extends Ref {
   readonly nameFa: string;
+  readonly settings?: Record<string, unknown>;
   readonly externalSellerId?: string;
   readonly active?: boolean;
   readonly warehouseIds?: readonly string[];

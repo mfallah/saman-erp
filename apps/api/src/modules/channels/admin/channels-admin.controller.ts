@@ -646,10 +646,18 @@ export class ChannelsAdminController {
     const payload = (body ?? {}) as Record<string, unknown>;
     const name = typeof payload['name'] === 'string' && payload['name'].trim().length >= 2 ? payload['name'].trim() : null;
     const isActive = typeof payload['isActive'] === 'boolean' ? payload['isActive'] : null;
+    // `settings` is merged (not replaced) so callers can set a single key such
+    // as the Digikala-registered `userAgent` without wiping other settings.
+    const settingsPatch =
+      typeof payload['settings'] === 'object' && payload['settings'] !== null
+        ? JSON.stringify(payload['settings'])
+        : null;
     const rows = await this.sql`
       update erp.channel_accounts
       set name = coalesce(${name}, name),
           is_active = coalesce(${isActive}::boolean, is_active),
+          settings = case when ${settingsPatch}::jsonb is null then settings
+                          else coalesce(settings, '{}'::jsonb) || ${settingsPatch}::jsonb end,
           updated_at = now(), updated_by = ${ctx.actorId}
       where public_id = ${accountId} and organization_id = ${ctx.orgId} and deleted_at is null
       returning public_id::text as id

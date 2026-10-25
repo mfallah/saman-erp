@@ -149,6 +149,8 @@ export function ChannelsPage() {
   const [rsaCompareResult, setRsaCompareResult] = useState<RsaKeyCompareResult | null>(null);
   const [rsaCompareError, setRsaCompareError] = useState('');
   const [dkClientCode, setDkClientCode] = useState('');
+  const [dkUserAgent, setDkUserAgent] = useState('');
+  const [dkUaBusy, setDkUaBusy] = useState(false);
   const [dkClientSecret, setDkClientSecret] = useState('');
   const [dkValidationCode, setDkValidationCode] = useState('');
   const [dkBusy, setDkBusy] = useState(false);
@@ -358,6 +360,11 @@ export function ChannelsPage() {
     setRsaCompareResult(null);
     setRsaCompareError('');
     setDkClientCode('');
+    setDkUserAgent(
+      rsaAccount && typeof (rsaAccount.settings as Record<string, unknown> | undefined)?.['userAgent'] === 'string'
+        ? String((rsaAccount.settings as Record<string, unknown>)['userAgent'])
+        : '',
+    );
     setDkClientSecret('');
     setDkValidationCode('');
     setDkResult('');
@@ -1012,6 +1019,41 @@ export function ChannelsPage() {
                     value={dkClientCode}
                     onChange={(event) => setDkClientCode(event.target.value)}
                   />
+                </FormField>
+                <FormField
+                  label="User-Agent ثبت‌شده در پنل دیجی‌کالا"
+                  hint="همان مقداری که هنگام ساخت Client در پنل ثبت کرده‌اید؛ برای تست اتصال و APIها استفاده می‌شود."
+                >
+                  <div className="flex gap-2">
+                    <Input
+                      dir="ltr"
+                      name="dk-user-agent"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="مثلاً saman-erp یا آدرس دامنه"
+                      value={dkUserAgent}
+                      onChange={(event) => setDkUserAgent(event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      loading={dkUaBusy}
+                      disabled={rsaAccount === null}
+                      onClick={() => {
+                        if (rsaAccount === null) return;
+                        setDkUaBusy(true);
+                        void api
+                          .put(`/channel-accounts/${rsaAccount.id}`, {
+                            settings: { userAgent: dkUserAgent.trim() },
+                          })
+                          .then(() => toast.success('User-Agent ذخیره شد', 'حالا «آزمایش اتصال» را بزن.'))
+                          .catch((error) => toast.error('ذخیره User-Agent ناموفق بود', toFaErrorMessage(error)))
+                          .finally(() => setDkUaBusy(false));
+                      }}
+                    >
+                      ذخیره
+                    </Button>
+                  </div>
                 </FormField>
                 <FormField
                   label="کد اعتبارسنجی (Validation code)"
