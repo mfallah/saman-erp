@@ -598,21 +598,29 @@ export class ChannelsAdminController {
 
   @Post('channel-accounts/:accountId/test')
   @Permissions('channel.account.test')
-  @ApiOperation({ summary: 'Authenticate against the channel with stored credentials' })
+  @ApiOperation({ summary: 'Authenticate against the channel and record a health check' })
   async test(@CurrentTenant() ctx: TenantContext, @Param('accountId') accountId: string) {
     const accountInternal = await this.accountInternalId(ctx, accountId);
     if (accountInternal === null) {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
     }
-    const resolved = await this.accounts.resolveForSync(ctx.orgId.toString(), accountInternal);
+    const startedAt = Date.now();
+    let ok = true;
+    let message: string | null = null;
     try {
+      const resolved = await this.accounts.resolveForSync(ctx.orgId.toString(), accountInternal);
       await resolved.adapter.authenticate(resolved.account);
-      return apiData({ ok: true });
     } catch (error) {
-      return apiData({ ok: false, message: error instanceof Error ? error.message : String(error) });
+      ok = false;
+      message = error instanceof Error ? error.message : String(error);
     }
+    const latencyMs = Date.now() - startedAt;
+    await this.sql`
+      insert into erp.channel_health_checks (channel_account_id, auth_ok, latency_ms, error_message, checked_at, consecutive_failures)
+      values (${accountInternal}::bigint, ${ok}, ${latencyMs}, ${message}, now(), ${ok ? 0 : 1})
+    `;
+    return apiData({ ok, latencyMs, ...(message === null ? {} : { message }) });
   }
-
 
   @Put('channel-accounts/:accountId')
   @Permissions('channel.account.update')
