@@ -170,7 +170,7 @@ export class DigikalaAdapter implements ChannelAdapter {
         operation: 'digikala.auth.refresh',
         method: 'POST',
         path: DIGIKALA_PATHS.refreshToken,
-        body: { refresh_token: current.refreshToken },
+        body: { access_token: current.accessToken, refresh_token: current.refreshToken },
         authHeaders: {},
         maxAttempts: 1,
       });
@@ -272,9 +272,9 @@ export class DigikalaAdapter implements ChannelAdapter {
     const started = Date.now();
     await this.withAuth(account, (authHeaders) =>
       this.deps.http.request(account, {
-        operation: 'digikala.profile',
+        operation: 'digikala.health',
         method: 'GET',
-        path: DIGIKALA_PATHS.profile,
+        path: DIGIKALA_PATHS.health,
         authHeaders,
       }),
     );
