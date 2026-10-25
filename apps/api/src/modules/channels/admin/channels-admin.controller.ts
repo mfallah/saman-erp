@@ -554,6 +554,20 @@ export class ChannelsAdminController {
       results.push({ step: 'refresh', ok: false, error: error instanceof Error ? error.message : String(error) });
     }
 
+    const jwtClaims = (() => {
+      try {
+        const part = accessToken.split('.')[1] ?? '';
+        const json = Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+        const parsed = JSON.parse(json) as Record<string, unknown>;
+        return {
+          client_code: parsed['client_code'] ?? parsed['clientCode'] ?? null,
+          token_id: parsed['token_id'] ?? null,
+          exp: parsed['exp'] ?? null,
+        };
+      } catch {
+        return null;
+      }
+    })();
     const tokenInfo = {
       length: accessToken.length,
       isJwt: accessToken.startsWith('eyJ'),
@@ -562,6 +576,11 @@ export class ChannelsAdminController {
       storedLength: (credentials['access_token'] ?? '').length,
       refreshTokenLength: (credentials['refresh_token'] ?? '').length,
       clientCodeLength: clientCode.length,
+      claims: jwtClaims,
+      clientCodeMatchesToken:
+        jwtClaims !== null && typeof jwtClaims.client_code === 'string'
+          ? jwtClaims.client_code === clientCode
+          : null,
     };
     const ua = 'SamanERP/1.0';
     const bearer = accessToken.length > 0 ? `Bearer ${accessToken}` : null;
