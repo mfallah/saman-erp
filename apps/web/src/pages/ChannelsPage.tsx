@@ -1123,14 +1123,14 @@ export function ChannelsPage() {
                       void api
                         .post<{
                           ok: boolean;
-                          winner?: { path: string; auth: string; ua: string };
+                          winner?: { path: string; attempt: string };
                           clientCodeLength?: number;
                           tokenInfo?: Record<string, unknown>;
                           results: readonly Record<string, unknown>[];
                         }>(`/channel-accounts/${rsaAccount.id}/digikala/diagnose`, {}, { idempotencyKey: newRequestId() })
                         .then((data) => {
                           const lines = data.results.map((row) =>
-                            [row['step'] ?? row['path'], row['auth'], row['ua'], row['status'], row['body'] ?? row['error'] ?? '']
+                            [row['step'] ?? row['path'], row['attempt'] ?? row['auth'], row['ua'], row['status'], row['body'] ?? row['error'] ?? '']
                               .filter((part) => part !== undefined && part !== null && part !== '')
                               .join(' | '),
                           );

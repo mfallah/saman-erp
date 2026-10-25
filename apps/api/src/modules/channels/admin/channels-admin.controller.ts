@@ -563,53 +563,56 @@ export class ChannelsAdminController {
       refreshTokenLength: (credentials['refresh_token'] ?? '').length,
       clientCodeLength: clientCode.length,
     };
-    const uas: Array<{ name: string; value: string | null }> = [
-      { name: 'samanerp', value: 'SamanERP/1.0' },
-      { name: 'browser', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
-      { name: 'client_code', value: clientCode.length > 0 ? clientCode : null },
-      { name: 'none', value: null },
-    ];
-    const authStyles: Array<{ name: string; value: string | null }> = [
-      { name: 'bearer', value: accessToken.length > 0 ? `Bearer ${accessToken}` : null },
-      { name: 'raw', value: accessToken.length > 0 ? accessToken : null },
-      { name: 'no-auth', value: null },
-    ];
+    const ua = 'SamanERP/1.0';
+    const bearer = accessToken.length > 0 ? `Bearer ${accessToken}` : null;
+    // "Invalid User-Agent!" from the gateway is returned for every request that
+    // carries an Authorization header, regardless of the UA value, so the token
+    // is not being associated with the client. Probe the client-identification
+    // header names Digikala gateways commonly use.
+    const attempts: Array<{ name: string; headers: Record<string, string> }> = [];
+    const withClient = (name: string, key: string): void => {
+      if (bearer === null || clientCode.length === 0) return;
+      attempts.push({ name, headers: { authorization: bearer, [key]: clientCode, 'user-agent': ua } });
+    };
+    withClient('bearer+x-client-code', 'x-client-code');
+    withClient('bearer+client-code', 'client-code');
+    withClient('bearer+x-client-id', 'x-client-id');
+    withClient('bearer+client_id', 'client_id');
+    withClient('bearer+x-api-key', 'x-api-key');
+    withClient('bearer+api-key', 'api-key');
+    if (bearer !== null) {
+      attempts.push({ name: 'bearer+ua-samanerp', headers: { authorization: bearer, 'user-agent': ua } });
+      attempts.push({ name: 'bearer+ua-clientcode', headers: { authorization: bearer, 'user-agent': clientCode } });
+      attempts.push({ name: 'raw+ua-samanerp', headers: { authorization: accessToken, 'user-agent': ua } });
+    }
+    attempts.push({ name: 'no-auth', headers: { 'user-agent': ua } });
+
     const paths: Array<{ name: string; path: string }> = [{ name: 'health', path: '/' }];
     if (clientCode.length > 0) paths.push({ name: 'scopes', path: `/auth/scopes/${encodeURIComponent(clientCode)}` });
 
-    for (const path of paths) {
-      for (const auth of authStyles) {
-        for (const ua of uas) {
-          const headers: Record<string, string> = { accept: 'application/json' };
-          if (auth.value !== null) headers['authorization'] = auth.value;
-          if (ua.value !== null) headers['user-agent'] = ua.value;
-          try {
-            const response = await fetch(`${base}${path.path}`, { method: 'GET', headers });
-            const body = (await response.text()).slice(0, 140);
-            results.push({
-              path: path.name,
-              auth: auth.name,
-              ua: ua.name,
-              status: response.status,
-              body,
-            });
-            if (response.ok) {
-              // First working combination is enough; stop probing.
-              return apiData({
-                ok: true,
-                winner: { path: path.name, auth: auth.name, ua: ua.name },
-                tokenInfo,
-                results,
-              });
-            }
-          } catch (error) {
-            results.push({
-              path: path.name,
-              auth: auth.name,
-              ua: ua.name,
-              error: error instanceof Error ? error.message : String(error),
+    for (const attempt of attempts) {
+      for (const path of paths) {
+        try {
+          const response = await fetch(`${base}${path.path}`, {
+            method: 'GET',
+            headers: { accept: 'application/json', ...attempt.headers },
+          });
+          const body = (await response.text()).slice(0, 160);
+          results.push({ path: path.name, attempt: attempt.name, status: response.status, body });
+          if (response.ok) {
+            return apiData({
+              ok: true,
+              winner: { path: path.name, attempt: attempt.name },
+              tokenInfo,
+              results,
             });
           }
+        } catch (error) {
+          results.push({
+            path: path.name,
+            attempt: attempt.name,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     }
