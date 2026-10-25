@@ -116,6 +116,8 @@ export class PartnerHttpClient {
           method: request.method,
           headers: {
             accept: 'application/json',
+            'user-agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
             ...(request.body === undefined ? {} : { 'content-type': 'application/json' }),
             ...request.headers,
             ...request.authHeaders,
