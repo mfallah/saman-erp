@@ -424,6 +424,10 @@ export class ChannelAccountService {
       (key) => key === 'private_key' || key === 'public_key',
     );
     if (keyMaterialOnly) return entries;
+    // Token activation (Digikala) writes access/refresh tokens that are bound
+    // to the already-registered application, not a fresh channel auth. These
+    // writes must not demand `api_key` again.
+    if (entries.has('access_token') || entries.has('refresh_token')) return entries;
     const required =
       row.authType === 'oauth2_client_credentials'
         ? ['client_id', 'client_secret']
