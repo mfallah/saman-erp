@@ -584,6 +584,9 @@ export class ChannelsAdminController {
     };
     const ua = 'SamanERP/1.0';
     const bearer = accessToken.length > 0 ? `Bearer ${accessToken}` : null;
+    const settingsRows = await this.sql`select settings from erp.channel_accounts where id = ${accountInternal}::bigint limit 1`;
+    const accountSettings = (settingsRows[0]?.['settings'] ?? {}) as Record<string, unknown>;
+    const configuredUa = typeof accountSettings['userAgent'] === 'string' ? accountSettings['userAgent'] : '';
     // "Invalid User-Agent!" from the gateway is returned for every request that
     // carries an Authorization header, regardless of the UA value, so the token
     // is not being associated with the client. Probe the client-identification
@@ -600,8 +603,17 @@ export class ChannelsAdminController {
     withClient('bearer+x-api-key', 'x-api-key');
     withClient('bearer+api-key', 'api-key');
     if (bearer !== null) {
+      if (configuredUa.length > 0) {
+        attempts.push({ name: 'bearer+ua-configured', headers: { authorization: bearer, 'user-agent': configuredUa } });
+      }
       attempts.push({ name: 'bearer+ua-samanerp', headers: { authorization: bearer, 'user-agent': ua } });
       attempts.push({ name: 'bearer+ua-clientcode', headers: { authorization: bearer, 'user-agent': clientCode } });
+      attempts.push({ name: 'bearer+x-user-agent-samanerp', headers: { authorization: bearer, 'x-user-agent': ua } });
+      attempts.push({ name: 'bearer+x-user-agent-clientcode', headers: { authorization: bearer, 'x-user-agent': clientCode } });
+      attempts.push({ name: 'bearer+ua-curl', headers: { authorization: bearer, 'user-agent': 'curl/8.4.0' } });
+      attempts.push({ name: 'bearer+ua-okhttp', headers: { authorization: bearer, 'user-agent': 'okhttp/4.12.0' } });
+      attempts.push({ name: 'bearer+ua-postman', headers: { authorization: bearer, 'user-agent': 'PostmanRuntime/7.36.0' } });
+      attempts.push({ name: 'bearer+ua-chrome-full', headers: { authorization: bearer, 'user-agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36' } });
       attempts.push({ name: 'raw+ua-samanerp', headers: { authorization: accessToken, 'user-agent': ua } });
     }
     attempts.push({ name: 'no-auth', headers: { 'user-agent': ua } });
