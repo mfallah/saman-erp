@@ -508,6 +508,100 @@ export class ChannelsAdminController {
     }
   }
 
+  @Post('channel-accounts/:accountId/digikala/diagnose')
+  @Permissions('channel.credential.write')
+  @ApiOperation({ summary: 'Probe Digikala header combinations with the stored token' })
+  async digikalaDiagnose(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+  ) {
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const credentials = await this.accounts.decryptActive(accountInternal);
+    const clientCode = credentials['client_code'] ?? credentials['client_id'] ?? '';
+    const base = 'https://seller.digikala.com/open-api/v1';
+    const results: Array<Record<string, unknown>> = [];
+
+    // Refresh first: the stored access token may be expired while the refresh
+    // token is still valid (we see 200 on /auth/refresh-token in production).
+    let accessToken = credentials['access_token'] ?? '';
+    try {
+      const refreshResponse = await fetch(`${base}/auth/refresh-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({
+          access_token: credentials['access_token'] ?? '',
+          refresh_token: credentials['refresh_token'] ?? '',
+        }),
+      });
+      const refreshBody = (await refreshResponse.json()) as Record<string, unknown>;
+      const data = (refreshBody['data'] ?? {}) as Record<string, unknown>;
+      const fresh = data['access_token'];
+      if (refreshResponse.ok && typeof fresh === 'string' && fresh.length > 0) {
+        accessToken = fresh;
+        results.push({ step: 'refresh', status: refreshResponse.status, ok: true });
+      } else {
+        results.push({
+          step: 'refresh',
+          status: refreshResponse.status,
+          ok: false,
+          body: JSON.stringify(refreshBody).slice(0, 200),
+        });
+      }
+    } catch (error) {
+      results.push({ step: 'refresh', ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+
+    const uas: Array<{ name: string; value: string | null }> = [
+      { name: 'samanerp', value: 'SamanERP/1.0' },
+      { name: 'browser', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
+      { name: 'client_code', value: clientCode.length > 0 ? clientCode : null },
+      { name: 'none', value: null },
+    ];
+    const authStyles: Array<{ name: string; value: string | null }> = [
+      { name: 'bearer', value: accessToken.length > 0 ? `Bearer ${accessToken}` : null },
+      { name: 'raw', value: accessToken.length > 0 ? accessToken : null },
+      { name: 'no-auth', value: null },
+    ];
+    const paths: Array<{ name: string; path: string }> = [{ name: 'health', path: '/' }];
+    if (clientCode.length > 0) paths.push({ name: 'scopes', path: `/auth/scopes/${encodeURIComponent(clientCode)}` });
+
+    for (const path of paths) {
+      for (const auth of authStyles) {
+        for (const ua of uas) {
+          const headers: Record<string, string> = { accept: 'application/json' };
+          if (auth.value !== null) headers['authorization'] = auth.value;
+          if (ua.value !== null) headers['user-agent'] = ua.value;
+          try {
+            const response = await fetch(`${base}${path.path}`, { method: 'GET', headers });
+            const body = (await response.text()).slice(0, 140);
+            results.push({
+              path: path.name,
+              auth: auth.name,
+              ua: ua.name,
+              status: response.status,
+              body,
+            });
+            if (response.ok) {
+              // First working combination is enough; stop probing.
+              return apiData({ ok: true, winner: { path: path.name, auth: auth.name, ua: ua.name }, results });
+            }
+          } catch (error) {
+            results.push({
+              path: path.name,
+              auth: auth.name,
+              ua: ua.name,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+    }
+    return apiData({ ok: false, clientCodeLength: clientCode.length, results });
+  }
+
   @Post('channel-accounts/:accountId/digikala/token')
   @Permissions('channel.credential.write')
   @ApiOperation({ summary: 'Activate Digikala tokens from the panel validation code' })

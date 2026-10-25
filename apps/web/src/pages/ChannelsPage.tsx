@@ -155,6 +155,8 @@ export function ChannelsPage() {
   const [dkValidationCode, setDkValidationCode] = useState('');
   const [dkBusy, setDkBusy] = useState(false);
   const [dkResult, setDkResult] = useState('');
+  const [dkDiag, setDkDiag] = useState('');
+  const [dkDiagBusy, setDkDiagBusy] = useState(false);
   const [rsaVerifyBusy, setRsaVerifyBusy] = useState(false);
   const [rsaVerifyResult, setRsaVerifyResult] = useState('');
   const [rsaFormat, setRsaFormat] = useState<'spki' | 'pkcs1' | 'base64'>('spki');
@@ -1109,11 +1111,52 @@ export function ChannelsPage() {
                   >
                     تبدیل کد به توکن
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    loading={dkDiagBusy}
+                    disabled={rsaAccount === null}
+                    onClick={() => {
+                      if (rsaAccount === null) return;
+                      setDkDiagBusy(true);
+                      setDkDiag('');
+                      void api
+                        .post<{
+                          ok: boolean;
+                          winner?: { path: string; auth: string; ua: string };
+                          clientCodeLength?: number;
+                          results: readonly Record<string, unknown>[];
+                        }>(`/channel-accounts/${rsaAccount.id}/digikala/diagnose`, {}, { idempotencyKey: newRequestId() })
+                        .then((data) => {
+                          const lines = data.results.map((row) =>
+                            [row['step'] ?? row['path'], row['auth'], row['ua'], row['status'], row['body'] ?? row['error'] ?? '']
+                              .filter((part) => part !== undefined && part !== null && part !== '')
+                              .join(' | '),
+                          );
+                          setDkDiag(
+                            (data.ok ? 'موفق: ' + JSON.stringify(data.winner) : 'هیچ ترکیبی موفق نبود') +
+                              ' (client_code len=' +
+                              String(data.clientCodeLength ?? '?') +
+                              ')\n' +
+                              lines.join('\n'),
+                          );
+                        })
+                        .catch((error) => setDkDiag(toFaErrorMessage(error)))
+                        .finally(() => setDkDiagBusy(false));
+                    }}
+                  >
+                    تشخیص عمیق اتصال
+                  </Button>
                 </div>
                 {rsaVerifyResult === '' ? null : (
                   <p className="text-[11px] text-slate-600 dark:text-slate-300">{rsaVerifyResult}</p>
                 )}
                 {dkResult === '' ? null : <p className="text-[11px] text-slate-600 dark:text-slate-300">{dkResult}</p>}
+                {dkDiag === '' ? null : (
+                  <pre dir="ltr" className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-100 p-2 text-[10px] leading-5 dark:bg-slate-900">
+                    {dkDiag}
+                  </pre>
+                )}
               </div>
             </div>
           ) : (
