@@ -554,6 +554,12 @@ export class ChannelsAdminController {
       if (result.refreshToken !== null) toStore['refresh_token'] = result.refreshToken;
       if (clientCode.length > 0) toStore['client_code'] = clientCode;
       if (clientSecret.length > 0) toStore['client_secret'] = clientSecret;
+      // Token activation writes token material alongside the existing channel
+      // auth keys; credential validation still requires the account's primary
+      // auth key (api_key) to be present, so re-attach it unchanged.
+      if (credentials['api_key'] !== undefined && credentials['api_key']!.length > 0) {
+        toStore['api_key'] = credentials['api_key']!;
+      }
       await this.accounts.setCredentials({
         organizationId: ctx.orgId.toString(),
         accountId: accountInternal,
