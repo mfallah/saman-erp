@@ -116,7 +116,7 @@ export class DigikalaAdapter implements ChannelAdapter {
   }
 
   private credentials(account: AdapterAccount): { clientId: string; clientSecret: string } {
-    const clientId = account.credentials['client_id'];
+    const clientId = account.credentials['client_id'] ?? account.credentials['client_code'];
     const clientSecret = account.credentials['client_secret'];
     if (clientId === undefined || clientSecret === undefined) {
       throw new IntegrationError('UNAUTHENTICATED', {
@@ -130,6 +130,19 @@ export class DigikalaAdapter implements ChannelAdapter {
     if (!forceRefresh) {
       const cached = await this.tokens.get(account.id);
       if (cached !== null) return cached;
+      // Panel activation already stored a usable access token; use it directly
+      // instead of trying the client_credentials grant (which needs a separate
+      // client_id/client_secret the panel flow does not provide).
+      const stored = account.credentials['access_token'];
+      if (stored !== undefined && stored.length > 0) {
+        const token: DigikalaTokenSet = {
+          accessToken: stored,
+          refreshToken: account.credentials['refresh_token'] ?? null,
+          expiresAt: Date.now() + 3600 * 1000,
+        };
+        await this.tokens.set(account.id, token);
+        return token;
+      }
     }
     return this.tokens.getOrLoad(account.id, async () => {
       const { clientId, clientSecret } = this.credentials(account);
