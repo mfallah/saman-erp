@@ -576,13 +576,20 @@ export class ChannelsAdminController {
       // eslint-disable-next-line no-console
       console.error('[digikala] token activation failed:', error instanceof Error ? error.message : String(error));
       if (error instanceof RsaDecryptionError) {
+        const pairOk = keyPairMatches(credentials['public_key'], credentials['private_key']);
+        const fingerprint = error.fingerprint ?? 'نامشخص';
+        const message =
+          pairOk === false
+            ? `جفت‌کلید ذخیره‌شده در سامانه با خودش سازگار نیست (pairOk=false). یک‌بار «تولید مجدد جفت‌کلید» را بزن، کلید عمومیِ جدید را در پنل ثبت کن و کد تازه بگیر. اثر انگشت فعلی: ${fingerprint}`
+            : `کلیدهای سامانه سالم‌اند (pairOk=${pairOk === null ? 'نامشخص' : 'true'})، ولی کد با کلید خصوصی ما باز نشد؛ یعنی کلید عمومیِ ثبت‌شده در پنل دیجی‌کالا با این اثر انگشت یکی نیست: ${fingerprint}. دوباره «تولید مجدد» نزن؛ فقط همین کلید را در پنل جایگزین کن (کپی Base64) و کد تازه بگیر.`;
         throw new BadRequestException({
           code: 'DIGIKALA_RSA_DECRYPT_FAILED',
-          message: error.message,
+          message,
           details: {
             fingerprint: error.fingerprint,
             attempts: [...error.attempts],
             requiresPublicKeyMatch: true,
+            pairOk,
           },
         });
       }
