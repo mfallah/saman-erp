@@ -50,8 +50,8 @@ const healthColumns: readonly Column<ChannelHealthRow>[] = [
     key: 'status',
     header: 'وضعیت',
     render: (row) => (
-      <Badge tone={(row.failureStreak ?? 0) > 0 ? 'warning' : 'success'}>
-        {row.status ?? ((row.failureStreak ?? 0) > 0 ? 'نیازمند بررسی' : 'سالم')}
+      <Badge tone={row.status === 'unknown' ? 'neutral' : row.status === 'fail' ? 'danger' : 'success'}>
+        {row.status === 'unknown' ? 'بررسی نشده' : row.status === 'fail' ? 'ناموفق' : 'سالم'}
       </Badge>
     ),
   },  {

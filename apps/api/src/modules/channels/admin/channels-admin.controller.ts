@@ -3,6 +3,7 @@
  * connection test and sync jobs. The SPA already called these paths, but no
  * controller existed, so every channel screen returned `NOT_FOUND`.
  */
+import { createPrivateKey, createPublicKey, privateDecrypt, publicEncrypt, constants } from 'node:crypto';
 import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AppError } from '@saman/shared';
@@ -31,6 +32,21 @@ import {
 } from '../services/channel-sync.service';
 import { CREDENTIAL_KEY_NAMES, type CredentialKeyName } from '../repositories/channel-credential.repository';
 import { asRecord } from '../infrastructure/sql';
+
+
+/** True when the stored public/private key really belong together. */
+function keyPairMatches(publicKey: string | undefined, privateKey: string | undefined): boolean | null {
+  if (publicKey === undefined || privateKey === undefined) return null;
+  try {
+    const pub = createPublicKey(publicKey);
+    const priv = createPrivateKey(privateKey);
+    const probe = Buffer.from(`probe-${Date.now()}`);
+    const sealed = publicEncrypt({ key: pub, padding: constants.RSA_PKCS1_OAEP_PADDING }, probe);
+    return privateDecrypt({ key: priv, padding: constants.RSA_PKCS1_OAEP_PADDING }, sealed).equals(probe);
+  } catch {
+    return false;
+  }
+}
 
 type Row = Record<string, unknown>;
 type Raw = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Row[]>;
@@ -166,23 +182,34 @@ export class ChannelsAdminController {
 
   @Get('channels/health')
   @Permissions('channel.read')
-  @ApiOperation({ summary: 'Latest health check per channel account' })
+  @ApiOperation({ summary: 'Health per active channel account (last check or never tested)' })
   async health(@CurrentTenant() ctx: TenantContext) {
     const rows = await this.sql`
-      select distinct on (h.channel_account_id)
-             h.channel_account_id::text as account_id,
-             case when h.auth_ok then 'ok' else 'fail' end as status, h.latency_ms, h.checked_at, h.error_message as message
-      from erp.channel_health_checks h
-      join erp.channel_accounts a on a.id = h.channel_account_id
-      where a.organization_id = ${ctx.orgId}
-      order by h.channel_account_id, h.checked_at desc
+      select a.public_id::text as account_id, a.name as account_name,
+             c.code as channel_code, c.name as channel_name,
+             h.auth_ok, h.latency_ms, h.checked_at, h.error_message as message
+      from erp.channel_accounts a
+      join erp.sales_channels c on c.id = a.channel_id
+      left join lateral (
+        select auth_ok, latency_ms, checked_at, error_message
+        from erp.channel_health_checks
+        where channel_account_id = a.id
+        order by checked_at desc
+        limit 1
+      ) h on true
+      where a.organization_id = ${ctx.orgId} and a.deleted_at is null
+      order by c.name, a.name
     `;
     return apiData(
       rows.map((row: Row) => ({
         accountId: String(row['account_id']),
-        status: row['status'],
+        account: { id: String(row['account_id']), name: row['account_name'] },
+        channel: { code: row['channel_code'], nameFa: row['channel_name'], name: row['channel_name'] },
+        status: row['auth_ok'] === null || row['auth_ok'] === undefined ? 'unknown' : row['auth_ok'] ? 'ok' : 'fail',
         latencyMs: row['latency_ms'],
         message: row['message'],
+        lastSuccessAt: row['auth_ok'] === true ? row['checked_at'] : null,
+        failureStreak: row['auth_ok'] === false ? 1 : 0,
         checkedAt: row['checked_at'],
       })),
     );
