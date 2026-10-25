@@ -357,7 +357,20 @@ export function ChannelsPage() {
     setRsaCompareInput('');
     setRsaCompareResult(null);
     setRsaCompareError('');
+    setDkClientCode('');
+    setDkClientSecret('');
+    setDkValidationCode('');
+    setDkResult('');
     void loadRsaKeypair(account);
+    // Prefill the stored client code/secret so the operator never has to retype
+    // them (and browser autofill cannot inject an unrelated username).
+    void api
+      .get<{ credentials: Record<string, string> }>(`/channel-accounts/${account.id}/credentials/reveal`)
+      .then((data) => {
+        if (typeof data.credentials.client_code === 'string') setDkClientCode(data.credentials.client_code);
+        if (typeof data.credentials.client_secret === 'string') setDkClientSecret(data.credentials.client_secret);
+      })
+      .catch(() => undefined);
   };
 
   const saveRsaKeypair = async (privateKeyPem?: string): Promise<void> => {
@@ -992,6 +1005,9 @@ export function ChannelsPage() {
                 <FormField label="کد کلاینت (Client code)">
                   <Input
                     dir="ltr"
+                    name="dk-client-code"
+                    autoComplete="off"
+                    spellCheck={false}
                     placeholder="Client code"
                     value={dkClientCode}
                     onChange={(event) => setDkClientCode(event.target.value)}
@@ -1004,6 +1020,9 @@ export function ChannelsPage() {
                   <Textarea
                     dir="ltr"
                     rows={4}
+                    name="dk-validation-code"
+                    autoComplete="off"
+                    spellCheck={false}
                     placeholder="Validation code (base64)"
                     className="font-mono text-[11px]"
                     value={dkValidationCode}

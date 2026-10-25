@@ -308,9 +308,15 @@ export async function seed(url = adminUrl()): Promise<Record<string, number>> {
       for (const [chCode, name, label, authType, rate] of ACCOUNTS) {
         const ch = channelByCode.get(chCode);
         if (!ch) continue;
+        // Idempotent even after a soft delete: never resurrect an account the
+        // operator removed (the partial unique index only covers live rows, so
+        // ON CONFLICT alone re-created deleted accounts on every boot).
         await tx`INSERT INTO erp.channel_accounts (channel_id, organization_id, name, external_account_id, auth_type, rate_limit_per_min, price_list_id, is_active)
-                 VALUES (${ch}, ${ORG_ID}, ${label}, ${name}, ${authType}, ${rate}, ${baseList[0]?.id ?? null}, true)
-                 ON CONFLICT (channel_id, external_account_id) WHERE deleted_at IS NULL DO NOTHING`;
+                 SELECT ${ch}, ${ORG_ID}, ${label}, ${name}, ${authType}, ${rate}, ${baseList[0]?.id ?? null}, true
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM erp.channel_accounts
+                   WHERE channel_id = ${ch} AND organization_id = ${ORG_ID} AND external_account_id = ${name}
+                 )`;
       }
       counts.channels = CHANNELS.length;
 
