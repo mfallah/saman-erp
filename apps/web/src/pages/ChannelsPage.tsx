@@ -151,6 +151,7 @@ export function ChannelsPage() {
   const [dkClientCode, setDkClientCode] = useState('');
   const [dkUserAgent, setDkUserAgent] = useState('');
   const [dkUaBusy, setDkUaBusy] = useState(false);
+  const [dkClientBusy, setDkClientBusy] = useState(false);
   const [dkClientSecret, setDkClientSecret] = useState('');
   const [dkValidationCode, setDkValidationCode] = useState('');
   const [dkBusy, setDkBusy] = useState(false);
@@ -1011,16 +1012,45 @@ export function ChannelsPage() {
                   از پنل دیجی‌کالا فقط دو مقدار «کد کلاینت» و «کد اعتبارسنجی» را کپی کن و اینجا بچسبان؛
                   سامانه کد را با کلید خصوصی رمزگشایی و به توکن تبدیل می‌کند.
                 </p>
-                <FormField label="کد کلاینت (Client code)">
-                  <Input
-                    dir="ltr"
-                    name="dk-client-code"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="Client code"
-                    value={dkClientCode}
-                    onChange={(event) => setDkClientCode(event.target.value)}
-                  />
+                <FormField
+                  label="کد کلاینت (Client code)"
+                  hint="دقیقاً همان مقداری که در پنل دیجی‌کالا زیر Application/Client code نمایش داده می‌شود."
+                >
+                  <div className="flex gap-2">
+                    <Input
+                      dir="ltr"
+                      name="dk-client-code"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="Client code"
+                      value={dkClientCode}
+                      onChange={(event) => setDkClientCode(event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      loading={dkClientBusy}
+                      disabled={rsaAccount === null || dkClientCode.trim().length === 0}
+                      onClick={() => {
+                        if (rsaAccount === null) return;
+                        setDkClientBusy(true);
+                        void api
+                          .put(`/channel-accounts/${rsaAccount.id}/credentials`, {
+                            credentials: {
+                              client_code: dkClientCode.trim(),
+                              ...(dkClientSecret.trim().length === 0
+                                ? {}
+                                : { client_secret: dkClientSecret.trim() }),
+                            },
+                          })
+                          .then(() => toast.success('کد کلاینت ذخیره شد'))
+                          .catch((error) => toast.error('ذخیره کد کلاینت ناموفق بود', toFaErrorMessage(error)))
+                          .finally(() => setDkClientBusy(false));
+                      }}
+                    >
+                      ذخیره
+                    </Button>
+                  </div>
                 </FormField>
                 <FormField
                   label="User-Agent ثبت‌شده در پنل دیجی‌کالا"

@@ -418,12 +418,12 @@ export class ChannelAccountService {
     if (entries.size === 0) {
       throw new AppError('VALIDATION_ERROR', { message: 'هیچ اعتبارنامه‌ای ارسال نشده است.' });
     }
-    // RSA key material is standalone: it must not require the channel's
-    // primary auth keys in the same request.
-    const keyMaterialOnly = [...entries.keys()].every(
-      (key) => key === 'private_key' || key === 'public_key',
+    // RSA key material and client identity are standalone: they must not require
+    // the channel's primary auth keys in the same request.
+    const identityOnly = [...entries.keys()].every((key) =>
+      ['private_key', 'public_key', 'client_code', 'client_id', 'client_secret', 'user_agent'].includes(key),
     );
-    if (keyMaterialOnly) return entries;
+    if (identityOnly) return entries;
     // Token activation (Digikala) writes access/refresh tokens that are bound
     // to the already-registered application, not a fresh channel auth. These
     // writes must not demand `api_key` again.

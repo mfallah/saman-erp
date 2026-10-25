@@ -20,6 +20,7 @@ export const CREDENTIAL_KEY_NAMES = [
   'basic_password',
   'public_key',
   'private_key',
+  'user_agent',
 ] as const;
 export type CredentialKeyName = (typeof CREDENTIAL_KEY_NAMES)[number];
 
