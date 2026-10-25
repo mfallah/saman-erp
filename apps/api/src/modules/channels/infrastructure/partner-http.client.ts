@@ -112,12 +112,25 @@ export class PartnerHttpClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
+        const defaultUserAgent =
+          typeof account.settings['userAgent'] === 'string' && account.settings['userAgent'].length > 0
+            ? account.settings['userAgent']
+            : account.credentials['user_agent'] !== undefined && account.credentials['user_agent'].length > 0
+              ? account.credentials['user_agent']
+              : account.channelCode === 'digikala' && account.credentials['client_code'] !== undefined
+                ? account.credentials['client_code']
+                : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+        if (account.channelCode === 'digikala') {
+          this.deps.logger.warn(
+            { accountId: account.id, operation: request.operation, userAgent: defaultUserAgent.slice(0, 120) },
+            'digikala request user-agent',
+          );
+        }
         const response = await this.fetchImpl(url.toString(), {
           method: request.method,
           headers: {
             accept: 'application/json',
-            'user-agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+            'user-agent': defaultUserAgent,
             ...(request.body === undefined ? {} : { 'content-type': 'application/json' }),
             ...request.headers,
             ...request.authHeaders,
