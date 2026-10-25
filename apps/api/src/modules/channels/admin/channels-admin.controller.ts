@@ -554,6 +554,15 @@ export class ChannelsAdminController {
       results.push({ step: 'refresh', ok: false, error: error instanceof Error ? error.message : String(error) });
     }
 
+    const tokenInfo = {
+      length: accessToken.length,
+      isJwt: accessToken.startsWith('eyJ'),
+      dots: (accessToken.match(/\./g) ?? []).length,
+      prefix: accessToken.slice(0, 6),
+      storedLength: (credentials['access_token'] ?? '').length,
+      refreshTokenLength: (credentials['refresh_token'] ?? '').length,
+      clientCodeLength: clientCode.length,
+    };
     const uas: Array<{ name: string; value: string | null }> = [
       { name: 'samanerp', value: 'SamanERP/1.0' },
       { name: 'browser', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
@@ -586,7 +595,12 @@ export class ChannelsAdminController {
             });
             if (response.ok) {
               // First working combination is enough; stop probing.
-              return apiData({ ok: true, winner: { path: path.name, auth: auth.name, ua: ua.name }, results });
+              return apiData({
+                ok: true,
+                winner: { path: path.name, auth: auth.name, ua: ua.name },
+                tokenInfo,
+                results,
+              });
             }
           } catch (error) {
             results.push({
@@ -599,7 +613,7 @@ export class ChannelsAdminController {
         }
       }
     }
-    return apiData({ ok: false, clientCodeLength: clientCode.length, results });
+    return apiData({ ok: false, clientCodeLength: clientCode.length, tokenInfo, results });
   }
 
   @Post('channel-accounts/:accountId/digikala/token')

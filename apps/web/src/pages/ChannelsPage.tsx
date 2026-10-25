@@ -1125,6 +1125,7 @@ export function ChannelsPage() {
                           ok: boolean;
                           winner?: { path: string; auth: string; ua: string };
                           clientCodeLength?: number;
+                          tokenInfo?: Record<string, unknown>;
                           results: readonly Record<string, unknown>[];
                         }>(`/channel-accounts/${rsaAccount.id}/digikala/diagnose`, {}, { idempotencyKey: newRequestId() })
                         .then((data) => {
@@ -1134,6 +1135,7 @@ export function ChannelsPage() {
                               .join(' | '),
                           );
                           setDkDiag(
+                            'tokenInfo=' + JSON.stringify(data.tokenInfo ?? {}) + '\n' +
                             (data.ok ? 'موفق: ' + JSON.stringify(data.winner) : 'هیچ ترکیبی موفق نبود') +
                               ' (client_code len=' +
                               String(data.clientCodeLength ?? '?') +
