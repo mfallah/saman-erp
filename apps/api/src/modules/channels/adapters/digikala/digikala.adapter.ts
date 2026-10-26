@@ -200,9 +200,14 @@ export class DigikalaAdapter implements ChannelAdapter {
     previousRefresh: string | null,
     account: AdapterAccount,
   ): DigikalaTokenSet {
-    const body = this.decryptTokenBody(record(response.json), account);
+    // Digikala wraps the token payload in `data`
+    // ({ status:'ok', data:{ access_token, refresh_token, expires_in } }).
+    const outer = record(response.json);
+    const inner = record(outer['data']);
+    const payload = Object.keys(inner).length > 0 ? inner : outer;
+    const body = this.decryptTokenBody(payload, account);
     const accessToken = stringValue(body['access_token']);
-    const expiresIn = Number(body['expires_in'] ?? 3600);
+    const expiresIn = Number(body['expires_in'] ?? 7200);
     if (accessToken === null) {
       throw new IntegrationError('UPSTREAM_INVALID_RESPONSE', {
         messageFa: 'پاسخ احراز هویت دیجی‌کالا معتبر نبود.',

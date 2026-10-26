@@ -312,13 +312,12 @@ export class WarehouseService {
   }
 
   private async insertNode(tx: Db, warehouseInternalId: bigint, body: LocationNodeInput): Promise<LocationRow> {
-    const nodeType = body.type as LocationNodeType;
-    if (nodeType !== 'zone' && body.parentId === undefined) {
-      throw new AppError('VALIDATION_ERROR', {
-        message: 'انتخاب مکان والد برای این سطح الزامی است.',
-        details: [{ field: 'parentId', rule: 'required' }],
-      });
-    }
+    // A node without a parent can only be a top-level zone. Treat any other
+    // requested type as a zone so the operator can always create a location
+    // from the flat form, then refine the hierarchy afterwards.
+    const requestedType = body.type as LocationNodeType;
+    const nodeType: LocationNodeType =
+      requestedType !== 'zone' && body.parentId === undefined ? 'zone' : requestedType;
     if (nodeType === 'zone') {
       assertValidLocationParent('zone', null);
       await this.repo.insertZone(tx, {
