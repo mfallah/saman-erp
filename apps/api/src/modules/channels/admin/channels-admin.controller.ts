@@ -654,6 +654,70 @@ export class ChannelsAdminController {
     return apiData({ ok: false, clientCodeLength: clientCode.length, tokenInfo, results });
   }
 
+
+
+  @Get('channels/:code/commission')
+  @Permissions('channel.account.read')
+  @ApiOperation({ summary: 'Live commission for the first active account of a channel (Digikala)' })
+  async channelCommission(@CurrentTenant() ctx: TenantContext, @Param('code') code: string, @Query('productId') productId: string) {
+    const product = (productId ?? '').trim();
+    if (!/^\d+$/.test(product)) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'productId must be numeric' });
+    }
+    const rows = (await this.sql`
+      select a.id::text as id
+        from erp.channel_accounts a
+        join erp.sales_channels c on c.id = a.channel_id
+       where a.organization_id = ${ctx.orgId}::bigint
+         and a.deleted_at is null
+         and c.code = ${code}
+       order by a.id
+       limit 1`) as { id: string }[];
+    const accountInternal = rows[0]?.id;
+    if (accountInternal === undefined) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'channel account not found' });
+    }
+    const resolved = await this.accounts.resolveForSync(ctx.orgId.toString(), String(accountInternal));
+    const adapter = resolved.adapter as unknown as {
+      fetchProductCommission?: (account: unknown, productId: string) => Promise<{ percent: number | null; raw: Record<string, unknown> }>;
+    };
+    if (typeof adapter.fetchProductCommission !== 'function') {
+      throw new BadRequestException({ code: 'NOT_IMPLEMENTED', message: 'commission lookup is not supported by this channel' });
+    }
+    const result = await adapter.fetchProductCommission(resolved.account, product);
+    return apiData({ channelCode: code, productId: product, percent: result.percent, commission: result.raw['commission'] ?? null });
+  }
+
+  @Get('channel-accounts/:accountId/digikala/commission')
+  @Permissions('channel.account.read')
+  @ApiOperation({ summary: 'Live Digikala commission percentage for a product' })
+  async digikalaCommission(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Query('productId') productId: string,
+  ) {
+    const product = (productId ?? '').trim();
+    if (!/^\d+$/.test(product)) {
+      throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'productId must be numeric' });
+    }
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const resolved = await this.accounts.resolveForSync(ctx.orgId.toString(), accountInternal);
+    const adapter = resolved.adapter as unknown as {
+      fetchProductCommission?: (account: unknown, productId: string) => Promise<{
+        percent: number | null;
+        raw: Record<string, unknown>;
+      }>;
+    };
+    if (typeof adapter.fetchProductCommission !== 'function') {
+      throw new BadRequestException({ code: 'NOT_IMPLEMENTED', message: 'commission lookup is not supported by this channel' });
+    }
+    const result = await adapter.fetchProductCommission(resolved.account, product);
+    return apiData({ productId: product, percent: result.percent, commission: result.raw['commission'] ?? null });
+  }
+
   @Post('channel-accounts/:accountId/digikala/token')
   @Permissions('channel.credential.write')
   @ApiOperation({ summary: 'Activate Digikala tokens from the panel validation code' })

@@ -61,6 +61,39 @@ function arrayPayload(json: unknown): unknown[] {
   return [];
 }
 
+
+/** Deep-searches a commission payload for a percentage value (0..100). */
+function findPercent(value: unknown, depth = 0): number | null {
+  if (depth > 4) return null;
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 && /%|percent|commission|rate/i.test(value)) return parsed;
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findPercent(item, depth + 1);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const obj = value as Record<string, unknown>;
+    for (const [key, inner] of Object.entries(obj)) {
+      if (/percent|percentage|rate|commission/i.test(key)) {
+        const found = findPercent(inner, depth + 1);
+        if (found !== null) return found;
+      }
+    }
+    for (const inner of Object.values(obj)) {
+      const found = findPercent(inner, depth + 1);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
 function orderItems(json: unknown): unknown[] {
   const body = record(json);
   const data = record(body['data']);
@@ -388,6 +421,28 @@ export class DigikalaAdapter implements ChannelAdapter {
       const refreshed = await this.refresh(account);
       return fn({ authorization: `Bearer ${refreshed.accessToken}` });
     }
+  }
+
+  /**
+   * Live commission percentage for one Digikala product (the rate differs per
+   * category and is not fixed at listing time).
+   */
+  async fetchProductCommission(
+    account: AdapterAccount,
+    productId: string,
+  ): Promise<{ percent: number | null; raw: Record<string, unknown> }> {
+    const response = await this.withAuth(account, (authHeaders) =>
+      this.deps.http.request(account, {
+        operation: 'digikala.commission.product',
+        method: 'GET',
+        path: DIGIKALA_PATHS.beSeller(String(productId)),
+        authHeaders,
+      }),
+    );
+    const body = record(response.json);
+    const data = record(body['data']);
+    const percent = findPercent(data['commission']) ?? findPercent(record(data['commission'])) ?? findPercent(data);
+    return { percent, raw: data };
   }
 
   async authenticate(account: AdapterAccount): Promise<AuthResult> {

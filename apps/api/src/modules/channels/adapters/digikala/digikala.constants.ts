@@ -14,6 +14,7 @@ export const DIGIKALA_PATHS = {
   scopes: '/auth/scopes',
   profile: '/profile',
   profileWarehouse: '/profile/warehouse',
+  beSeller: (productId: string) => `/product-creation/be-seller/${productId}`,
   categories: '/categories/tree',
   sellerProducts: '/products/seller',
   productEdit: (productId: string) => `/product-edit/${productId}`,

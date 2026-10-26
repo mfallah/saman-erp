@@ -83,6 +83,8 @@ export function PricingRulesPage() {
   const canDelete = useHasPermission(PERM.pricingRuleDelete);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<PricingRule | null>(null);
+  const [dkProductId, setDkProductId] = useState('');
+  const [commissionBusy, setCommissionBusy] = useState(false);
   const [form, setForm] = useState<RuleForm>(emptyForm);
 
   const listsQuery = useQuery({
@@ -90,6 +92,11 @@ export function PricingRulesPage() {
     queryFn: () => api.get<readonly PriceList[]>('/pricing/lists'),
     enabled: canRead,
   });
+  const lists = listsQuery.data ?? [];
+  const selectedList = lists.find((list) => list.id === form.priceListId);
+  const selectedListIsDigikala = (selectedList?.channelName ?? '').includes('دیجی');
+
+
   const rulesQuery = useQuery({
     queryKey: ['pricing', 'rules'],
     queryFn: () => api.get<readonly PricingRule[]>('/pricing/rules'),
@@ -330,7 +337,48 @@ export function PricingRulesPage() {
             <Input dir="ltr" value={form.fixedMarkupAmount} onChange={(event) => update('fixedMarkupAmount', event.target.value)} />
           </FormField>
           <FormField label="درصد کمیسیون">
-            <Input dir="ltr" value={form.commissionPercent} onChange={(event) => update('commissionPercent', event.target.value)} />
+            <div className="space-y-2">
+              <Input dir="ltr" value={form.commissionPercent} onChange={(event) => update('commissionPercent', event.target.value)} />
+              {selectedListIsDigikala ? (
+                <div className="space-y-1 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <p className="text-xs text-slate-500">
+                    کمیسیون دیجی‌کالا ثابت نیست و بر اساس دستهٔ کالا متفاوت است. شناسهٔ محصول دیجی‌کالا را وارد کنید
+                    تا درصد از خود دیجی‌کالا استعلام شود.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      dir="ltr"
+                      placeholder="شناسه محصول دیجی‌کالا"
+                      value={dkProductId}
+                      onChange={(event) => setDkProductId(event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={commissionBusy || dkProductId.trim().length === 0}
+                      onClick={() => {
+                        setCommissionBusy(true);
+                        void api
+                          .get<{ percent: number | null }>(`/channels/digikala/commission?productId=${encodeURIComponent(dkProductId.trim())}`)
+                          .then((result) => {
+                            if (result.percent === null) {
+                              toast.error('کمیسیون یافت نشد', 'پاسخ دیجی‌کالا درصد کمیسیون نداشت.');
+                              return;
+                            }
+                            update('commissionPercent', String(result.percent));
+                            toast.success('کمیسیون استعلام شد', `درصد کمیسیون: ${result.percent}`);
+                          })
+                          .catch((error) => toast.error('استعلام کمیسیون ناموفق بود', toFaErrorMessage(error)))
+                          .finally(() => setCommissionBusy(false));
+                      }}
+                    >
+                      {commissionBusy ? 'در حال استعلام…' : 'استعلام کمیسیون'}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </FormField>
           <FormField label="هزینهٔ ثابت (ریال)">
             <Input dir="ltr" value={form.fixedFeeAmount} onChange={(event) => update('fixedFeeAmount', event.target.value)} />
