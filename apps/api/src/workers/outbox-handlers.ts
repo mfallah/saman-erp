@@ -34,6 +34,7 @@ const OrderReceivedLine = z.object({
   externalLineId: z.string().max(150).optional(),
   externalSku: z.string().max(150).optional(),
   externalVariantId: z.string().max(150).optional(),
+  externalProductId: z.string().max(150).optional(),
   quantity: z.string(),
   unitPrice: z.string(),
   discount: z.string().optional(),
@@ -148,7 +149,8 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
           where m.channel_account_id = ${parsed.channelAccountId}::bigint
             and m.deleted_at is null
             and (
-              (${line.externalVariantId ?? null}::text is not null and m.external_variant_id = ${line.externalVariantId ?? null})
+              (${line.externalProductId ?? null}::text is not null and m.external_product_id = ${line.externalProductId ?? null})
+              or (${line.externalVariantId ?? null}::text is not null and m.external_variant_id = ${line.externalVariantId ?? null})
               or (${line.externalSku ?? null}::text is not null and m.external_sku = ${line.externalSku ?? null})
             )
           limit 1

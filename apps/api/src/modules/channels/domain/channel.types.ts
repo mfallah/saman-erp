@@ -148,6 +148,8 @@ export interface CanonicalOrderLine {
   readonly externalLineId: string;
   readonly externalSku: string;
   readonly externalVariantId?: string;
+  /** Channel product id when the line identifies a variant (Digikala). */
+  readonly externalProductId?: string;
   readonly quantity: string;
   readonly unitPrice: string;
   readonly discount: string;

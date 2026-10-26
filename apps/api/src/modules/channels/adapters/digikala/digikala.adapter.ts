@@ -448,8 +448,46 @@ export class DigikalaAdapter implements ChannelAdapter {
         if (rows.length < size) break;
       }
       if (isDk) {
+        // Order items identify a *variant*; our mappings are keyed by DK
+        // *product* id, so resolve variant → product once per pull run.
+        const productByVariant = new Map<string, string | null>();
+        const resolveProduct = async (variantId: string): Promise<string | null> => {
+          if (productByVariant.has(variantId)) return productByVariant.get(variantId) ?? null;
+          let productId: string | null = null;
+          try {
+            const response = await this.withAuth(account, (authHeaders) =>
+              this.deps.http.request(account, {
+                operation: 'digikala.variants.get',
+                method: 'GET',
+                path: DIGIKALA_PATHS.variant(variantId),
+                authHeaders,
+              }),
+            );
+            const body = record(response.json);
+            const data = record(body['data']);
+            productId =
+              stringValue(data['product_id']) ??
+              stringValue(record(data['product'])['id']) ??
+              stringValue(body['product_id']);
+          } catch {
+            productId = null;
+          }
+          productByVariant.set(variantId, productId);
+          return productId;
+        };
         for (const order of grouped.values()) {
-          if (order.placedAt.getTime() >= since.getTime()) yield order;
+          const lines = [];
+          for (const line of order.lines) {
+            const variantId = line.externalVariantId;
+            if (variantId === undefined) {
+              lines.push(line);
+              continue;
+            }
+            const productId = await resolveProduct(variantId);
+            lines.push(productId === null ? line : { ...line, externalProductId: productId });
+          }
+          const enriched: CanonicalOrder = { ...order, lines };
+          if (enriched.placedAt.getTime() >= since.getTime()) yield enriched;
         }
       }
     }
