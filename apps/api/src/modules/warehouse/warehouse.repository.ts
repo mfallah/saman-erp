@@ -428,7 +428,7 @@ export class WarehouseRepository {
   > {
     return tx`
       select 'zone' as level, z.public_id as id, z.code, null::text as "fullCode",
-             null::text as "parentId", z.abc_class as "abcClass", null::text as "capacityQuantity",
+             null::uuid as "parentId", z.abc_class as "abcClass", null::text as "capacityQuantity",
              z.pick_sequence as "pickPriority"
       from erp.warehouse_zones z where z.warehouse_id = ${warehouseInternalId}
       union all
