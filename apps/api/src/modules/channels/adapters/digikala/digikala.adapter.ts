@@ -270,44 +270,18 @@ export class DigikalaAdapter implements ChannelAdapter {
 
   async authenticate(account: AdapterAccount): Promise<AuthResult> {
     const started = Date.now();
-    // Digikala's gateway validates `User-Agent` as the registered client
-    // identity AFTER the token, and the exact string differs per registration.
-    // Probe the known candidates and keep the first one that is accepted; the
-    // winner is logged so it can be persisted as settings.userAgent.
-    const configured = [
-      typeof account.settings['userAgent'] === 'string' ? account.settings['userAgent'] : undefined,
-      account.credentials['user_agent'],
-      account.credentials['client_code'],
-      'SamanERP/1.0',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-    ].filter((value): value is string => typeof value === 'string' && value.length > 0);
-    const candidates = [...new Set(configured)];
-    const token = await this.loadToken(account);
-    const failures: string[] = [];
-    for (const userAgent of candidates) {
-      try {
-        await this.deps.http.request(account, {
-          operation: 'digikala.health',
-          method: 'GET',
-          path: DIGIKALA_PATHS.health,
-          authHeaders: { authorization: `Bearer ${token.accessToken}` },
-          headers: { 'user-agent': userAgent },
-          maxAttempts: 1,
-        });
-        // eslint-disable-next-line no-console
-        console.warn(`[digikala] user-agent accepted: ${userAgent.slice(0, 80)}`);
-        return { ok: true, scopes: [], latencyMs: Date.now() - started };
-      } catch (error) {
-        const status = error instanceof IntegrationError ? (error.httpStatus ?? 0) : 0;
-        const msg = error instanceof Error ? error.message : String(error);
-        failures.push(`${userAgent.slice(0, 40)} => ${status} ${msg}`);
-        // eslint-disable-next-line no-console
-        console.warn(`[digikala] user-agent rejected: ${userAgent.slice(0, 80)} (${status})`);
-      }
-    }
-    throw new IntegrationError('UNAUTHENTICATED', {
-      messageFa: `اتصال دیجی‌کالا ناموفق بود (User-Agent پذیرفته نشد): ${failures.join(' | ')}`.slice(0, 900),
-    });
+    // The http client now sets the Digikala-mandated
+    // `User-Agent: DigikalaTrustedBot/SelfToken/<seller_code>` automatically.
+    await this.withAuth(account, (authHeaders) =>
+      this.deps.http.request(account, {
+        operation: 'digikala.health',
+        method: 'GET',
+        path: DIGIKALA_PATHS.health,
+        authHeaders,
+        maxAttempts: 1,
+      }),
+    );
+    return { ok: true, scopes: [], latencyMs: Date.now() - started };
   }
 
   healthCheck(account: AdapterAccount): Promise<AuthResult> {

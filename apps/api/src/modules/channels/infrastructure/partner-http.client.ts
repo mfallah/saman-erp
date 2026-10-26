@@ -112,14 +112,24 @@ export class PartnerHttpClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
       try {
-        const defaultUserAgent =
-          typeof account.settings['userAgent'] === 'string' && account.settings['userAgent'].length > 0
-            ? account.settings['userAgent']
-            : account.credentials['user_agent'] !== undefined && account.credentials['user_agent'].length > 0
-              ? account.credentials['user_agent']
-              : account.channelCode === 'digikala' && account.credentials['client_code'] !== undefined
-                ? account.credentials['client_code']
-                : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+        const defaultUserAgent = (() => {
+          if (account.channelCode === 'digikala') {
+            const configured =
+              typeof account.settings['userAgent'] === 'string' ? account.settings['userAgent'].trim() : '';
+            if (configured.startsWith('DigikalaTrustedBot')) return configured;
+            const sellerCode =
+              (typeof account.settings['sellerCode'] === 'string' && account.settings['sellerCode'].trim().length > 0
+                ? account.settings['sellerCode'].trim()
+                : '') ||
+              (account.credentials['seller_code'] ?? '') ||
+              configured;
+            if (sellerCode.length > 0) return `DigikalaTrustedBot/SelfToken/${sellerCode}`;
+          }
+          if (typeof account.settings['userAgent'] === 'string' && account.settings['userAgent'].length > 0) {
+            return account.settings['userAgent'];
+          }
+          return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+        })();
         if (account.channelCode === 'digikala') {
           this.deps.logger.warn(
             { accountId: account.id, operation: request.operation, userAgent: defaultUserAgent.slice(0, 120) },
