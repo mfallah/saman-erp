@@ -318,29 +318,33 @@ export class DigikalaAdapter implements ChannelAdapter {
       valid.push({ variantId, stock, externalId: item.externalVariantId });
     }
     if (valid.length === 0) return { ok: failures.length === 0, succeeded: 0, failed: failures };
-    try {
-      // Confirmed by the OpenAPI spec: batch seller-stock update.
-      await this.withAuth(account, (authHeaders) =>
-        this.deps.http.request(account, {
-          operation: 'digikala.stock.batch',
-          method: 'POST',
-          path: DIGIKALA_PATHS.bulkSellerStock,
-          authHeaders,
-          body: {
-            items: valid.map((row) => ({
-              variant_id: row.variantId,
-              payload: { seller_stock: row.stock },
-            })),
-          },
-          idempotent: true,
-        }),
-      );
-      return { ok: failures.length === 0, succeeded: valid.length, failed: failures };
-    } catch (error) {
-      const failure = this.toFailure(valid[0]?.externalId ?? 'batch', error);
-      for (const row of valid) failures.push({ ...failure, externalId: row.externalId });
-      return { ok: false, succeeded: 0, failed: failures };
+    // Digikala caps the batch endpoint at 50 items per request.
+    let succeeded = 0;
+    for (let offset = 0; offset < valid.length; offset += 50) {
+      const chunk = valid.slice(offset, offset + 50);
+      try {
+        await this.withAuth(account, (authHeaders) =>
+          this.deps.http.request(account, {
+            operation: 'digikala.stock.batch',
+            method: 'POST',
+            path: DIGIKALA_PATHS.bulkSellerStock,
+            authHeaders,
+            body: {
+              items: chunk.map((row) => ({
+                variant_id: row.variantId,
+                payload: { seller_stock: row.stock },
+              })),
+            },
+            idempotent: true,
+          }),
+        );
+        succeeded += chunk.length;
+      } catch (error) {
+        const failure = this.toFailure(chunk[0]?.externalId ?? 'batch', error);
+        for (const row of chunk) failures.push({ ...failure, externalId: row.externalId });
+      }
     }
+    return { ok: failures.length === 0, succeeded, failed: failures };
   }
 
   async pushPrices(account: AdapterAccount, items: readonly PriceUpdate[]): Promise<BatchResult> {

@@ -13,6 +13,7 @@
  * receipt that physically happened.
  */
 import { Inject, Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { randomUUID } from 'node:crypto';
 import { AppError, parseMoney } from '@saman/shared';
 
@@ -147,6 +148,7 @@ export class PurchasingService {
     private readonly catalog: CatalogLookupService,
     private readonly sync: ChannelSyncService,
     @Inject(AUDIT) private readonly audit: AuditPort,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   // ----------------------------------------------------------------- suppliers
@@ -598,6 +600,24 @@ export class PurchasingService {
         setImmediate(() => {
           void this.sync.runJob(job.jobId).catch(() => undefined);
         });
+        // A purchase changes the moving-average cost, so the channel price must
+        // be recomputed and pushed as well (not only the stock).
+        try {
+          const { PricingService } = await import('../pricing/pricing.service');
+          const pricing = this.moduleRef.get(PricingService, { strict: false });
+          await pricing.applyToAccount({ accountId: target.accountId });
+          const priceJob = await this.sync.trigger({
+            organizationId: ctx.orgId.toString(),
+            accountId: target.accountInternalId,
+            type: 'price_push',
+            force: true,
+          });
+          setImmediate(() => {
+            void this.sync.runJob(priceJob.jobId).catch(() => undefined);
+          });
+        } catch {
+          // Price policy may be missing for this account; stock push still stands.
+        }
         accounts.push(target.accountId);
         channels.push(channelView(target));
       } catch {
