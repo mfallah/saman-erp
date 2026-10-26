@@ -450,10 +450,13 @@ export class DigikalaAdapter implements ChannelAdapter {
       if (isDk) {
         // Order items identify a *variant*; our mappings are keyed by DK
         // *product* id, so resolve variant → product once per pull run.
-        const productByVariant = new Map<string, string | null>();
-        const resolveProduct = async (variantId: string): Promise<string | null> => {
-          if (productByVariant.has(variantId)) return productByVariant.get(variantId) ?? null;
+        const productByVariant = new Map<string, { productId: string | null; supplierCode: string | null; productTitle: string | null }>();
+        const resolveProduct = async (variantId: string): Promise<{ productId: string | null; supplierCode: string | null; productTitle: string | null }> => {
+          const cached = productByVariant.get(variantId);
+          if (cached !== undefined) return cached;
           let productId: string | null = null;
+          let supplierCode: string | null = null;
+          let productTitle: string | null = null;
           try {
             const response = await this.withAuth(account, (authHeaders) =>
               this.deps.http.request(account, {
@@ -469,11 +472,14 @@ export class DigikalaAdapter implements ChannelAdapter {
               stringValue(data['product_id']) ??
               stringValue(record(data['product'])['id']) ??
               stringValue(body['product_id']);
+            supplierCode = stringValue(data['supplier_code']);
+            productTitle = stringValue(data['product_title']) ?? stringValue(data['title']);
           } catch {
             productId = null;
           }
-          productByVariant.set(variantId, productId);
-          return productId;
+          const resolved = { productId, supplierCode, productTitle };
+          productByVariant.set(variantId, resolved);
+          return resolved;
         };
         for (const order of grouped.values()) {
           const lines = [];
@@ -483,8 +489,13 @@ export class DigikalaAdapter implements ChannelAdapter {
               lines.push(line);
               continue;
             }
-            const productId = await resolveProduct(variantId);
-            lines.push(productId === null ? line : { ...line, externalProductId: productId });
+            const resolved = await resolveProduct(variantId);
+            lines.push({
+              ...line,
+              ...(resolved.productId === null ? {} : { externalProductId: resolved.productId }),
+              ...(resolved.supplierCode === null ? {} : { externalSku: resolved.supplierCode }),
+              ...(resolved.productTitle === null ? {} : { externalProductTitle: resolved.productTitle }),
+            });
           }
           const enriched: CanonicalOrder = { ...order, lines };
           if (enriched.placedAt.getTime() >= since.getTime()) yield enriched;

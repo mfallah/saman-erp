@@ -107,6 +107,8 @@ export interface AuthResult {
 
 export interface InventoryUpdate {
   readonly externalProductId?: string;
+  /** Channel product title, used as a last-resort variant match. */
+  readonly externalProductTitle?: string;
   readonly externalVariantId: string;
   readonly externalInventoryId?: string;
   readonly externalStorageId?: string;
@@ -150,6 +152,8 @@ export interface CanonicalOrderLine {
   readonly externalVariantId?: string;
   /** Channel product id when the line identifies a variant (Digikala). */
   readonly externalProductId?: string;
+  /** Channel product title, used as a last-resort variant match. */
+  readonly externalProductTitle?: string;
   readonly quantity: string;
   readonly unitPrice: string;
   readonly discount: string;

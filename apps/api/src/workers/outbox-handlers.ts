@@ -35,6 +35,7 @@ const OrderReceivedLine = z.object({
   externalSku: z.string().max(150).optional(),
   externalVariantId: z.string().max(150).optional(),
   externalProductId: z.string().max(150).optional(),
+  externalProductTitle: z.string().max(300).optional(),
   quantity: z.string(),
   unitPrice: z.string(),
   discount: z.string().optional(),
@@ -152,6 +153,8 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
               (${line.externalProductId ?? null}::text is not null and m.external_product_id = ${line.externalProductId ?? null})
               or (${line.externalVariantId ?? null}::text is not null and m.external_variant_id = ${line.externalVariantId ?? null})
               or (${line.externalSku ?? null}::text is not null and m.external_sku = ${line.externalSku ?? null})
+              or (${line.externalSku ?? null}::text is not null and v.sku = ${line.externalSku ?? null})
+              or (${line.externalProductTitle ?? null}::text is not null and btrim(p.name) = btrim(${line.externalProductTitle ?? null}))
             )
           limit 1
         `;
