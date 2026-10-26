@@ -56,6 +56,15 @@ function arrayPayload(json: unknown): unknown[] {
   return [];
 }
 
+function orderItems(json: unknown): unknown[] {
+  const body = record(json);
+  const data = record(body['data']);
+  for (const key of ['items', 'orders', 'results']) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  return arrayPayload(json);
+}
+
 function stringValue(value: unknown): string | null {
   if (typeof value === 'string' && value.length > 0) return value;
   if (typeof value === 'number') return String(value);
@@ -293,60 +302,62 @@ export class DigikalaAdapter implements ChannelAdapter {
     items: readonly InventoryUpdate[],
   ): Promise<BatchResult> {
     const failures: BatchItemFailure[] = [];
-    let succeeded = 0;
-    const bulk = items.length > 1 && this.tbdEnabled();
-    if (bulk) {
-      try {
-        await this.withAuth(account, (authHeaders) =>
-          this.deps.http.request(account, {
-            operation: 'digikala.stock.bulk',
-            method: 'POST',
-            path: DIGIKALA_PATHS.bulkSellerStock,
-            authHeaders,
-            // TBD-DIGIKALA: batch envelope unconfirmed.
-            body: {
-              items: items.map((item) => ({
-                variant_id: item.externalVariantId,
-                stock: item.available,
-              })),
-            },
-          }),
-        );
-        return { ok: true, succeeded: items.length, failed: [] };
-      } catch (error) {
-        this.deps.logger.warn(
-          { accountId: account.id, error: error instanceof Error ? error.message : 'bulk_failed' },
-          'digikala bulk stock failed; falling back to single updates',
-        );
-      }
-    }
+    const valid: Array<{ variantId: number; stock: number; externalId: string }> = [];
     for (const item of items) {
-      try {
-        await this.withAuth(account, (authHeaders) =>
-          this.deps.http.request(account, {
-            operation: 'digikala.stock.update',
-            method: 'PATCH',
-            path: DIGIKALA_PATHS.sellerStock(item.externalVariantId),
-            authHeaders,
-            body: { stock: item.available },
-            idempotent: true,
-          }),
-        );
-        succeeded += 1;
-      } catch (error) {
-        const failure = this.toFailure(item.externalVariantId, error);
-        failures.push(failure);
-        if (failure.code === 'UNAUTHENTICATED') break;
+      const variantId = Number(item.externalVariantId);
+      const stock = Math.max(0, Math.trunc(Number(item.available)));
+      if (!Number.isFinite(variantId) || variantId <= 0 || !Number.isFinite(stock)) {
+        failures.push({
+          externalId: item.externalVariantId,
+          code: 'MAPPING_REQUIRED',
+          messageFa: 'شناسهٔ عددی تنوع برای دیجی‌کالا معتبر نیست.',
+          retryable: false,
+        });
+        continue;
       }
+      valid.push({ variantId, stock, externalId: item.externalVariantId });
     }
-    return { ok: failures.length === 0, succeeded, failed: failures };
+    if (valid.length === 0) return { ok: failures.length === 0, succeeded: 0, failed: failures };
+    try {
+      // Confirmed by the OpenAPI spec: batch seller-stock update.
+      await this.withAuth(account, (authHeaders) =>
+        this.deps.http.request(account, {
+          operation: 'digikala.stock.batch',
+          method: 'POST',
+          path: DIGIKALA_PATHS.bulkSellerStock,
+          authHeaders,
+          body: {
+            items: valid.map((row) => ({
+              variant_id: row.variantId,
+              payload: { seller_stock: row.stock },
+            })),
+          },
+          idempotent: true,
+        }),
+      );
+      return { ok: failures.length === 0, succeeded: valid.length, failed: failures };
+    } catch (error) {
+      const failure = this.toFailure(valid[0]?.externalId ?? 'batch', error);
+      for (const row of valid) failures.push({ ...failure, externalId: row.externalId });
+      return { ok: false, succeeded: 0, failed: failures };
+    }
   }
 
   async pushPrices(account: AdapterAccount, items: readonly PriceUpdate[]): Promise<BatchResult> {
-    this.requireTbd(TBD_DIGIKALA.pricePushPayload);
     const failures: BatchItemFailure[] = [];
     let succeeded = 0;
     for (const item of items) {
+      const variantId = Number(item.externalVariantId);
+      const price = Number(item.value.price);
+      if (!Number.isFinite(variantId) || variantId <= 0 || !Number.isFinite(price) || price <= 0) {
+        failures.push({
+          externalId: item.externalVariantId,
+          code: 'MAPPING_REQUIRED',
+          messageFa: 'شناسهٔ تنوع یا قیمت برای دیجی‌کالا معتبر نیست.',
+          retryable: false,
+        });
+        continue;
+      }
       try {
         await this.withAuth(account, (authHeaders) =>
           this.deps.http.request(account, {
@@ -354,7 +365,7 @@ export class DigikalaAdapter implements ChannelAdapter {
             method: 'PATCH',
             path: DIGIKALA_PATHS.sellingPrice,
             authHeaders,
-            body: { variant_id: item.externalVariantId, price: item.value.price },
+            body: { variant_id: variantId, selling_price: Math.round(price) },
             idempotent: true,
           }),
         );
@@ -367,19 +378,23 @@ export class DigikalaAdapter implements ChannelAdapter {
   }
 
   async *pullOrders(account: AdapterAccount, since: Date): AsyncIterable<CanonicalOrder> {
-    this.requireTbd(TBD_DIGIKALA.orderResponse);
-    const response = await this.withAuth(account, (authHeaders) =>
-      this.deps.http.request(account, {
-        operation: 'digikala.orders.pull',
-        method: 'GET',
-        path: DIGIKALA_PATHS.sbsOrders,
-        // TBD-DIGIKALA: filter names are not in the supplied schema.
-        query: { from: since.toISOString(), page: 1 },
-        authHeaders,
-      }),
-    );
-    for (const raw of arrayPayload(response.json)) {
-      yield this.mapOrder(raw);
+    const size = 50;
+    for (let page = 1; page <= 20; page += 1) {
+      const response = await this.withAuth(account, (authHeaders) =>
+        this.deps.http.request(account, {
+          operation: 'digikala.orders.pull',
+          method: 'GET',
+          path: DIGIKALA_PATHS.sbsOrders,
+          query: { page, size, sort: 'order_date', order: 'desc' },
+          authHeaders,
+        }),
+      );
+      const rows = orderItems(response.json);
+      for (const raw of rows) {
+        const order = this.mapOrder(raw);
+        if (order.placedAt.getTime() >= since.getTime()) yield order;
+      }
+      if (rows.length < size) break;
     }
   }
 
