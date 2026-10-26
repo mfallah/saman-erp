@@ -97,11 +97,42 @@ const jobColumns: readonly Column<SyncJob>[] = [
   {
     key: 'progress',
     header: 'پیشرفت',
-    align: 'end',
-    render: (job) =>
-      job.progress === undefined
-        ? '—'
-        : `${formatNumber(job.progress.processed ?? 0)} / ${formatNumber(job.progress.total ?? 0)}`,
+    render: (job) => {
+      const summary = job.summary ?? {};
+      const pick = (keys: readonly string[]): string | null => {
+        for (const key of keys) {
+          const value = summary[key];
+          if (typeof value === 'number') return `${key}: ${formatNumber(value)}`;
+        }
+        return null;
+      };
+      const parts = [
+        pick(['received', 'imported', 'pushed', 'processed']),
+        pick(['updated']),
+        pick(['duplicates', 'skipped']),
+        pick(['failed', 'errors']),
+      ].filter((value): value is string => value !== null);
+      if (parts.length > 0) return <span className="text-xs">{parts.join(' · ')}</span>;
+      if (job.progress !== undefined) {
+        return `${formatNumber(job.progress.processed ?? 0)} / ${formatNumber(job.progress.total ?? 0)}`;
+      }
+      return job.status === 'running' || job.status === 'queued' ? 'در حال اجرا…' : '—';
+    },
+  },
+  {
+    key: 'details',
+    header: 'توضیحات',
+    render: (job) => {
+      if (job.lastError !== undefined && job.lastError !== null && job.lastError.length > 0) {
+        return <span className="text-xs text-red-600 dark:text-red-400">{job.lastError}</span>;
+      }
+      const summary = job.summary ?? {};
+      const text = Object.entries(summary)
+        .filter(([key, value]) => key !== 'jobId' && (typeof value === 'string' || typeof value === 'number'))
+        .map(([key, value]) => `${key}=${String(value)}`)
+        .join(' · ');
+      return <span className="text-xs text-slate-500">{text.length > 0 ? text : '—'}</span>;
+    },
   },
   {
     key: 'createdAt',
@@ -182,6 +213,9 @@ export function ChannelsPage() {
     queryKey: queryKeys.channels.syncJobs({ tab }),
     queryFn: () => api.getPage<SyncJob>('/channel-sync-jobs', { limit: 25 }),
     enabled: canRead && tab === 'jobs',
+    // Live view: the sync page must update itself without a manual refresh.
+    refetchInterval: tab === 'jobs' ? 4000 : false,
+    refetchIntervalInBackground: true,
   });
 
   const channels = channelsQuery.data ?? [];

@@ -312,12 +312,14 @@ export class WarehouseService {
   }
 
   private async insertNode(tx: Db, warehouseInternalId: bigint, body: LocationNodeInput): Promise<LocationRow> {
-    // A node without a parent can only be a top-level zone. Treat any other
-    // requested type as a zone so the operator can always create a location
-    // from the flat form, then refine the hierarchy afterwards.
     const requestedType = body.type as LocationNodeType;
-    const nodeType: LocationNodeType =
-      requestedType !== 'zone' && body.parentId === undefined ? 'zone' : requestedType;
+    // A node without a parent gets a real stock location: build the minimal
+    // zone→aisle→rack→shelf→bin chain and attach the location to it, so it shows
+    // up in the location list and can be used for inbound placement.
+    if (requestedType !== 'zone' && body.parentId === undefined) {
+      return this.createStandaloneLocation(tx, warehouseInternalId, body);
+    }
+    const nodeType: LocationNodeType = requestedType;
     if (nodeType === 'zone') {
       assertValidLocationParent('zone', null);
       await this.repo.insertZone(tx, {
@@ -404,6 +406,70 @@ export class WarehouseService {
   }
 
   /** Zone/aisle/rack/shelf/bin nodes are not stock addresses; return a node view. */
+  /** Creates the minimal hierarchy chain and a real stock location under it. */
+  private async createStandaloneLocation(
+    tx: Db,
+    warehouseInternalId: bigint,
+    body: LocationNodeInput,
+  ): Promise<LocationRow> {
+    const suffix = String(Date.now()).slice(-5);
+    const code = body.code.toUpperCase();
+    const zoneCode = `Z${suffix}`;
+    const aisleCode = `A${suffix}`;
+    const rackCode = `R${suffix}`;
+    const shelfCode = 'S1';
+    const binCode = 'B1';
+    const zoneId = await this.repo.insertZone(tx, {
+      warehouseInternalId,
+      code: zoneCode,
+      name: zoneCode,
+      abcClass: body.abcClass ?? null,
+      pickSequence: body.pickPriority ?? 0,
+      zoneType: 'storage',
+    });
+    const aisleId = await this.repo.insertAisle(tx, {
+      zoneInternalId: toBigInt(zoneId),
+      code: aisleCode,
+      name: aisleCode,
+      sequenceNo: 0,
+    });
+    const rackId = await this.repo.insertRack(tx, {
+      aisleInternalId: toBigInt(aisleId),
+      code: rackCode,
+      name: rackCode,
+      sequenceNo: 0,
+    });
+    const shelfId = await this.repo.insertShelf(tx, {
+      rackInternalId: toBigInt(rackId),
+      code: shelfCode,
+      levelNo: 1,
+      sequenceNo: 0,
+    });
+    const binId = await this.repo.insertBin(tx, {
+      shelfInternalId: toBigInt(shelfId),
+      code: binCode,
+      binType: 'storage',
+      capacityQuantity: body.capacity ?? null,
+      isPickFace: body.isPickFace ?? true,
+    });
+    const fullCode = generateLocationCode({
+      zoneCode,
+      aisleCode,
+      rackCode,
+      shelfCode,
+      binCode,
+    });
+    return this.repo.insertLocation(tx, {
+      warehouseInternalId,
+      binInternalId: toBigInt(binId),
+      fullCode: `${fullCode}-${code}`,
+      barcode: body.barcode ?? `${fullCode}-${code}`,
+      locationType: body.locationType ?? 'bin',
+      pickPriority: body.pickPriority ?? 0,
+      isPickable: true,
+    });
+  }
+
   private locationPlaceholder(
     warehouseInternalId: bigint,
     code: string,
