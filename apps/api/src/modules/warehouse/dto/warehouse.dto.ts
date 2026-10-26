@@ -145,6 +145,10 @@ export type PickTaskListQuery = z.infer<typeof PickTaskListQuery>;
 export const AssignTaskBody = z.object({ assigneeUserId: PublicId, deviceId: PublicId.optional() });
 export type AssignTaskBody = z.infer<typeof AssignTaskBody>;
 
+/** `PATCH warehouse/pick-tasks/:id/assign`; omitting `userId` releases the task. */
+export const PickTaskAssignBody = z.object({ userId: PublicId.optional() }).strict();
+export type PickTaskAssignBody = z.infer<typeof PickTaskAssignBody>;
+
 export const PickScanBody = z.object({
   eventId: PublicId.optional(),
   barcode: z.string().trim().min(1).max(100),

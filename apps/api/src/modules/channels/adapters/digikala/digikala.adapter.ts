@@ -27,7 +27,12 @@ import { IntegrationError } from '../../domain/channel.types';
 import { hashPii } from '../../domain/pii';
 import { decryptRsaOaep } from '../../domain/rsa-keypair';
 import { verifyWebhook, WEBHOOK_SIGNATURE_CONFIG } from '../../domain/webhook-signature';
-import type { ChannelAdapter, ExternalProduct } from '../../ports/channel-adapter.port';
+import type {
+  ChannelAdapter,
+  ExternalProduct,
+  ExternalProductCatalogEntry,
+  ExternalProductVariant,
+} from '../../ports/channel-adapter.port';
 import type { AppLogger } from '../../ports/logger.port';
 import type { KeyValueStore } from '../../ports/key-value.port';
 import type { PartnerHttpClient, PartnerResponse } from '../../infrastructure/partner-http.client';
@@ -84,6 +89,109 @@ function productArrayPayload(json: unknown): unknown[] {
     return null;
   };
   return walk(json, 0) ?? [];
+}
+
+/** Hard cap on variant lookups per product; Digikala products are 1–n variants. */
+const MAX_VARIANTS_PER_PRODUCT = 3;
+
+/** Fields only a Digikala *variant* carries (never a product or an attribute). */
+const VARIANT_MARKER_KEYS = ['supplier_code', 'seller_sku', 'seller_stock', 'variant_id'] as const;
+
+/** Weaker variant signals, used in combination to avoid attribute rows. */
+const VARIANT_HINT_KEYS = [
+  'supplier_code',
+  'seller_sku',
+  'sku',
+  'seller_stock',
+  'selling_price',
+  'buy_price',
+  'packaging',
+  'weight',
+  'is_active',
+  'max_sale',
+  'barcode',
+] as const;
+
+interface DigikalaVariantRef {
+  readonly id: string;
+  readonly supplierCode: string | null;
+}
+
+/** Digikala ids are numeric; anything else is not a variant id. */
+function variantIdOf(body: Record<string, unknown>): string | null {
+  const candidate = stringValue(body['variant_id']) ?? stringValue(body['id']);
+  if (candidate === null) return null;
+  const trimmed = candidate.trim();
+  return /^\d+$/.test(trimmed) ? trimmed : null;
+}
+
+function variantSupplierCode(body: Record<string, unknown>): string | null {
+  return (
+    stringValue(body['supplier_code']) ??
+    stringValue(body['seller_sku']) ??
+    stringValue(body['sku'])
+  );
+}
+
+/**
+ * Collects real variant ids from an untyped Digikala payload.
+ *
+ * `/product-edit/{product_id}` and `/variants/creation/{product_id}` nest their
+ * variant arrays differently (`data.variants`, `data.product.variants`,
+ * `data[]`, …), so any nested object with a **numeric** id and variant-ish
+ * fields counts. `excludeId` drops the enclosing product row: its own id is a
+ * product id and must never be mistaken for a variant id.
+ */
+function collectVariants(json: unknown, excludeId: string): DigikalaVariantRef[] {
+  const found = new Map<string, DigikalaVariantRef>();
+  const visit = (value: unknown, key: string, depth: number): void => {
+    if (depth > 5 || value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, key, depth + 1);
+      return;
+    }
+    const body = value as Record<string, unknown>;
+    const id = variantIdOf(body);
+    if (id !== null && id !== excludeId) {
+      const marker = VARIANT_MARKER_KEYS.some((markerKey) => body[markerKey] !== undefined);
+      const hints = VARIANT_HINT_KEYS.filter((hintKey) => body[hintKey] !== undefined).length;
+      const underVariantKey = /variant/i.test(key);
+      if (marker || hints >= 2 || (underVariantKey && hints >= 1)) {
+        if (!found.has(id)) found.set(id, { id, supplierCode: variantSupplierCode(body) });
+      }
+    }
+    for (const [childKey, child] of Object.entries(body)) {
+      if (typeof child === 'object') visit(child, childKey, depth + 1);
+    }
+  };
+  visit(json, '', 0);
+  return [...found.values()];
+}
+
+/** Product title across the seller-list envelopes (`title`/`name`/nested product). */
+function productTitleOf(raw: unknown, fallback: string): string {
+  const body = record(raw);
+  const product = record(body['product']);
+  const title =
+    stringValue(body['title']) ??
+    stringValue(body['name']) ??
+    stringValue(product['title']) ??
+    stringValue(product['name']) ??
+    fallback;
+  return title.trim();
+}
+
+/** Digikala product id from a seller-list row (`product_id` wins over row `id`). */
+function productIdOf(raw: unknown): string | null {
+  const body = record(raw);
+  const product = record(body['product']);
+  return (
+    stringValue(body['product_id']) ??
+    stringValue(product['product_id']) ??
+    stringValue(product['id']) ??
+    stringValue(body['id']) ??
+    stringValue(body['uuid'])
+  );
 }
 
 export class DigikalaAdapter implements ChannelAdapter {
@@ -658,14 +766,15 @@ export class DigikalaAdapter implements ChannelAdapter {
   }
 
   /**
-   * First-sync catalogue import from `GET /products/seller`. The seller-list
-   * payload is not fully documented, so the mapping accepts the common shapes
-   * (`id`/`product_id`, `title`/`name`, `variants[]`, `price`/`selling_price`,
-   * `stock`/`available`) and skips anything without an external product id.
+   * Reads `GET /products/seller` page by page. `product_id` is the Digikala
+   * *product* id and wins over the row `id` (which is not a variant id either);
+   * a page never exceeds `perPage`, so a short page ends the walk.
    */
-  async *pullProducts(account: AdapterAccount): AsyncIterable<ExternalProduct> {
+  private async *sellerProductRows(
+    account: AdapterAccount,
+    maxPages: number,
+  ): AsyncIterable<unknown> {
     const perPage = 50;
-    const maxPages = 3;
     for (let page = 1; page <= maxPages; page += 1) {
       const response = await this.withAuth(account, (authHeaders) =>
         this.deps.http.request(account, {
@@ -678,67 +787,149 @@ export class DigikalaAdapter implements ChannelAdapter {
         }),
       );
       const items = productArrayPayload(response.json);
-      for (const raw of items) {
-        const body = record(raw);
-        const product = record(body['product']);
-        const externalProductId =
-          stringValue(body['id']) ??
-          stringValue(body['product_id']) ??
-          stringValue(body['uuid']) ??
-          stringValue(product['id']) ??
-          stringValue(product['product_id']);
-        if (externalProductId === null) continue;
+      for (const raw of items) yield raw;
+      if (items.length < perPage) return;
+    }
+  }
 
-        const variants = Array.isArray(body['variants'])
-          ? body['variants']
-          : Array.isArray(product['variants'])
-            ? product['variants']
-            : [];
-        const firstVariant = variants[0];
-        const variant = record(firstVariant);
-
-        const externalVariantId =
-          stringValue(body['variant_id']) ??
-          stringValue(variant['id']) ??
-          stringValue(variant['variant_id']);
-        const title =
-          stringValue(body['title']) ??
-          stringValue(body['name']) ??
-          stringValue(product['title']) ??
-          stringValue(product['name']) ??
-          externalProductId;
-        const sku =
-          stringValue(body['sku']) ??
-          stringValue(body['seller_sku']) ??
-          stringValue(variant['sku']) ??
-          stringValue(variant['seller_sku']);
-        const barcode =
-          stringValue(body['barcode']) ?? stringValue(body['ean']) ?? stringValue(variant['barcode']);
-        const price =
-          stringValue(body['price']) ??
-          stringValue(body['selling_price']) ??
-          stringValue(body['sale_price']) ??
-          stringValue(variant['price']) ??
-          stringValue(variant['selling_price']);
-        const available =
-          stringValue(body['stock']) ??
-          stringValue(body['available']) ??
-          stringValue(body['inventory']) ??
-          stringValue(variant['stock']) ??
-          stringValue(variant['available']);
-
-        yield {
-          externalProductId,
-          ...(externalVariantId === null ? {} : { externalVariantId }),
-          title,
-          ...(sku === null ? {} : { sku }),
-          ...(barcode === null ? {} : { barcode }),
-          ...(price === null ? {} : { price }),
-          ...(available === null ? {} : { available }),
-          raw,
-        };
+  /**
+   * Real variant ids of one product. `/product-edit/{product_id}` carries the
+   * variant list; when it answers without usable variants (or fails) the
+   * `/variants/creation/{product_id}` list is used instead. Results are capped
+   * at `MAX_VARIANTS_PER_PRODUCT` and memoised per run through `cache`.
+   */
+  private async variantsForProduct(
+    account: AdapterAccount,
+    productId: string,
+    cache: Map<string, readonly DigikalaVariantRef[]>,
+  ): Promise<readonly DigikalaVariantRef[]> {
+    const cached = cache.get(productId);
+    if (cached !== undefined) return cached;
+    const attempts = [
+      { operation: 'digikala.product.edit', path: DIGIKALA_PATHS.productEdit(productId) },
+      { operation: 'digikala.variants.creation', path: DIGIKALA_PATHS.variantsOfProduct(productId) },
+    ];
+    let resolved: readonly DigikalaVariantRef[] = [];
+    for (const attempt of attempts) {
+      try {
+        const response = await this.withAuth(account, (authHeaders) =>
+          this.deps.http.request(account, {
+            operation: attempt.operation,
+            method: 'GET',
+            path: attempt.path,
+            authHeaders,
+            idempotent: true,
+          }),
+        );
+        resolved = collectVariants(response.json, productId);
+      } catch (error) {
+        this.deps.logger.warn(
+          {
+            accountId: account.id,
+            productId,
+            operation: attempt.operation,
+            error: error instanceof Error ? error.message : 'variant_lookup_failed',
+          },
+          'digikala variant lookup failed',
+        );
+        resolved = [];
       }
-      if (items.length < perPage) break;
+      if (resolved.length > 0) break;
+    }
+    const bounded = resolved.slice(0, MAX_VARIANTS_PER_PRODUCT);
+    cache.set(productId, bounded);
+    return bounded;
+  }
+
+  /**
+   * Catalogue ids for the admin repair flow: `product_id` + title only, no
+   * variant lookups (the caller resolves variants for the rows it will update).
+   */
+  async *listProductCatalog(
+    account: AdapterAccount,
+    options?: { readonly maxPages?: number },
+  ): AsyncIterable<ExternalProductCatalogEntry> {
+    for await (const raw of this.sellerProductRows(account, options?.maxPages ?? 10)) {
+      const externalProductId = productIdOf(raw);
+      if (externalProductId === null) continue;
+      yield {
+        externalProductId: externalProductId.trim(),
+        title: productTitleOf(raw, externalProductId),
+        raw,
+      };
+    }
+  }
+
+  /** Bounded variant list of one product, for the admin repair flow. */
+  async listProductVariants(
+    account: AdapterAccount,
+    externalProductId: string,
+  ): Promise<readonly ExternalProductVariant[]> {
+    const variants = await this.variantsForProduct(
+      account,
+      externalProductId,
+      new Map<string, readonly DigikalaVariantRef[]>(),
+    );
+    return variants.map((variant) => ({
+      externalVariantId: variant.id,
+      ...(variant.supplierCode === null ? {} : { sku: variant.supplierCode }),
+    }));
+  }
+
+  /**
+   * First-sync catalogue import from `GET /products/seller`. Each product is
+   * mapped with the Digikala **product** id plus the **real variant** id read
+   * from `/product-edit` (falling back to `/variants/creation`); the variant id
+   * is what stock/price writes require, so the seller-list row id is never used
+   * for it. Variant lookups are cached and capped per product for the run.
+   */
+  async *pullProducts(account: AdapterAccount): AsyncIterable<ExternalProduct> {
+    const variantCache = new Map<string, readonly DigikalaVariantRef[]>();
+    for await (const raw of this.sellerProductRows(account, 3)) {
+      const externalProductId = productIdOf(raw);
+      if (externalProductId === null) continue;
+      const body = record(raw);
+      const product = record(body['product']);
+
+      const resolved = await this.variantsForProduct(account, externalProductId, variantCache);
+      // The seller row may already embed a variant list; use it only when the
+      // dedicated endpoints returned nothing.
+      const variants = (
+        resolved.length > 0 ? resolved : collectVariants(raw, externalProductId)
+      ).slice(0, MAX_VARIANTS_PER_PRODUCT);
+      const variant = variants[0];
+
+      const title = productTitleOf(raw, externalProductId);
+      const sku =
+        variant?.supplierCode ??
+        stringValue(body['sku']) ??
+        stringValue(body['seller_sku']) ??
+        stringValue(product['sku']);
+      const barcode =
+        stringValue(body['barcode']) ?? stringValue(body['ean']) ?? stringValue(product['barcode']);
+      const price =
+        stringValue(body['price']) ??
+        stringValue(body['selling_price']) ??
+        stringValue(body['sale_price']) ??
+        stringValue(product['price']) ??
+        stringValue(product['selling_price']);
+      const available =
+        stringValue(body['stock']) ??
+        stringValue(body['available']) ??
+        stringValue(body['inventory']) ??
+        stringValue(product['stock']) ??
+        stringValue(product['available']);
+
+      yield {
+        externalProductId: externalProductId.trim(),
+        ...(variant === undefined ? {} : { externalVariantId: variant.id }),
+        title,
+        ...(sku === null ? {} : { sku }),
+        ...(barcode === null ? {} : { barcode }),
+        ...(price === null ? {} : { price }),
+        ...(available === null ? {} : { available }),
+        raw,
+      };
     }
   }
 

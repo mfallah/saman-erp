@@ -12,7 +12,7 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { WarehouseService } from './warehouse.service';
-import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PickScanBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
+import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PickScanBody, PickTaskAssignBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
 
 function offset(data: readonly unknown[], total: number, page: number, perPage: number) {
   return apiData(data, {
@@ -302,5 +302,32 @@ export class PickTasksController {
   async cancel(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
     const { id } = parseWith(IdParam, params);
     return apiData(await this.service.cancelPickTask(ctx, id, parseWith(TaskCancelBody, body).reason));
+  }
+}
+
+/**
+ * Picker-facing feed and manual reassignment. Mounted under `/warehouse` because
+ * these are the routes the picking UI calls; execution stays on `/pick-tasks`.
+ * `warehouse.pick` is the registered execute/assign key (there is no
+ * `warehouse.pick.assign` in the permission registry).
+ */
+@ApiTags('warehouse')
+@ApiBearerAuth()
+@Controller('warehouse/pick-tasks')
+export class WarehousePickTasksController {
+  constructor(private readonly service: WarehouseService) {}
+
+  @Get('mine')
+  @Permissions('warehouse.pick.read')
+  async mine(@CurrentTenant() ctx: TenantContext) {
+    return apiData(await this.service.listMyPickTasks(ctx, 100));
+  }
+
+  @Patch(':id/assign')
+  @Permissions('warehouse.pick')
+  @Audited('warehouse.pick.assign')
+  async assign(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.reassignPickTask(ctx, id, parseWith(PickTaskAssignBody, body)));
   }
 }

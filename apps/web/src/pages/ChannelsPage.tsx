@@ -572,6 +572,31 @@ export function ChannelsPage() {
               آزمایش اتصال
             </Button>
           ) : null}
+          {canWriteCredentials && account.channelCode === 'digikala' ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (!window.confirm('نگاشت شناسه‌های محصولات این حساب با دیجی‌کالا بازنویسی شود؟')) return;
+                void api
+                  .post<{ scanned: number; updated: number; skipped: number }>(
+                    `/channel-accounts/${account.id}/digikala/remap-products`,
+                    {},
+                    { idempotencyKey: newRequestId() },
+                  )
+                  .then((result) => {
+                    toast.success(
+                      'نگاشت بازنویسی شد',
+                      `بررسی‌شده: ${formatNumber(result.scanned)} · اصلاح‌شده: ${formatNumber(result.updated)} · ردشده: ${formatNumber(result.skipped)}`,
+                    );
+                    void queryClient.invalidateQueries({ queryKey: ['channels'] });
+                  })
+                  .catch((error) => toast.error('بازنویسی نگاشت ناموفق بود', toFaErrorMessage(error)));
+              }}
+            >
+              بازنویسی نگاشت محصولات
+            </Button>
+          ) : null}
           {canWriteCredentials ? (
             <Button
               size="sm"

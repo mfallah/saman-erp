@@ -8,7 +8,7 @@ import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { useStationScans } from '../lib/use-scan-queue';
 import { useHasPermission } from '../lib/use-auth';
-import type { PickTask } from '../types/api';
+import type { MyPickTask, PickTask } from '../types/api';
 import { PermissionNotice } from '../components/auth/Can';
 import { Badge, StatusBadge } from '../components/ui/Badge';
 import { BarcodeInput } from '../components/ui/BarcodeInput';
@@ -64,6 +64,13 @@ export function PickingPage() {
     queryKey: queryKeys.fulfillment.pickTask(selectedTaskId ?? ''),
     queryFn: () => api.get<PickTask>(`/pick-tasks/${selectedTaskId ?? ''}`),
     enabled: canRead && selectedTaskId !== null,
+  });
+
+  const myTasksQuery = useQuery({
+    queryKey: ['pick-tasks', 'mine'] as const,
+    queryFn: () => api.get<readonly MyPickTask[]>('/warehouse/pick-tasks/mine'),
+    enabled: canRead,
+    refetchInterval: station.online ? 30_000 : false,
   });
 
   const invalidateTask = (): void => {
@@ -141,6 +148,7 @@ export function PickingPage() {
   const tasks = tasksQuery.data?.items ?? [];
   const task = taskQuery.data;
   const lines = task?.lines ?? [];
+  const myTasks = myTasksQuery.data ?? [];
 
   return (
     <>
@@ -162,6 +170,83 @@ export function PickingPage() {
           اتصال شبکه قطع است؛ اسکن‌ها به‌صورت امن در همین دستگاه ذخیره و پس از اتصال ارسال می‌شوند.
         </div>
       )}
+
+      <Card className="mb-4">
+        <CardHeader
+          title="وظایف من"
+          description="کارهای برداشت اختصاص‌یافته به شما، به‌ترتیب مسیر برداشت"
+          actions={
+            myTasks.length > 0 ? <Badge tone="info">{formatNumber(myTasks.length)} کار</Badge> : undefined
+          }
+        />
+        {myTasksQuery.isLoading && <p className="text-sm text-slate-500">در حال دریافت…</p>}
+        {myTasksQuery.isError && (
+          <ErrorState error={myTasksQuery.error} onRetry={() => void myTasksQuery.refetch()} />
+        )}
+        {myTasksQuery.data !== undefined && myTasks.length === 0 && (
+          <EmptyState
+            icon={<ListChecks className="size-9" />}
+            title="وظیفه‌ای برای شما ثبت نشده است"
+            description="کارهای برداشت سفارش‌های کانال به‌صورت خودکار بین نیروهای فعال انبار تقسیم می‌شوند."
+          />
+        )}
+        <ul className="space-y-2">
+          {myTasks.map((item) => (
+            <li key={item.id} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedTaskId(item.id);
+                    setScanError(null);
+                  }}
+                  className="text-start"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="font-medium text-sm text-slate-900 dark:text-slate-100">
+                      {item.orderNo ?? item.id.slice(0, 8)}
+                    </span>
+                    <StatusBadge status={item.status} />
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-500">
+                    {item.sku ?? '—'} · {item.title ?? 'کالا'}
+                  </span>
+                  <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                    <span className="inline-flex items-center gap-1">
+                      <MapPin aria-hidden className="size-3" />
+                      <span dir="ltr">{item.locationCode}</span>
+                    </span>
+                    <span>تعداد: {formatNumber(item.quantity, 2)}</span>
+                    <span>مسئول: {item.assignedToName ?? '—'}</span>
+                  </span>
+                </button>
+                <div className="flex shrink-0 gap-2">
+                  {item.status === 'pending' && (
+                    <Button
+                      size="sm"
+                      icon={<Play className="size-4" />}
+                      loading={startMutation.isPending && startMutation.variables === item.id}
+                      onClick={() => startMutation.mutate(item.id)}
+                    >
+                      شروع
+                    </Button>
+                  )}
+                  {item.status === 'in_progress' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={completeMutation.isPending && completeMutation.variables === item.id}
+                      onClick={() => completeMutation.mutate(item.id)}
+                    >
+                      تکمیل
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>

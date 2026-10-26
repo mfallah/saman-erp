@@ -14,6 +14,7 @@ import type { ChannelSyncService } from '../modules/channels/services/channel-sy
 import type { OutboundWebhookService } from '../modules/channels/services/outbound-webhook.service';
 import type { NotificationsService } from '../modules/notifications/services/notifications.service';
 import type { PostingService } from '../modules/accounting/posting/posting.service';
+import type { PickAssignmentPort } from '../modules/warehouse/pick-assignment.service';
 import type { AccountingEventType } from '../modules/accounting/events';
 import type { TenantContext } from '../common/contracts';
 import {
@@ -62,6 +63,7 @@ export interface HandlerDependencies {
   readonly notifications: NotificationsService;
   readonly jobs: DatabaseJobQueue;
   readonly posting: PostingService;
+  readonly pickAssignment: PickAssignmentPort;
 }
 
 export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxHandler[] {
@@ -174,6 +176,21 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
         { eventId: event.id, externalOrderId: parsed.externalOrderId, orderId, lines: lines.length },
         'channel order materialised',
       );
+
+      // Pick tasks are a side effect: a failure here must not roll back (or
+      // endlessly re-dispatch) an order that is already materialised.
+      try {
+        const tasks = await deps.pickAssignment.assignOrderPickTasks({
+          orgId: BigInt(org),
+          orderInternalId: BigInt(orderId),
+        });
+        deps.logger.info({ eventId: event.id, orderId, tasks }, 'pick tasks created for channel order');
+      } catch (error) {
+        deps.logger.error(
+          { eventId: event.id, orderId, error: error instanceof Error ? error.message : String(error) },
+          'pick task auto-assignment failed',
+        );
+      }
     },
   };
 

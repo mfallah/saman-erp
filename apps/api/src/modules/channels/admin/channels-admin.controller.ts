@@ -755,6 +755,131 @@ export class ChannelsAdminController {
     }
   }
 
+  /**
+   * Repairs Digikala external ids on **existing** mappings, in place.
+   *
+   * Digikala's seller-list row id is neither the product id nor a variant id:
+   * stocks/orders are keyed by `product_id` (≈19 9xx xxx) and the variant id
+   * (≈82 xxx xxx). Every seller product is matched to at most one local mapping
+   * — by `external_product_id` first, then by the trimmed local product name —
+   * and that mapping is re-pointed, so no product/variant is created here and
+   * re-running is a no-op.
+   */
+  @Post('channel-accounts/:accountId/digikala/remap-products')
+  @Permissions('channel.account.update')
+  @ApiOperation({ summary: 'Repair Digikala product/variant ids on existing mappings (idempotent)' })
+  async digikalaRemapProducts(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+  ) {
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const resolved = await this.accounts.resolveForSync(ctx.orgId.toString(), accountInternal);
+    if (
+      resolved.adapter.code !== 'digikala' ||
+      resolved.adapter.listProductCatalog === undefined ||
+      resolved.adapter.listProductVariants === undefined
+    ) {
+      throw new BadRequestException({
+        code: 'VALIDATION_ERROR',
+        message: 'این حساب دیجی‌کالا نیست.',
+      });
+    }
+    const listProductCatalog = resolved.adapter.listProductCatalog.bind(resolved.adapter);
+    const listProductVariants = resolved.adapter.listProductVariants.bind(resolved.adapter);
+
+    // The seller list is bounded: 50 rows/page, never more than 10 pages.
+    const MAX_PAGES = 10;
+    const seen = new Set<string>();
+    let scanned = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    for await (const entry of listProductCatalog(resolved.account, { maxPages: MAX_PAGES })) {
+      const externalProductId = entry.externalProductId.trim();
+      if (externalProductId.length === 0 || seen.has(externalProductId)) continue;
+      seen.add(externalProductId);
+      scanned += 1;
+
+      const title = entry.title.trim();
+      const mappings = await this.sql`
+        select m.id::text as id,
+               m.external_product_id::text as external_product_id,
+               m.external_variant_id::text as external_variant_id,
+               m.external_sku::text as external_sku
+        from erp.channel_product_mappings m
+        join erp.product_variants v on v.id = m.product_variant_id
+        join erp.products p on p.id = v.product_id
+        where m.channel_account_id = ${accountInternal}::bigint
+          and m.deleted_at is null
+          and p.deleted_at is null
+          and (
+            m.external_product_id = ${externalProductId}
+            or (${title.length > 0}::boolean and btrim(p.name) = ${title})
+          )
+        order by (m.external_product_id = ${externalProductId}) desc, m.id asc
+        limit 1
+      `;
+      const mapping = mappings[0];
+      if (mapping === undefined) {
+        skipped += 1;
+        continue;
+      }
+
+      const variants = await listProductVariants(resolved.account, externalProductId);
+      const variant = variants.find((candidate) => /^\d+$/.test(candidate.externalVariantId.trim()));
+      if (variant === undefined) {
+        skipped += 1;
+        continue;
+      }
+      const externalVariantId = variant.externalVariantId.trim();
+      const externalSku = (variant.sku ?? '').trim();
+      const currentProductId = String(mapping['external_product_id'] ?? '').trim();
+      const currentVariantId = String(mapping['external_variant_id'] ?? '').trim();
+      const currentSku = String(mapping['external_sku'] ?? '').trim();
+      if (
+        currentProductId === externalProductId &&
+        currentVariantId === externalVariantId &&
+        currentSku === externalSku
+      ) {
+        // Already repaired: a re-run reports no changes.
+        skipped += 1;
+        continue;
+      }
+
+      // The (account, external_variant_id) unique index rejects a second mapping
+      // for the same variant; skipping keeps the run idempotent instead of 500.
+      const changed = await this.sql`
+        update erp.channel_product_mappings m
+        set external_product_id = ${externalProductId},
+            external_variant_id = ${externalVariantId},
+            external_sku = ${externalSku.length > 0 ? externalSku : null},
+            sync_status = 'synced',
+            last_synced_at = now(),
+            last_error = null
+        where m.id = ${String(mapping['id'])}::bigint
+          and not exists (
+            select 1
+            from erp.channel_product_mappings other
+            where other.channel_account_id = m.channel_account_id
+              and other.external_variant_id = ${externalVariantId}
+              and other.id <> m.id
+              and other.deleted_at is null
+          )
+        returning m.id
+      `;
+      if (changed.length === 0) {
+        skipped += 1;
+        continue;
+      }
+      updated += 1;
+    }
+
+    return apiData({ scanned, updated, skipped });
+  }
+
   @Post('channel-accounts/:accountId/test')
   @Permissions('channel.account.test')
   @ApiOperation({ summary: 'Authenticate against the channel and record a health check' })

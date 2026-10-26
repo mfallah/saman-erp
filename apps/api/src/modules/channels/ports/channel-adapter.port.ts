@@ -43,6 +43,23 @@ export interface ExternalProduct {
   readonly raw?: unknown;
 }
 
+/**
+ * One catalogue row for the repair flow: the channel's **product** id and its
+ * title. Product ids are never variant ids — stock/price writes need the latter.
+ */
+export interface ExternalProductCatalogEntry {
+  readonly externalProductId: string;
+  readonly title: string;
+  readonly raw?: unknown;
+}
+
+/** A sellable variant of one channel product, as the channel identifies it. */
+export interface ExternalProductVariant {
+  readonly externalVariantId: string;
+  /** Channel-side supplier code, when the channel returns one. */
+  readonly sku?: string;
+}
+
 export interface ChannelAdapter {  readonly code: ChannelCode;
   readonly capabilities: ReadonlySet<Capability>;
   /** Code-declared hosts only (production/sandbox), asserted at boot. */
@@ -70,6 +87,25 @@ export interface ChannelAdapter {  readonly code: ChannelCode;
 
   /** First-sync catalogue read used to seed products, variants and mappings. */
   pullProducts?(account: AdapterAccount): AsyncIterable<ExternalProduct>;
+
+  /**
+   * Catalogue ids only (bounded page window), used by the admin repair flow that
+   * re-points existing mappings at the channel's real product ids.
+   */
+  listProductCatalog?(
+    account: AdapterAccount,
+    options?: { readonly maxPages?: number },
+  ): AsyncIterable<ExternalProductCatalogEntry>;
+
+  /**
+   * Real variant ids of one channel product. Never returns a product id in
+   * `externalVariantId`: an id the channel will reject on stock writes must not
+   * be reported as a variant.
+   */
+  listProductVariants?(
+    account: AdapterAccount,
+    externalProductId: string,
+  ): Promise<readonly ExternalProductVariant[]>;
 
   /** Reconciliation-only stock read; never used as a write source of truth. */
   pullInventory?(

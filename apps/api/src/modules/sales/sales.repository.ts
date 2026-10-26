@@ -542,7 +542,9 @@ export class SalesRepository {
   private orderFrom(tx: Db) {
     return tx`
       from erp.sales_orders o
-      join erp.customers c on c.id = o.customer_id
+      -- channel orders are materialised without an ERP customer, so this must
+      -- stay a LEFT JOIN or those orders disappear from the list.
+      left join erp.customers c on c.id = o.customer_id
       left join erp.warehouses w on w.id = o.warehouse_id
       left join erp.channel_accounts ca on ca.id = o.channel_account_id
       left join erp.sales_channels ch on ch.id = ca.channel_id

@@ -15,7 +15,7 @@ import { SalesService } from '../sales/sales.service';
 import type { Db } from './warehouse.pg-support';
 import { notFound, toBigInt } from './warehouse.pg-support';
 import { WarehouseRepository } from './warehouse.repository';
-import { type LocationRow, type PickTaskRow, type PickWaveRow, type WarehouseRow } from './warehouse.repository';
+import { type LocationRow, type MyPickTaskRow, type PickTaskRow, type PickWaveRow, type WarehouseRow } from './warehouse.repository';
 import { WAREHOUSE_EVENTS, type PickTaskEventPayload, type WaveEventPayload } from './warehouse.events';
 import { assertValidLocationParent, assignPickRoute, generateLocationCode, labelNumber, normalizeLocationBarcode, orderPickTasks, suggestPutaway, verifyScan, type LocationNodeType } from './engines/location.engine';
 import type {
@@ -25,6 +25,7 @@ import type {
   CreateWarehouseBody,
   LocationNodeInput,
   PickScanBody,
+  PickTaskAssignBody,
   PutawaySuggestionQuery,
   ReleaseWaveBody,
   UpdateLocationBody,
@@ -92,6 +93,22 @@ function pickTaskView(row: PickTaskRow): Record<string, unknown> {
     sequenceNo: row.sequenceNo,
     status: row.status,
     assignedTo: row.assignedTo,
+  };
+}
+
+function myPickTaskView(row: MyPickTaskRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    status: row.status,
+    orderNo: row.orderNo,
+    sku: row.sku,
+    title: row.title,
+    quantity: row.quantity,
+    quantityPicked: row.quantityPicked,
+    locationCode: row.locationCode,
+    sequenceNo: row.sequenceNo,
+    assignedTo: row.assignedTo,
+    assignedToName: row.assignedToName,
   };
 }
 
@@ -743,6 +760,37 @@ export class WarehouseService {
         status: task.status,
         assignedTo: toBigInt(body.assigneeUserId),
       });
+      return pickTaskView(updated);
+    });
+  }
+
+  /** Open tasks for the caller's picking station (`GET warehouse/pick-tasks/mine`). */
+  async listMyPickTasks(ctx: TenantContext, limit: number): Promise<Record<string, unknown>[]> {
+    if (ctx.actorId === null) return [];
+    const rows = await this.repo.listMyPickTasks(this.db, {
+      orgId: ctx.orgId,
+      assignedTo: ctx.actorId,
+      limit,
+    });
+    return rows.map(myPickTaskView);
+  }
+
+  /** Manual reassignment / release (`PATCH warehouse/pick-tasks/:id/assign`). */
+  async reassignPickTask(
+    ctx: TenantContext,
+    publicId: string,
+    body: PickTaskAssignBody,
+  ): Promise<Record<string, unknown>> {
+    return this.db.begin(async (tx) => {
+      const task = await this.repo.lockPickTask(tx, ctx.orgId, publicId);
+      if (task === null) throw notFound('pick_task');
+      let assignedTo: bigint | null = null;
+      if (body.userId !== undefined) {
+        assignedTo = await this.repo.findActiveUserId(tx, ctx.orgId, body.userId);
+        if (assignedTo === null) throw notFound('user');
+      }
+      const updated = await this.repo.assignPickTask(tx, ctx.orgId, publicId, assignedTo);
+      if (updated === null) throw notFound('pick_task');
       return pickTaskView(updated);
     });
   }

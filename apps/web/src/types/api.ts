@@ -343,6 +343,21 @@ export interface PickTask {
   readonly sequence?: number;
 }
 
+/** One open task of the caller (`GET /warehouse/pick-tasks/mine`). */
+export interface MyPickTask {
+  readonly id: string;
+  readonly status: string;
+  readonly orderNo?: string | null;
+  readonly sku?: string | null;
+  readonly title?: string | null;
+  readonly quantity: string;
+  readonly quantityPicked?: string;
+  readonly locationCode: string;
+  readonly sequenceNo?: number;
+  readonly assignedTo?: string | null;
+  readonly assignedToName?: string | null;
+}
+
 export interface PackingStation extends Ref {
   readonly name: string;
   readonly warehouse?: Ref;
@@ -499,6 +514,7 @@ export interface ChannelHealthRow {
 
 export interface ChannelAccount extends Ref {
   readonly nameFa: string;
+  readonly channelCode?: string;
   readonly settings?: Record<string, unknown>;
   readonly externalSellerId?: string;
   readonly active?: boolean;

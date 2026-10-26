@@ -17,6 +17,8 @@ import { NotificationsModule } from '../modules/notifications/notifications.modu
 import { AutomationModule } from '../modules/automation/automation.module';
 import { AccountingModule } from '../modules/accounting/accounting.module';
 import { PostingService } from '../modules/accounting/posting/posting.service';
+import { WarehouseModule } from '../modules/warehouse/warehouse.module';
+import { PickAssignmentService } from '../modules/warehouse/pick-assignment.service';
 import { SqlOutboxStore } from './queue/outbox.store';
 import { DatabaseJobQueue } from './queue/job-queue';
 import { OutboxDispatcher } from './queue/outbox.dispatcher';
@@ -35,7 +37,7 @@ import { OutboundWebhookService } from '../modules/channels/services/outbound-we
 import { NotificationsService } from '../modules/notifications/services/notifications.service';
 
 @Module({
-  imports: [AppConfigModule, LoggingModule, PlatformModule, ChannelsModule, IntegrationsModule, NotificationsModule, AutomationModule, AccountingModule],
+  imports: [AppConfigModule, LoggingModule, PlatformModule, ChannelsModule, IntegrationsModule, NotificationsModule, AutomationModule, AccountingModule, WarehouseModule],
   providers: [
     {
       provide: SqlOutboxStore,
@@ -58,8 +60,9 @@ import { NotificationsService } from '../modules/notifications/services/notifica
         notifications: NotificationsService,
         jobs: DatabaseJobQueue,
         posting: PostingService,
+        pickAssignment: PickAssignmentService,
       ): OutboxDispatcher => {
-        const handlers = buildOutboxHandlers({ db, logger, sync, outbound, notifications, jobs, posting });
+        const handlers = buildOutboxHandlers({ db, logger, sync, outbound, notifications, jobs, posting, pickAssignment });
         const dispatcher = new OutboxDispatcher({
           store,
           logger,
@@ -77,6 +80,7 @@ import { NotificationsService } from '../modules/notifications/services/notifica
         NotificationsService,
         DatabaseJobQueue,
         PostingService,
+        PickAssignmentService,
       ],
     },
     {

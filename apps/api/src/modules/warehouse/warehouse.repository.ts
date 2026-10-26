@@ -73,6 +73,34 @@ export interface PickTaskRow {
   barcode: string | null;
 }
 
+/** Row returned by the picker's own task feed (`GET warehouse/pick-tasks/mine`). */
+export interface MyPickTaskRow {
+  id: string;
+  status: string;
+  orderNo: string | null;
+  sku: string | null;
+  title: string | null;
+  quantity: string;
+  quantityPicked: string;
+  locationCode: string;
+  sequenceNo: number;
+  assignedTo: string | null;
+  assignedToName: string | null;
+}
+
+/** An order line still waiting for its auto-created pick task. */
+export interface PickQueueLineRow {
+  id: string;
+  variantInternalId: string;
+  quantity: string;
+}
+
+/** Active warehouse picker and the number of tasks already open for them. */
+export interface PickerRow {
+  id: string;
+  openTasks: number;
+}
+
 export interface PutawayTaskRow {
   internalId: string;
   id: string;
@@ -682,11 +710,13 @@ export class WarehouseRepository {
     return rows[0] ?? null;
   }
 
+  // Tasks are scoped through their sales order: channel orders are materialised
+  // without a pick wave, so the wave→warehouse path alone would miss them.
   async findPickTask(tx: Db, orgId: bigint, publicId: string): Promise<PickTaskRow | null> {
     const rows = await tx<{ id: string }[]>`
       select t.id::text as id from erp.pick_tasks t
-      join erp.warehouses w on w.id = (select warehouse_id from erp.pick_waves where id = t.wave_id)
-      where w.organization_id = ${orgId} and t.public_id = ${publicId}
+      join erp.sales_orders o on o.id = t.order_id
+      where o.organization_id = ${orgId} and t.public_id = ${publicId}
     `;
     const row = rows[0];
     return row === undefined ? null : this.findPickTaskById(tx, BigInt(row.id));
@@ -695,13 +725,161 @@ export class WarehouseRepository {
   async lockPickTask(tx: Db, orgId: bigint, publicId: string): Promise<PickTaskRow | null> {
     const rows = await tx<{ id: string }[]>`
       select t.id::text as id from erp.pick_tasks t
-      join erp.pick_waves pw on pw.id = t.wave_id
-      join erp.warehouses w on w.id = pw.warehouse_id
-      where w.organization_id = ${orgId} and t.public_id = ${publicId}
+      join erp.sales_orders o on o.id = t.order_id
+      where o.organization_id = ${orgId} and t.public_id = ${publicId}
       for update of t
     `;
     const row = rows[0];
     return row === undefined ? null : this.findPickTaskById(tx, BigInt(row.id));
+  }
+
+  /** Open tasks assigned to one picker, with the fields the picking station shows. */
+  async listMyPickTasks(
+    tx: Db,
+    params: { orgId: bigint; assignedTo: bigint; limit: number },
+  ): Promise<MyPickTaskRow[]> {
+    return tx<MyPickTaskRow[]>`
+      select t.public_id as id, t.status, o.order_no as "orderNo",
+             coalesce(sol.sku_snapshot, v.sku) as sku,
+             coalesce(sol.title_snapshot, v.title, p.name) as title,
+             t.quantity_required::text as quantity, t.quantity_picked::text as "quantityPicked",
+             l.full_code as "locationCode", t.sequence_no as "sequenceNo",
+             au.public_id as "assignedTo", au.full_name as "assignedToName"
+      from erp.pick_tasks t
+      join erp.sales_orders o on o.id = t.order_id
+      join erp.product_variants v on v.id = t.product_variant_id
+      join erp.products p on p.id = v.product_id
+      join erp.warehouse_locations l on l.id = t.location_id
+      left join erp.sales_order_lines sol on sol.id = t.sales_order_line_id
+      left join erp.users au on au.id = t.assigned_to
+      where o.organization_id = ${params.orgId}
+        and t.assigned_to = ${params.assignedTo}
+        and t.status in ('pending', 'in_progress')
+      order by l.pick_priority asc, l.full_code asc, t.sequence_no asc
+      limit ${params.limit}
+    `;
+  }
+
+  async findActiveUserId(tx: Db, orgId: bigint, publicId: string): Promise<bigint | null> {
+    const rows = await tx<{ id: string }[]>`
+      select id::text as id from erp.users
+      where organization_id = ${orgId} and public_id = ${publicId}
+        and deleted_at is null and status = 'active'
+      limit 1
+    `;
+    return rows[0] === undefined ? null : BigInt(rows[0].id);
+  }
+
+  /** Manual reassignment; `assignedTo: null` releases the task back to the pool. */
+  async assignPickTask(
+    tx: Db,
+    orgId: bigint,
+    publicId: string,
+    assignedTo: bigint | null,
+  ): Promise<PickTaskRow | null> {
+    const rows = await tx<{ id: string }[]>`
+      update erp.pick_tasks t
+      set assigned_to = ${assignedTo}
+      from erp.sales_orders o
+      where o.id = t.order_id and o.organization_id = ${orgId} and t.public_id = ${publicId}
+      returning t.id::text as id
+    `;
+    const row = rows[0];
+    return row === undefined ? null : this.findPickTaskById(tx, BigInt(row.id));
+  }
+
+  // ---------------------------------------------------- channel-order dispatch
+
+  async findOrderWarehouse(tx: Db, orgId: bigint, orderInternalId: bigint): Promise<string | null> {
+    const rows = await tx<{ warehouseInternalId: string | null }[]>`
+      select warehouse_id::text as "warehouseInternalId"
+      from erp.sales_orders
+      where id = ${orderInternalId} and organization_id = ${orgId}
+    `;
+    return rows[0]?.warehouseInternalId ?? null;
+  }
+
+  /** Order lines without a pick task yet — the insert is the idempotency gate. */
+  async listUnpickedOrderLines(tx: Db, orderInternalId: bigint): Promise<PickQueueLineRow[]> {
+    return tx<PickQueueLineRow[]>`
+      select l.id::text as id, l.product_variant_id::text as "variantInternalId", l.quantity::text as quantity
+      from erp.sales_order_lines l
+      where l.order_id = ${orderInternalId}
+        and not exists (select 1 from erp.pick_tasks t where t.sales_order_line_id = l.id)
+      order by l.line_no asc
+    `;
+  }
+
+  /** Active users holding the execute permission (`warehouse.pick`). */
+  async listActivePickers(tx: Db, orgId: bigint): Promise<PickerRow[]> {
+    return tx<PickerRow[]>`
+      select u.id::text as id,
+             (select count(*) from erp.pick_tasks t
+               where t.assigned_to = u.id and t.status in ('pending', 'in_progress'))::int as "openTasks"
+      from erp.users u
+      where u.organization_id = ${orgId}
+        and u.status = 'active'
+        and u.deleted_at is null
+        and exists (
+          select 1 from erp.user_roles ur
+          join erp.role_permissions rp on rp.role_id = ur.role_id
+          join erp.permissions p on p.id = rp.permission_id
+          where ur.user_id = u.id
+            and p.key = 'warehouse.pick'
+            and (ur.expires_at is null or ur.expires_at > now())
+        )
+      order by u.id asc
+    `;
+  }
+
+  /** Stocked location for the variant, else any pick face in the warehouse. */
+  async findPickLocationForVariant(
+    tx: Db,
+    warehouseInternalId: string,
+    variantInternalId: string,
+  ): Promise<string | null> {
+    const rows = await tx<{ id: string | null }[]>`
+      select coalesce(
+        (select b.location_id
+           from erp.inventory_balances b
+           join erp.warehouse_locations l on l.id = b.location_id
+          where b.warehouse_id = ${warehouseInternalId}::bigint
+            and b.product_variant_id = ${variantInternalId}::bigint
+            and (b.on_hand - b.reserved - b.safety_buffer - b.damaged) > 0
+            and l.is_pickable and l.is_active and l.deleted_at is null
+          order by l.pick_priority asc, l.full_code asc, b.id asc
+          limit 1),
+        (select l.id
+           from erp.warehouse_locations l
+          where l.warehouse_id = ${warehouseInternalId}::bigint
+            and l.is_pickable and l.is_active and l.deleted_at is null
+          order by l.pick_priority asc, l.full_code asc
+          limit 1)
+      )::text as id
+    `;
+    return rows[0]?.id ?? null;
+  }
+
+  async insertOrderPickTask(
+    tx: Db,
+    input: {
+      orderInternalId: bigint;
+      lineInternalId: string;
+      variantInternalId: string;
+      locationInternalId: string;
+      quantity: string;
+      sequenceNo: number;
+      assignedTo: bigint | null;
+    },
+  ): Promise<void> {
+    await tx`
+      insert into erp.pick_tasks
+        (public_id, order_id, sales_order_line_id, product_variant_id, location_id,
+         quantity_required, sequence_no, status, assigned_to)
+      values (gen_random_uuid(), ${input.orderInternalId}, ${input.lineInternalId}::bigint,
+              ${input.variantInternalId}::bigint, ${input.locationInternalId}::bigint,
+              ${input.quantity}::numeric, ${input.sequenceNo}, 'pending', ${input.assignedTo})
+    `;
   }
 
   async listPickTasks(
@@ -713,10 +891,11 @@ export class WarehouseRepository {
       from erp.pick_tasks t
       left join erp.pick_waves pw on pw.id = t.wave_id
       left join erp.warehouses w on w.id = pw.warehouse_id
+      left join erp.sales_orders o on o.id = t.order_id
       left join erp.warehouse_locations l on l.id = t.location_id
       where (
           (${params.waveInternalId}::bigint is not null and t.wave_id = ${params.waveInternalId}::bigint)
-          or (${params.waveInternalId}::bigint is null and w.organization_id = ${params.orgId})
+          or (${params.waveInternalId}::bigint is null and coalesce(o.organization_id, w.organization_id) = ${params.orgId})
         )
         and (${params.status}::text is null or t.status = ${params.status})
         and (${params.assignedTo}::bigint is null or t.assigned_to = ${params.assignedTo}::bigint)

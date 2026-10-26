@@ -197,6 +197,8 @@ const EnvSchema = z.object({
   workerConcurrency: intFromEnv(10, 1, 500),
   outboxBatchSize: intFromEnv(100, 1, 10_000),
   outboxPollIntervalMs: intFromEnv(1000, 50, 60_000),
+  /** Max open pick tasks auto-assigned to one warehouse picker. */
+  pickTaskCapacity: intFromEnv(20, 1, 500),
 
   // --- Observability -------------------------------------------------------
   metricsEnabled: boolFromEnv(true),
