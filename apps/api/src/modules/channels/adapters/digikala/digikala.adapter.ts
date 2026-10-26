@@ -395,6 +395,8 @@ export class DigikalaAdapter implements ChannelAdapter {
       { path: DIGIKALA_PATHS.sbsOrders, operation: 'digikala.orders.sbs', query: { sort: 'order_date', order: 'desc' } },
     ];
     for (const stream of streams) {
+      const isDk = stream.path === DIGIKALA_PATHS.orders;
+      const grouped = new Map<string, CanonicalOrder>();
       for (let page = 1; page <= 20; page += 1) {
         let response;
         try {
@@ -415,13 +417,82 @@ export class DigikalaAdapter implements ChannelAdapter {
           break;
         }
         const rows = orderItems(response.json);
-        for (const raw of rows) {
-          const order = this.mapOrder(raw);
-          if (order.placedAt.getTime() >= since.getTime()) yield order;
+        if (isDk) {
+          // DK `/orders` returns one row per order *item*; group by order id.
+          for (const raw of rows) {
+            const item = this.mapOrderItem(raw);
+            if (item === null) continue;
+            const existing = grouped.get(item.orderId);
+            if (existing === undefined) {
+              grouped.set(item.orderId, item.order);
+            } else {
+              const merged: CanonicalOrder = {
+                ...existing,
+                lines: [...existing.lines, ...item.order.lines],
+                totals: {
+                  itemsTotal: String(BigInt(existing.totals.itemsTotal || '0') + BigInt(item.order.totals.itemsTotal || '0')),
+                  shipping: existing.totals.shipping,
+                  discount: String(BigInt(existing.totals.discount || '0') + BigInt(item.order.totals.discount || '0')),
+                  grandTotal: String(BigInt(existing.totals.grandTotal || '0') + BigInt(item.order.totals.grandTotal || '0')),
+                },
+              };
+              grouped.set(item.orderId, merged);
+            }
+          }
+        } else {
+          for (const raw of rows) {
+            const order = this.mapOrder(raw);
+            if (order.placedAt.getTime() >= since.getTime()) yield order;
+          }
         }
         if (rows.length < size) break;
       }
+      if (isDk) {
+        for (const order of grouped.values()) {
+          if (order.placedAt.getTime() >= since.getTime()) yield order;
+        }
+      }
     }
+  }
+
+  /** DK `/orders` rows are flat order *items* (one row per line). */
+  private mapOrderItem(raw: unknown): { orderId: string; order: CanonicalOrder } | null {
+    const body = record(raw);
+    const orderId = stringValue(body['order_id']);
+    const variantId = stringValue(body['product_variant_id']);
+    if (orderId === null || variantId === null) return null;
+    const quantity = stringValue(body['quantity']) ?? '0';
+    const unitPrice = stringValue(body['selling_price']) ?? '0';
+    const discount = stringValue(body['amazing_discount']) ?? '0';
+    const placedAt = new Date(stringValue(body['order_created_at']) ?? Date.now());
+    return {
+      orderId,
+      order: {
+        externalOrderId: orderId,
+        externalStatus: stringValue(body['status']) ?? 'unknown',
+        placedAt,
+        currency: 'IRR',
+        lines: [
+          {
+            externalLineId: `${orderId}:${variantId}`,
+            externalSku: stringValue(body['supplier_code']) ?? variantId,
+            externalVariantId: variantId,
+            quantity,
+            unitPrice,
+            discount,
+          },
+        ],
+        totals: {
+          itemsTotal: stringValue(body['total_price']) ?? unitPrice,
+          shipping: '0',
+          discount,
+          grandTotal: stringValue(body['total_price']) ?? unitPrice,
+        },
+        customerRefHash: hashPii(JSON.stringify({ orderId })),
+        shippingRefHash: hashPii(JSON.stringify({ orderId })),
+        rawPayloadHash: createHash('sha256').update(JSON.stringify(raw)).digest('hex'),
+      },
+    };
   }
 
   private mapOrder(raw: unknown): CanonicalOrder {
