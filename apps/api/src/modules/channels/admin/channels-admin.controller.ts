@@ -587,21 +587,19 @@ export class ChannelsAdminController {
     const settingsRows = await this.sql`select settings from erp.channel_accounts where id = ${accountInternal}::bigint limit 1`;
     const accountSettings = (settingsRows[0]?.['settings'] ?? {}) as Record<string, unknown>;
     const configuredUa = typeof accountSettings['userAgent'] === 'string' ? accountSettings['userAgent'] : '';
+    const sellerCode =
+      (typeof accountSettings['sellerCode'] === 'string' && accountSettings['sellerCode'].trim().length > 0
+        ? accountSettings['sellerCode'].trim()
+        : '') || configuredUa;
+    const mandatedUa = sellerCode.length > 0 ? `DigikalaTrustedBot/SelfToken/${sellerCode}` : '';
     // "Invalid User-Agent!" from the gateway is returned for every request that
     // carries an Authorization header, regardless of the UA value, so the token
     // is not being associated with the client. Probe the client-identification
     // header names Digikala gateways commonly use.
     const attempts: Array<{ name: string; headers: Record<string, string> }> = [];
-    const withClient = (name: string, key: string): void => {
-      if (bearer === null || clientCode.length === 0) return;
-      attempts.push({ name, headers: { authorization: bearer, [key]: clientCode, 'user-agent': ua } });
-    };
-    withClient('bearer+x-client-code', 'x-client-code');
-    withClient('bearer+client-code', 'client-code');
-    withClient('bearer+x-client-id', 'x-client-id');
-    withClient('bearer+client_id', 'client_id');
-    withClient('bearer+x-api-key', 'x-api-key');
-    withClient('bearer+api-key', 'api-key');
+    if (bearer !== null && mandatedUa.length > 0) {
+      attempts.push({ name: 'bearer+mandated-ua', headers: { authorization: bearer, 'user-agent': mandatedUa } });
+    }
     if (bearer !== null) {
       if (configuredUa.length > 0) {
         attempts.push({ name: 'bearer+ua-configured', headers: { authorization: bearer, 'user-agent': configuredUa } });
