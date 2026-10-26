@@ -618,13 +618,19 @@ export class ChannelsAdminController {
     }
     attempts.push({ name: 'no-auth', headers: { 'user-agent': ua } });
 
-    const paths: Array<{ name: string; path: string }> = [{ name: 'health', path: '/' }];
-    if (clientCode.length > 0) paths.push({ name: 'scopes', path: `/auth/scopes/${encodeURIComponent(clientCode)}` });
+    // Token verification per Digikala's blueprint is GET /api/v1/profile/ (the
+    // legacy layer); it returns 200 for a valid token where the Open API
+    // gateway may reject the same token with a misleading "Invalid User-Agent!".
+    const paths: Array<{ name: string; url: string }> = [
+      { name: 'legacy-profile', url: 'https://seller.digikala.com/api/v1/profile/' },
+      { name: 'open-api-health', url: `${base}/` },
+    ];
+    if (clientCode.length > 0) paths.push({ name: 'open-api-scopes', url: `${base}/auth/scopes/${encodeURIComponent(clientCode)}` });
 
     for (const attempt of attempts) {
       for (const path of paths) {
         try {
-          const response = await fetch(`${base}${path.path}`, {
+          const response = await fetch(path.url, {
             method: 'GET',
             headers: { accept: 'application/json', ...attempt.headers },
           });
