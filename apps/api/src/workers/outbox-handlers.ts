@@ -103,22 +103,28 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
       const db = deps.db;
       const org = event.organizationId;
       const orderNo = `${parsed.channelCode.toUpperCase()}-${parsed.externalOrderId}`.slice(0, 60);
+      let subtotal = 0;
+      let discountTotal = 0;
+      for (const line of lines) {
+        const quantity = Math.max(0, Number(line.quantity) || 0);
+        const unitPrice = Math.max(0, Math.trunc(Number(line.unitPrice) || 0));
+        const discount = Math.max(0, Math.trunc(Number(line.discount ?? '0') || 0));
+        subtotal += Math.max(0, quantity * unitPrice - discount);
+        discountTotal += discount;
+      }
+      const grandTotal = Math.max(Number(parsed.grandTotal) || 0, subtotal);
       const inserted = await db<{ id: string }[]>`
         insert into erp.sales_orders
           (organization_id, public_id, order_no, channel_account_id, external_order_id,
            warehouse_id, status, currency, subtotal_amount, discount_amount, tax_amount,
            shipping_amount, grand_total_amount, order_date, business_date, idempotency_key)
-        select ${org}, gen_random_uuid(), ${orderNo}, ${parsed.channelAccountId}::bigint,
-               ${parsed.externalOrderId},
-               (select id from erp.warehouses where organization_id = ${org} and deleted_at is null order by id limit 1),
-               'pending', 'IRR',
-               coalesce(sum(l.quantity * l.unit_price - coalesce(l.discount, 0)), 0),
-               coalesce(sum(coalesce(l.discount, 0)), 0), 0, 0,
-               greatest(${parsed.grandTotal}::bigint, coalesce(sum(l.quantity * l.unit_price), 0)),
-               ${parsed.placedAt}::timestamptz, (${parsed.placedAt}::timestamptz)::date,
-               ${`channel:order:${parsed.externalOrderId}`}
-          from jsonb_to_recordset(${JSON.stringify(lines)}::jsonb)
-               as l(quantity numeric, unit_price numeric, discount numeric)
+        values
+          (${org}, gen_random_uuid(), ${orderNo}, ${parsed.channelAccountId}::bigint,
+           ${parsed.externalOrderId},
+           (select id from erp.warehouses where organization_id = ${org} and deleted_at is null order by id limit 1),
+           'pending', 'IRR', ${subtotal}, ${discountTotal}, 0, 0, ${grandTotal},
+           ${parsed.placedAt}::timestamptz, (${parsed.placedAt}::timestamptz)::date,
+           ${`channel:order:${parsed.externalOrderId}`})
         on conflict (organization_id, order_no) do nothing
         returning id::text as id
       `;
