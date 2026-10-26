@@ -388,22 +388,39 @@ export class DigikalaAdapter implements ChannelAdapter {
 
   async *pullOrders(account: AdapterAccount, since: Date): AsyncIterable<CanonicalOrder> {
     const size = 50;
-    for (let page = 1; page <= 20; page += 1) {
-      const response = await this.withAuth(account, (authHeaders) =>
-        this.deps.http.request(account, {
-          operation: 'digikala.orders.pull',
-          method: 'GET',
-          path: DIGIKALA_PATHS.sbsOrders,
-          query: { page, size, sort: 'order_date', order: 'desc' },
-          authHeaders,
-        }),
-      );
-      const rows = orderItems(response.json);
-      for (const raw of rows) {
-        const order = this.mapOrder(raw);
-        if (order.placedAt.getTime() >= since.getTime()) yield order;
+    // Two different order streams: DK-fulfilled `/orders` and seller-fulfilled
+    // `/ship-by-seller-orders`. Both are canonicalised into the same shape.
+    const streams: Array<{ path: string; operation: string; query: Record<string, string | number> }> = [
+      { path: DIGIKALA_PATHS.orders, operation: 'digikala.orders.dk', query: { sort: 'order_created_at', order: 'desc' } },
+      { path: DIGIKALA_PATHS.sbsOrders, operation: 'digikala.orders.sbs', query: { sort: 'order_date', order: 'desc' } },
+    ];
+    for (const stream of streams) {
+      for (let page = 1; page <= 20; page += 1) {
+        let response;
+        try {
+          response = await this.withAuth(account, (authHeaders) =>
+            this.deps.http.request(account, {
+              operation: stream.operation,
+              method: 'GET',
+              path: stream.path,
+              query: { page, size, ...stream.query },
+              authHeaders,
+            }),
+          );
+        } catch (error) {
+          this.deps.logger.warn(
+            { accountId: account.id, stream: stream.operation, error: error instanceof Error ? error.message : 'failed' },
+            'digikala order stream failed; continuing with the next stream',
+          );
+          break;
+        }
+        const rows = orderItems(response.json);
+        for (const raw of rows) {
+          const order = this.mapOrder(raw);
+          if (order.placedAt.getTime() >= since.getTime()) yield order;
+        }
+        if (rows.length < size) break;
       }
-      if (rows.length < size) break;
     }
   }
 
@@ -440,7 +457,7 @@ export class DigikalaAdapter implements ChannelAdapter {
     return {
       externalOrderId,
       externalStatus: stringValue(body['status']) ?? 'unknown',
-      placedAt: new Date(stringValue(body['created_at']) ?? Date.now()),
+      placedAt: new Date(stringValue(body['created_at']) ?? stringValue(body['order_created_at']) ?? Date.now()),
       currency: 'IRR',
       lines,
       totals: {

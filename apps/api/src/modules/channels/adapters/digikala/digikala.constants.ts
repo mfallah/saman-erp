@@ -23,6 +23,7 @@ export const DIGIKALA_PATHS = {
   sellerStock: (variantId: string) => `/variants/${variantId}/seller-stock`,
   bulkSellerStock: '/batch/variant/seller-stock/update',
   sellingPrice: '/variants/selling-price',
+  orders: '/orders',
   sbsOrders: '/ship-by-seller-orders',
   sbsOrderDetail: (shipmentId: string) => `/ship-by-seller-orders/${shipmentId}`,
   sbsCustomer: (shipmentId: string) => `/ship-by-seller-orders/customer/${shipmentId}`,
