@@ -30,6 +30,15 @@ const WebhookReceivedPayload = z.object({
   rawBodySha256: z.string().length(64).optional(),
 });
 
+const OrderReceivedLine = z.object({
+  externalLineId: z.string().max(150).optional(),
+  externalSku: z.string().max(150).optional(),
+  externalVariantId: z.string().max(150).optional(),
+  quantity: z.string(),
+  unitPrice: z.string(),
+  discount: z.string().optional(),
+});
+
 const OrderReceivedPayload = z.object({
   channelAccountId: z.string().regex(/^\d+$/),
   channelCode: z.string().min(1).max(50),
@@ -38,6 +47,7 @@ const OrderReceivedPayload = z.object({
   placedAt: z.string().datetime(),
   grandTotal: z.string().regex(/^-?\d+$/),
   lineCount: z.number().int().nonnegative(),
+  lines: z.array(OrderReceivedLine).optional(),
 });
 
 const SyncRequestedPayload = z.object({ jobId: z.string().regex(/^\d+$/) });
@@ -82,17 +92,76 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
     schema: OrderReceivedPayload,
     async handle(event, payload) {
       const parsed = OrderReceivedPayload.parse(payload);
-      // The sales module owns canonical order creation. Until its intake port is
-      // bound, this handler records the typed event and leaves the natural key
-      // in idempotency_keys so a consumer can replay without duplicates.
+      const lines = parsed.lines ?? [];
+      if (lines.length === 0) {
+        deps.logger.info(
+          { eventId: event.id, externalOrderId: parsed.externalOrderId },
+          'channel order received without line payload; nothing to materialise',
+        );
+        return;
+      }
+      const db = deps.db;
+      const org = event.organizationId;
+      const orderNo = `${parsed.channelCode.toUpperCase()}-${parsed.externalOrderId}`.slice(0, 60);
+      const inserted = await db<{ id: string }[]>`
+        insert into erp.sales_orders
+          (organization_id, public_id, order_no, channel_account_id, external_order_id,
+           warehouse_id, status, currency, subtotal_amount, discount_amount, tax_amount,
+           shipping_amount, grand_total_amount, order_date, business_date, idempotency_key)
+        select ${org}, gen_random_uuid(), ${orderNo}, ${parsed.channelAccountId}::bigint,
+               ${parsed.externalOrderId},
+               (select id from erp.warehouses where organization_id = ${org} and deleted_at is null order by id limit 1),
+               'pending', 'IRR',
+               coalesce(sum(l.quantity * l.unit_price - coalesce(l.discount, 0)), 0),
+               coalesce(sum(coalesce(l.discount, 0)), 0), 0, 0,
+               greatest(${parsed.grandTotal}::bigint, coalesce(sum(l.quantity * l.unit_price), 0)),
+               ${parsed.placedAt}::timestamptz, (${parsed.placedAt}::timestamptz)::date,
+               ${`channel:order:${parsed.externalOrderId}`}
+          from jsonb_to_recordset(${JSON.stringify(lines)}::jsonb)
+               as l(quantity numeric, unit_price numeric, discount numeric)
+        on conflict (organization_id, order_no) do nothing
+        returning id::text as id
+      `;
+      const orderId = inserted[0]?.id;
+      if (orderId === undefined) {
+        deps.logger.info({ externalOrderId: parsed.externalOrderId }, 'channel order already materialised');
+        return;
+      }
+      let lineNo = 0;
+      for (const line of lines) {
+        lineNo += 1;
+        const quantity = Math.max(0, Number(line.quantity) || 0);
+        const unitPrice = Math.max(0, Math.trunc(Number(line.unitPrice) || 0));
+        const discount = Math.max(0, Math.trunc(Number(line.discount ?? '0') || 0));
+        const net = Math.max(0, quantity * unitPrice - discount);
+        const variant = await db<{ id: string; sku: string | null; title: string | null }[]>`
+          select v.id::text as id, v.sku, coalesce(v.title, p.name) as title
+          from erp.channel_product_mappings m
+          join erp.product_variants v on v.id = m.product_variant_id
+          join erp.products p on p.id = v.product_id
+          where m.channel_account_id = ${parsed.channelAccountId}::bigint
+            and m.deleted_at is null
+            and (
+              (${line.externalVariantId ?? null}::text is not null and m.external_variant_id = ${line.externalVariantId ?? null})
+              or (${line.externalSku ?? null}::text is not null and m.external_sku = ${line.externalSku ?? null})
+            )
+          limit 1
+        `;
+        const row = variant[0];
+        if (row === undefined) continue;
+        await db`
+          insert into erp.sales_order_lines
+            (order_id, line_no, product_variant_id, sku_snapshot, title_snapshot,
+             quantity, unit_price_amount, discount_amount, net_amount, gross_amount,
+             tax_percent, tax_amount, status)
+          values (${orderId}::bigint, ${lineNo}, ${row.id}::bigint, ${row.sku}, ${row.title},
+                  ${quantity}, ${unitPrice}, ${discount}, ${net}, ${quantity * unitPrice},
+                  0, 0, 'pending')
+        `;
+      }
       deps.logger.info(
-        {
-          eventId: event.id,
-          externalOrderId: parsed.externalOrderId,
-          channel: parsed.channelCode,
-          lines: parsed.lineCount,
-        },
-        'channel order event observed (no intake binding)',
+        { eventId: event.id, externalOrderId: parsed.externalOrderId, orderId, lines: lines.length },
+        'channel order materialised',
       );
     },
   };
