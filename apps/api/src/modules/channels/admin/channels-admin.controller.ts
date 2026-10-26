@@ -288,7 +288,7 @@ export class ChannelsAdminController {
          ${text(payload['externalAccountId']) || null}, ${text(payload['sellerCode']) || null},
          ${text(payload['baseUrl']) || null}, 'api_key',
          ${Number(payload['rateLimitPerMin'] ?? 60)}, ${payload['stockPushEnabled'] === false ? false : true},
-         ${Number(payload['stockSafetyQty'] ?? 0)}, ${JSON.stringify(payload['settings'] ?? {})}::jsonb, true,
+         ${Number(payload['stockSafetyQty'] ?? 0)}, ${payload['settings'] ?? {}}::jsonb, true,
          ${ctx.actorId}, ${ctx.actorId})
       returning id::text as id, public_id::text as public_id
     `;
@@ -794,16 +794,23 @@ export class ChannelsAdminController {
     const isActive = typeof payload['isActive'] === 'boolean' ? payload['isActive'] : null;
     // `settings` is merged (not replaced) so callers can set a single key such
     // as the Digikala-registered `userAgent` without wiping other settings.
-    const settingsPatch =
+    const settingsPayload =
       typeof payload['settings'] === 'object' && payload['settings'] !== null
-        ? JSON.stringify(payload['settings'])
+        ? (payload['settings'] as Record<string, unknown>)
         : null;
+    const userAgentValue = settingsPayload !== null && typeof settingsPayload['userAgent'] === 'string'
+      ? settingsPayload['userAgent']
+      : null;
+    const sellerCodeValue = settingsPayload !== null && typeof settingsPayload['sellerCode'] === 'string'
+      ? settingsPayload['sellerCode']
+      : null;
     const rows = await this.sql`
       update erp.channel_accounts
       set name = coalesce(${name}, name),
           is_active = coalesce(${isActive}::boolean, is_active),
-          settings = case when ${settingsPatch}::jsonb is null then settings
-                          else coalesce(settings, '{}'::jsonb) || ${settingsPatch}::jsonb end,
+          settings = (case when jsonb_typeof(settings) = 'object' then settings else '{}'::jsonb end)
+            || jsonb_strip_nulls(jsonb_build_object('userAgent', ${userAgentValue}::text, 'sellerCode', ${sellerCodeValue}::text)),
+          seller_code = coalesce(${sellerCodeValue}::text, seller_code),
           updated_at = now(), updated_by = ${ctx.actorId}
       where public_id = ${accountId} and organization_id = ${ctx.orgId} and deleted_at is null
       returning public_id::text as id

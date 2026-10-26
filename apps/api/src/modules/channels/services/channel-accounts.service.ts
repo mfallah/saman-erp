@@ -374,9 +374,15 @@ export class ChannelAccountService {
     const row = await this.get(input.organizationId, input.accountId);
     const merged = { ...row.settings, ...input.settings };
     assertSettingsSafe(merged);
-    await this.db`
+    // `postgres` serialises a JS object into a jsonb object; stringifying first
+    // would store a jsonb *string* (double encoding).
+    const rawSql = this.db as unknown as (
+      strings: TemplateStringsArray,
+      ...values: unknown[]
+    ) => Promise<Record<string, unknown>[]>;
+    await rawSql`
       update erp.channel_accounts
-      set settings = ${JSON.stringify(merged)}::jsonb, updated_at = now()
+      set settings = ${merged}::jsonb, updated_at = now()
       where organization_id = ${input.organizationId}::bigint and id = ${input.accountId}::bigint`;
     await this.audit?.record(this.db, {
       action: 'channel.account.update',
