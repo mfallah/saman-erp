@@ -90,7 +90,7 @@ export class WarehousesController {
   async locations(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Query() query: unknown) {
     const { id } = parseWith(IdParam, params);
     const q = parseWith(LocationListQuery, query);
-    const items = await this.service.listLocations(ctx, q);
+    const items = await this.service.listWarehouseLocations(ctx, id, q);
     return cursor(items, q.limit);
   }
 

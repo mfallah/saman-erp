@@ -181,15 +181,13 @@ export class ReportingService {
       // SPA aliases (the canonical fields above stay for existing consumers).
       return {
         ...result,
-        salesToday: result['salesAmount'],
-        salesTodayCount: Number(result['salesCount']),
-        receivable: result['receivablesAmount'],
-        payable: result['payablesAmount'],
+        salesToday: result.sales.todayAmount,
+        salesTodayCount: Number(result.salesCount),
+        receivable: result.receivablesAmount,
+        payable: result.payablesAmount,
+        cashBalance: result.cashAmount,
         profitToday: '0',
-        syncFailures: 0,
-        salesSeries: [],
-        lowStock: [],
-        recentOrders: [],
+        syncFailures: result.channels.filter((channel) => channel.lastSyncStatus === 'failed').length,
       };
     });
   }

@@ -641,6 +641,25 @@ export interface ReportDefinition {
   readonly paramsSchema?: unknown;
 }
 
+/** One channel account's sync state as returned by the dashboard summary. */
+export interface DashboardChannelStatus {
+  readonly accountId: string;
+  readonly name: string;
+  readonly channelCode: string;
+  readonly lastSyncAt: string | null;
+  readonly lastSyncStatus: string | null;
+  readonly stockPushEnabled: boolean;
+}
+
+/** Digikala integration state; the token value itself is never returned. */
+export interface DashboardDigikalaStatus {
+  readonly connected: boolean;
+  readonly accessTokenPresent: boolean;
+  readonly lastOrderPullAt: string | null;
+  readonly lastPushAt: string | null;
+  readonly lastError: string | null;
+}
+
 export interface DashboardSummary {
   readonly salesToday?: string;
   readonly salesTodayCount?: number;
@@ -654,6 +673,12 @@ export interface DashboardSummary {
   readonly salesSeries?: readonly { readonly date: string; readonly amount: string }[];
   readonly lowStock?: readonly BalanceRow[];
   readonly recentOrders?: readonly SalesOrderSummary[];
+  readonly products?: { readonly total: number; readonly active: number; readonly outOfStock: number };
+  readonly inventory?: { readonly onHandTotal: string; readonly skuCount: number };
+  readonly orders?: { readonly open: number; readonly today: number };
+  readonly sales?: { readonly todayAmount: string; readonly monthAmount: string };
+  readonly channels?: readonly DashboardChannelStatus[];
+  readonly digikala?: DashboardDigikalaStatus;
 }
 
 export interface NotificationItem {

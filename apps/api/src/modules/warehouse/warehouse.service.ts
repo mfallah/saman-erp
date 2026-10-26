@@ -182,6 +182,23 @@ export class WarehouseService {
     });
   }
 
+  async listWarehouseLocations(
+    ctx: TenantContext,
+    warehousePublicId: string,
+    query: { limit: number; code?: string | undefined; type?: string | undefined; q?: string | undefined },
+  ): Promise<Record<string, unknown>[]> {
+    const warehouse = await this.requireWarehouse(this.db, ctx, warehousePublicId);
+    const rows = await this.repo.listLocations(this.db, {
+      orgId: ctx.orgId,
+      warehouseInternalId: toBigInt(warehouse.internalId),
+      locationType: query.type ?? null,
+      search: query.q ?? query.code ?? null,
+      limit: query.limit,
+      offset: 0,
+    });
+    return rows.map(locationView);
+  }
+
   async capacity(ctx: TenantContext, warehousePublicId: string): Promise<Record<string, unknown>[]> {
     const warehouse = await this.requireWarehouse(this.db, ctx, warehousePublicId);
     const rows = await this.repo.listLocations(this.db, {

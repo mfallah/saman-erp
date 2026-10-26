@@ -73,11 +73,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
     key: 'inventory',
     label: 'انبار',
     icon: Warehouse,
-    permission: PERM.inventoryBalanceRead,
+    // Children carry their own permissions: a warehouse-only operator still
+    // needs the warehouse entry even without inventory-balance visibility.
     children: [
       { label: 'موجودی و گردش', to: '/inventory', permission: PERM.inventoryBalanceRead },
       { label: 'موجودی کانال‌ها', to: '/inventory/stock', permission: PERM.inventoryRead },
-      { label: 'انبارها', to: '/warehouses', permission: PERM.warehouseRead },
+      { label: 'انبارها و موقعیت‌ها', to: '/warehouses', permission: PERM.warehouseRead },
     ],
   },
   {

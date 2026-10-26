@@ -3,12 +3,124 @@
  * → fixed SQL); no user-supplied SQL reaches the database (`API.md §4.14`).
  */
 import { Inject, Injectable } from '@nestjs/common';
-import { AppError } from '@saman/shared';
+import { AppError, isoToJalali, jalaliMonthRange } from '@saman/shared';
 import { DB } from '../../common/contracts';
 import type { Db } from '../../common/contracts';
 
 export interface ReportRow {
   readonly [key: string]: string | number | null;
+}
+
+/** Per-account channel sync state shown on the home dashboard. */
+export interface DashboardChannelStatus {
+  readonly accountId: string;
+  readonly name: string;
+  readonly channelCode: string;
+  readonly lastSyncAt: string | null;
+  readonly lastSyncStatus: string | null;
+  readonly stockPushEnabled: boolean;
+}
+
+/** Digikala integration state (never exposes the token itself). */
+export interface DashboardDigikalaStatus {
+  readonly connected: boolean;
+  readonly accessTokenPresent: boolean;
+  readonly lastOrderPullAt: string | null;
+  readonly lastPushAt: string | null;
+  readonly lastError: string | null;
+}
+
+export interface DashboardKpis {
+  /* legacy flat fields (kept for existing consumers) */
+  readonly salesAmount: string;
+  readonly salesCount: string;
+  readonly openOrders: string;
+  readonly lowStockCount: string;
+  readonly receivablesAmount: string;
+  readonly payablesAmount: string;
+  readonly cashAmount: string;
+  /* real-data groups */
+  readonly products: { readonly total: number; readonly active: number; readonly outOfStock: number };
+  readonly inventory: { readonly onHandTotal: string; readonly skuCount: number };
+  readonly orders: { readonly open: number; readonly today: number };
+  readonly sales: { readonly todayAmount: string; readonly monthAmount: string };
+  readonly channels: readonly DashboardChannelStatus[];
+  readonly digikala: DashboardDigikalaStatus;
+  readonly salesSeries: readonly { readonly date: string; readonly amount: string }[];
+  readonly lowStock: readonly {
+    readonly id: string;
+    readonly onHand: string;
+    readonly available: string;
+    readonly product: { readonly id: string; readonly name: string };
+    readonly variant: { readonly id: string; readonly code: string };
+  }[];
+  readonly recentOrders: readonly {
+    readonly id: string;
+    readonly orderNumber: string | null;
+    readonly status: string;
+    readonly total: string;
+    readonly orderDate: string;
+    readonly customer: { readonly id: string; readonly name: string } | null;
+  }[];
+}
+
+interface DashboardKpiRow {
+  sales_amount: string;
+  sales_count: string;
+  open_orders: string;
+  low_stock: string;
+  receivables: string;
+  payables: string;
+  cash: string;
+  products_total: string;
+  products_active: string;
+  products_out_of_stock: string;
+  inventory_on_hand: string;
+  inventory_sku_count: string;
+  orders_today: string;
+  sales_month_amount: string;
+}
+
+interface DashboardSeriesRow {
+  date: string;
+  amount: string;
+}
+
+interface DashboardLowStockRow {
+  id: string;
+  product_id: string;
+  product_name: string;
+  variant_id: string;
+  variant_code: string;
+  on_hand: string;
+  available: string;
+}
+
+interface DashboardRecentOrderRow {
+  id: string;
+  order_no: string | null;
+  status: string;
+  total: string;
+  order_date: string;
+  customer_id: string | null;
+  customer_name: string | null;
+}
+
+interface DashboardChannelRow {
+  account_id: string;
+  name: string;
+  channel_code: string;
+  last_sync_at: string | null;
+  last_sync_status: string | null;
+  stock_push_enabled: boolean;
+}
+
+interface DashboardDigikalaRow {
+  connected: boolean;
+  access_token_present: boolean;
+  last_order_pull_at: string | null;
+  last_push_at: string | null;
+  last_error: string | null;
 }
 
 const SALES_BY_CHANNEL = 'sales-by-channel';
@@ -277,49 +389,234 @@ export class ReportingReadModel {
     }
   }
 
-  /** Home KPI summary: sales today, open orders, low stock, cash and AR/AP. */
-  async dashboardSummary(orgId: bigint, date: string): Promise<Record<string, string>> {
-    const rows = await this.db<{
-      sales_amount: string; sales_count: string; open_orders: string; low_stock: string;
-      receivables: string; payables: string; cash: string;
-    }[]>`
-      select
-        coalesce((select sum(i.grand_total_amount) from erp.customer_invoices i
-                   where i.organization_id = ${orgId.toString()} and i.invoice_date = ${date}::date
-                     and i.status in ('issued','partially_paid','paid')), 0)::bigint::text as sales_amount,
-        coalesce((select count(*) from erp.customer_invoices i
-                   where i.organization_id = ${orgId.toString()} and i.invoice_date = ${date}::date
-                     and i.status in ('issued','partially_paid','paid')), 0)::bigint::text as sales_count,
-        coalesce((select count(*) from erp.sales_orders o
-                   where o.organization_id = ${orgId.toString()}
-                     and o.status in ('confirmed','allocated','picking','packed')), 0)::bigint::text as open_orders,
-        coalesce((select count(*) from erp.inventory_balances b
-                   where b.organization_id = ${orgId.toString()}
-                     and (b.on_hand - b.reserved - b.safety_buffer - b.damaged) <= 0), 0)::bigint::text as low_stock,
-        coalesce((select sum(l.debit_amount - l.credit_amount) from erp.journal_lines l
-                   join erp.journal_entries e on e.id = l.journal_entry_id
-                   join erp.chart_of_accounts a on a.id = l.account_id
-                  where e.organization_id = ${orgId.toString()} and e.status = 'posted'
-                    and a.code like '1-1-03-%'), 0)::bigint::text as receivables,
-        coalesce((select sum(l.credit_amount - l.debit_amount) from erp.journal_lines l
-                   join erp.journal_entries e on e.id = l.journal_entry_id
-                   join erp.chart_of_accounts a on a.id = l.account_id
-                  where e.organization_id = ${orgId.toString()} and e.status = 'posted'
-                    and a.code like '2-1-01-%'), 0)::bigint::text as payables,
-        coalesce((select sum(l.debit_amount - l.credit_amount) from erp.journal_lines l
-                   join erp.journal_entries e on e.id = l.journal_entry_id
-                   join erp.chart_of_accounts a on a.id = l.account_id
-                  where e.organization_id = ${orgId.toString()} and e.status = 'posted'
-                    and a.code in ('1-1-01-002','1-1-01-003')), 0)::bigint::text as cash`;
-    const row = rows[0];
+  /**
+   * Home KPI summary. Every value comes from org-scoped SQL; the Jalali month
+   * bound is resolved in code so `sales.monthAmount` follows the Iranian calendar.
+   */
+  async dashboardSummary(orgId: bigint, date: string): Promise<DashboardKpis> {
+    const org = orgId.toString();
+    const jalali = isoToJalali(date);
+    const month = jalaliMonthRange(jalali.jy, jalali.jm);
+
+    const [kpiRows, seriesRows, lowStockRows, recentOrderRows, channelRows, digikalaRows] = await Promise.all([
+      this.db<DashboardKpiRow[]>`
+        select
+          coalesce((select sum(i.grand_total_amount) from erp.customer_invoices i
+                     where i.organization_id = ${org} and i.invoice_date = ${date}::date
+                       and i.status in ('issued','partially_paid','paid')), 0)::bigint::text as sales_amount,
+          coalesce((select count(*) from erp.customer_invoices i
+                     where i.organization_id = ${org} and i.invoice_date = ${date}::date
+                       and i.status in ('issued','partially_paid','paid')), 0)::bigint::text as sales_count,
+          coalesce((select count(*) from erp.sales_orders o
+                     where o.organization_id = ${org}
+                       and o.status in ('confirmed','allocated','picking','packed')), 0)::bigint::text as open_orders,
+          coalesce((select count(*) from erp.inventory_balances b
+                     where b.organization_id = ${org}
+                       and (b.on_hand - b.reserved - b.safety_buffer - b.damaged) <= 0), 0)::bigint::text as low_stock,
+          coalesce((select sum(l.debit_amount - l.credit_amount) from erp.journal_lines l
+                     join erp.journal_entries e on e.id = l.journal_entry_id
+                     join erp.chart_of_accounts a on a.id = l.account_id
+                    where e.organization_id = ${org} and e.status = 'posted'
+                      and a.code like '1-1-03-%'), 0)::bigint::text as receivables,
+          coalesce((select sum(l.credit_amount - l.debit_amount) from erp.journal_lines l
+                     join erp.journal_entries e on e.id = l.journal_entry_id
+                     join erp.chart_of_accounts a on a.id = l.account_id
+                    where e.organization_id = ${org} and e.status = 'posted'
+                      and a.code like '2-1-01-%'), 0)::bigint::text as payables,
+          coalesce((select sum(l.debit_amount - l.credit_amount) from erp.journal_lines l
+                     join erp.journal_entries e on e.id = l.journal_entry_id
+                     join erp.chart_of_accounts a on a.id = l.account_id
+                    where e.organization_id = ${org} and e.status = 'posted'
+                      and a.code in ('1-1-01-002','1-1-01-003')), 0)::bigint::text as cash,
+          coalesce((select count(*) from erp.products p
+                     where p.organization_id = ${org} and p.deleted_at is null), 0)::bigint::text as products_total,
+          coalesce((select count(*) from erp.products p
+                     where p.organization_id = ${org} and p.deleted_at is null
+                       and p.status = 'active'), 0)::bigint::text as products_active,
+          coalesce((select count(*) from erp.products p
+                     where p.organization_id = ${org} and p.deleted_at is null
+                       and coalesce((select sum(b.on_hand - b.reserved - b.safety_buffer - b.damaged)
+                                       from erp.inventory_balances b
+                                       join erp.product_variants pv on pv.id = b.product_variant_id
+                                      where pv.product_id = p.id and b.organization_id = ${org}), 0) <= 0),
+                   0)::bigint::text as products_out_of_stock,
+          coalesce((select sum(b.on_hand) from erp.inventory_balances b
+                     where b.organization_id = ${org}), 0)::numeric(18,4)::text as inventory_on_hand,
+          coalesce((select count(distinct b.product_variant_id) from erp.inventory_balances b
+                     where b.organization_id = ${org} and b.on_hand > 0), 0)::bigint::text as inventory_sku_count,
+          coalesce((select count(*) from erp.sales_orders o
+                     where o.organization_id = ${org} and o.business_date = ${date}::date), 0)::bigint::text as orders_today,
+          coalesce((select sum(i.grand_total_amount) from erp.customer_invoices i
+                     where i.organization_id = ${org}
+                       and i.status in ('issued','partially_paid','paid')
+                       and i.invoice_date between ${month.start}::date and ${date}::date), 0)::bigint::text as sales_month_amount`,
+      this.db<DashboardSeriesRow[]>`
+        select d.day::date::text as date,
+               coalesce((select sum(i.grand_total_amount) from erp.customer_invoices i
+                          where i.organization_id = ${org} and i.invoice_date = d.day::date
+                            and i.status in ('issued','partially_paid','paid')), 0)::bigint::text as amount
+          from generate_series(${date}::date - interval '13 days', ${date}::date, interval '1 day') as d(day)
+         order by d.day`,
+      this.db<DashboardLowStockRow[]>`
+        select pv.public_id::text as id,
+               p.public_id::text as product_id,
+               p.name as product_name,
+               pv.public_id::text as variant_id,
+               pv.sku as variant_code,
+               coalesce(sum(b.on_hand), 0)::numeric(18,4)::text as on_hand,
+               coalesce(sum(b.on_hand - b.reserved - b.safety_buffer - b.damaged), 0)::numeric(18,4)::text as available
+          from erp.inventory_balances b
+          join erp.product_variants pv on pv.id = b.product_variant_id
+          join erp.products p on p.id = pv.product_id
+         where b.organization_id = ${org}
+         group by pv.public_id, p.public_id, p.name, pv.sku
+        having coalesce(sum(b.on_hand - b.reserved - b.safety_buffer - b.damaged), 0) <= 0
+         order by available asc
+         limit 6`,
+      this.db<DashboardRecentOrderRow[]>`
+        select o.public_id::text as id,
+               o.order_no,
+               o.status,
+               o.grand_total_amount::text as total,
+               o.business_date::text as order_date,
+               c.public_id::text as customer_id,
+               coalesce(c.full_name, c.customer_no) as customer_name
+          from erp.sales_orders o
+          left join erp.customers c on c.id = o.customer_id
+         where o.organization_id = ${org}
+         order by o.created_at desc
+         limit 5`,
+      this.db<DashboardChannelRow[]>`
+        select ca.public_id::text as account_id,
+               ca.name,
+               ch.code as channel_code,
+               coalesce(sj.at, hc.checked_at)::text as last_sync_at,
+               coalesce(sj.status, case when hc.consecutive_failures > 0 then 'failed' else 'ok' end) as last_sync_status,
+               ca.stock_push_enabled
+          from erp.channel_accounts ca
+          join erp.sales_channels ch on ch.id = ca.channel_id
+          left join lateral (
+                select j.status, coalesce(j.finished_at, j.started_at, j.created_at) as at
+                  from erp.channel_sync_jobs j
+                 where j.channel_account_id = ca.id
+                 order by j.created_at desc
+                 limit 1
+               ) sj on true
+          left join lateral (
+                select h.checked_at, h.consecutive_failures
+                  from erp.channel_health_checks h
+                 where h.channel_account_id = ca.id
+                 order by h.checked_at desc
+                 limit 1
+               ) hc on true
+         where ca.organization_id = ${org}
+           and ca.deleted_at is null
+         order by ch.code, ca.name`,
+      this.db<DashboardDigikalaRow[]>`
+        select
+          exists (select 1 from erp.channel_accounts ca
+                    join erp.sales_channels ch on ch.id = ca.channel_id
+                   where ca.organization_id = ${org}
+                     and ca.deleted_at is null
+                     and ch.code = 'digikala') as connected,
+          exists (select 1 from erp.channel_credentials cr
+                    join erp.channel_accounts ca on ca.id = cr.channel_account_id
+                    join erp.sales_channels ch on ch.id = ca.channel_id
+                   where ca.organization_id = ${org}
+                     and ca.deleted_at is null
+                     and ch.code = 'digikala'
+                     and cr.is_active
+                     and cr.key_name = 'access_token'
+                     and length(cr.ciphertext) > 0) as access_token_present,
+          (select max(coalesce(j.finished_at, j.started_at, j.created_at))::text
+             from erp.channel_sync_jobs j
+             join erp.channel_accounts ca on ca.id = j.channel_account_id
+             join erp.sales_channels ch on ch.id = ca.channel_id
+            where ca.organization_id = ${org}
+              and ch.code = 'digikala'
+              and j.job_type = 'pull_orders'
+              and j.status = 'succeeded') as last_order_pull_at,
+          (select max(coalesce(j.finished_at, j.started_at, j.created_at))::text
+             from erp.channel_sync_jobs j
+             join erp.channel_accounts ca on ca.id = j.channel_account_id
+             join erp.sales_channels ch on ch.id = ca.channel_id
+            where ca.organization_id = ${org}
+              and ch.code = 'digikala'
+              and j.job_type in ('push_inventory','push_price')
+              and j.status = 'succeeded') as last_push_at,
+          (select j.last_error
+             from erp.channel_sync_jobs j
+             join erp.channel_accounts ca on ca.id = j.channel_account_id
+             join erp.sales_channels ch on ch.id = ca.channel_id
+            where ca.organization_id = ${org}
+              and ch.code = 'digikala'
+              and j.last_error is not null
+            order by j.created_at desc
+            limit 1) as last_error`,
+    ]);
+
+    const kpi = kpiRows[0];
+    const digikala = digikalaRows[0];
+
     return {
-      salesAmount: row?.sales_amount ?? '0',
-      salesCount: row?.sales_count ?? '0',
-      openOrders: row?.open_orders ?? '0',
-      lowStockCount: row?.low_stock ?? '0',
-      receivablesAmount: row?.receivables ?? '0',
-      payablesAmount: row?.payables ?? '0',
-      cashAmount: row?.cash ?? '0',
+      salesAmount: kpi?.sales_amount ?? '0',
+      salesCount: kpi?.sales_count ?? '0',
+      openOrders: kpi?.open_orders ?? '0',
+      lowStockCount: kpi?.low_stock ?? '0',
+      receivablesAmount: kpi?.receivables ?? '0',
+      payablesAmount: kpi?.payables ?? '0',
+      cashAmount: kpi?.cash ?? '0',
+      products: {
+        total: Number(kpi?.products_total ?? '0'),
+        active: Number(kpi?.products_active ?? '0'),
+        outOfStock: Number(kpi?.products_out_of_stock ?? '0'),
+      },
+      inventory: {
+        onHandTotal: kpi?.inventory_on_hand ?? '0',
+        skuCount: Number(kpi?.inventory_sku_count ?? '0'),
+      },
+      orders: {
+        open: Number(kpi?.open_orders ?? '0'),
+        today: Number(kpi?.orders_today ?? '0'),
+      },
+      sales: {
+        todayAmount: kpi?.sales_amount ?? '0',
+        monthAmount: kpi?.sales_month_amount ?? '0',
+      },
+      channels: channelRows.map((row) => ({
+        accountId: row.account_id,
+        name: row.name,
+        channelCode: row.channel_code,
+        lastSyncAt: row.last_sync_at,
+        lastSyncStatus: row.last_sync_status,
+        stockPushEnabled: row.stock_push_enabled === true,
+      })),
+      digikala: {
+        connected: digikala?.connected === true,
+        accessTokenPresent: digikala?.access_token_present === true,
+        lastOrderPullAt: digikala?.last_order_pull_at ?? null,
+        lastPushAt: digikala?.last_push_at ?? null,
+        lastError: digikala?.last_error ?? null,
+      },
+      salesSeries: seriesRows.map((row) => ({ date: row.date, amount: row.amount })),
+      lowStock: lowStockRows.map((row) => ({
+        id: row.id,
+        onHand: row.on_hand,
+        available: row.available,
+        product: { id: row.product_id, name: row.product_name },
+        variant: { id: row.variant_id, code: row.variant_code },
+      })),
+      recentOrders: recentOrderRows.map((row) => ({
+        id: row.id,
+        orderNumber: row.order_no,
+        status: row.status,
+        total: row.total,
+        orderDate: row.order_date,
+        customer:
+          row.customer_id === null
+            ? null
+            : { id: row.customer_id, name: row.customer_name ?? 'مشتری' },
+      })),
     };
   }
 }

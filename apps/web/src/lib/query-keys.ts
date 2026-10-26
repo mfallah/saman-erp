@@ -32,6 +32,7 @@ export const queryKeys = {
     list: ['warehouses'] as const,
     tree: (id: string) => ['warehouses', id, 'tree'] as const,
     details: (id: string) => ['warehouses', id] as const,
+    locations: (id: string) => ['warehouses', id, 'locations'] as const,
   },
   orders: {
     list: (params?: QueryParams) => ['orders', params ?? {}] as const,
