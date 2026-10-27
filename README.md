@@ -16,6 +16,25 @@
 
 </p>
 
+
+## وضعیت عملیاتی تأییدشده (آخرین به‌روزرسانی: 2026-10-27)
+
+این بخش با شواهد واقعی از دیتابیس تولید و لاگ سرویس تأیید شده است:
+
+| موضوع | شاهد |
+|---|---|
+| همگام‌سازی کانال | `channel_sync_jobs`: ۱۰۲ job موفق، ۰ ناموفق در ۲ ساعت |
+| مهاجرت‌ها | `0001_init` · `0002_channel_commerce` · `0003_audit_chain_content` · `0004_order_line_media` |
+| سفارش کانال | ۹ سفارش، ۸ خط سفارش با عنوان و تصویر واقعی دیجی‌کالا |
+| ایستگاه برداشت | ۸ وظیفه، ۸ تخصیص‌یافته، هر وظیفه با نام/SKU/عکس/موقعیت |
+| عکس محصولات | ۱۲۳ محصول با `image_url` (لینک مرجع، بدون آپلود روی سرور) |
+| قیمت‌گذاری | سیاست مستقل هر کانال + کمیسیون هر محصول دیجی‌کالا از `channel_product_costs` |
+| امنیت | OTP اتمیک، Step-up روی ۶۰ مسیر حساس، زنجیرهٔ hash محتوایی audit، ScopeGuard |
+| صحت انبار | `scripts/verify-inventory-invariants.mjs` → ۱۲/۱۲ PASS |
+
+راهنماهای تأیید: `scripts/verify-otp-race.mjs` · `scripts/verify-inventory-invariants.mjs` · `scripts/verify-audit-chain.mjs`.
+
+
 ## Deployment on Chabakan (Docker PaaS)
 
 Full Persian guide: [docs/06-deployment/CHABAKAN-FA.md](docs/06-deployment/CHABAKAN-FA.md).
