@@ -673,6 +673,21 @@ export class DigikalaAdapter implements ChannelAdapter {
         // Order items identify a *variant*; our mappings are keyed by DK
         // *product* id, so resolve variant → product once per pull run.
         const productByVariant = new Map<string, { productId: string | null; supplierCode: string | null; productTitle: string | null }>();
+        // One bulk variant listing replaces per-variant lookups, which are
+        // rate limited (429) and were dropping order lines.
+        try {
+          for await (const entry of this.listSellerVariants(account, { maxPages: 10 })) {
+            if (!productByVariant.has(entry.variantId)) {
+              productByVariant.set(entry.variantId, {
+                productId: entry.productId,
+                supplierCode: entry.supplierCode,
+                productTitle: null,
+              });
+            }
+          }
+        } catch {
+          // fall back to per-variant lookups below
+        }
         const resolveProduct = async (variantId: string): Promise<{ productId: string | null; supplierCode: string | null; productTitle: string | null }> => {
           const cached = productByVariant.get(variantId);
           if (cached !== undefined) return cached;

@@ -432,6 +432,7 @@ export class ChannelSyncService {
         // fall back to per-product lookups below
       }
     }
+    const bulkVariantsAvailable = variantByProduct.size > 0;
 
     // The seller list is bounded: 50 rows/page, never more than 10 pages.
     const MAX_PAGES = 10;
@@ -495,7 +496,9 @@ export class ChannelSyncService {
       let variant: { readonly externalVariantId: string; readonly sku?: string | null | undefined } | undefined;
       if (bulk !== undefined) {
         variant = { externalVariantId: bulk.variantId, sku: bulk.supplierCode };
-      } else {
+      } else if (!bulkVariantsAvailable) {
+        // Per-product endpoints are heavily rate limited (429); only use them
+        // when the bulk listing failed outright.
         try {
           const variants = await variantsOf(resolved.account, externalProductId);
           variant = variants.find((candidate) => /^\d+$/.test(candidate.externalVariantId.trim()));
