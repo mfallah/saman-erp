@@ -572,6 +572,45 @@ export function ChannelsPage() {
               آزمایش اتصال
             </Button>
           ) : null}
+          {canSync && account.channelCode === 'digikala' ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (!window.confirm('۷ روز اخیر سفارش‌های دیجی‌کالا دوباره خوانده و اقلام سفارش‌ها تکمیل شوند؟')) return;
+                  void api
+                    .post<{ jobId: string; status: string }>(
+                      `/channel-accounts/${account.id}/digikala/backfill-orders`,
+                      {},
+                      { idempotencyKey: newRequestId() },
+                    )
+                    .then((result) => toast.success('بازخوانی سفارش‌ها شروع شد', `کار شماره ${result.jobId}`))
+                    .catch((error) => toast.error('بازخوانی سفارش‌ها ناموفق بود', toFaErrorMessage(error)));
+                }}
+              >
+                بازخوانی سفارش‌ها
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void api
+                    .post<{ updated: number; failed: number }>(
+                      `/channel-accounts/${account.id}/digikala/sync-commissions`,
+                      {},
+                      { idempotencyKey: newRequestId() },
+                    )
+                    .then((result) =>
+                      toast.success('کمیسیون‌ها به‌روز شد', `به‌روز: ${formatNumber(result.updated)} · ناموفق: ${formatNumber(result.failed)}`),
+                    )
+                    .catch((error) => toast.error('همگام‌سازی کمیسیون ناموفق بود', toFaErrorMessage(error)));
+                }}
+              >
+                همگام‌سازی کمیسیون
+              </Button>
+            </>
+          ) : null}
           {canWriteCredentials && account.channelCode === 'digikala' ? (
             <Button
               size="sm"
