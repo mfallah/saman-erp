@@ -616,6 +616,19 @@ export class DigikalaAdapter implements ChannelAdapter {
       { path: DIGIKALA_PATHS.orders, operation: 'digikala.orders.dk', query: { sort: 'order_created_at', order: 'desc' } },
       { path: DIGIKALA_PATHS.sbsOrders, operation: 'digikala.orders.sbs', query: { sort: 'order_date', order: 'desc' } },
     ];
+    // Variant → product map fetched once: order rows only carry a variant id,
+    // and the mapping table is keyed by product id.
+    const bulkProductByVariant = new Map<string, string>();
+    try {
+      for await (const entry of this.listSellerVariants(account, { maxPages: 10 })) {
+        if (!bulkProductByVariant.has(entry.variantId)) {
+          bulkProductByVariant.set(entry.variantId, entry.productId);
+        }
+      }
+    } catch {
+      // enrichment is best-effort; lines still carry the variant id
+    }
+
     for (const stream of streams) {
       const isDk = stream.path === DIGIKALA_PATHS.orders;
       const grouped = new Map<string, CanonicalOrder>();
@@ -664,7 +677,14 @@ export class DigikalaAdapter implements ChannelAdapter {
         } else {
           for (const raw of rows) {
             const order = this.mapOrder(raw);
-            if (order.placedAt.getTime() >= since.getTime()) yield order;
+            const lines = order.lines.map((line) => {
+              const variantId = line.externalVariantId;
+              if (variantId === undefined) return line;
+              const productId = bulkProductByVariant.get(variantId);
+              return productId === undefined ? line : { ...line, externalProductId: productId };
+            });
+            const enriched: CanonicalOrder = { ...order, lines };
+            if (enriched.placedAt.getTime() >= since.getTime()) yield enriched;
           }
         }
         if (rows.length < size) break;
@@ -675,18 +695,10 @@ export class DigikalaAdapter implements ChannelAdapter {
         const productByVariant = new Map<string, { productId: string | null; supplierCode: string | null; productTitle: string | null }>();
         // One bulk variant listing replaces per-variant lookups, which are
         // rate limited (429) and were dropping order lines.
-        try {
-          for await (const entry of this.listSellerVariants(account, { maxPages: 10 })) {
-            if (!productByVariant.has(entry.variantId)) {
-              productByVariant.set(entry.variantId, {
-                productId: entry.productId,
-                supplierCode: entry.supplierCode,
-                productTitle: null,
-              });
-            }
+        for (const [variantId, productId] of bulkProductByVariant) {
+          if (!productByVariant.has(variantId)) {
+            productByVariant.set(variantId, { productId, supplierCode: null, productTitle: null });
           }
-        } catch {
-          // fall back to per-variant lookups below
         }
         const resolveProduct = async (variantId: string): Promise<{ productId: string | null; supplierCode: string | null; productTitle: string | null }> => {
           const cached = productByVariant.get(variantId);
