@@ -13,6 +13,8 @@ import {
 } from './infrastructure/logger';
 import { LimoSmsClient } from './limo/limo.client';
 import type { SmsMode } from './limo/limo.constants';
+import { SmsAdminController } from './sms/sms-admin.controller';
+import { SqlSmsAdminRepository } from './sms/sms-admin.repository';
 import { SqlSmsRepository } from './sms/sms.repository';
 import { SmsBudgetService } from './sms/sms-budget.service';
 import { SmsService, type SmsRuntimeConfig } from './sms/sms.service';
@@ -20,6 +22,7 @@ import { SqlOtpRepository } from './otp/otp.repository';
 import { OtpService } from './otp/otp.service';
 
 @Module({
+  controllers: [SmsAdminController],
   providers: [
     { provide: INTEGRATION_LOGGER, useFactory: (): Logger => createIntegrationLogger() },
     {
@@ -46,6 +49,11 @@ import { OtpService } from './otp/otp.service';
     {
       provide: SqlSmsRepository,
       useFactory: (db: Db): SqlSmsRepository => new SqlSmsRepository(db),
+      inject: [DB],
+    },
+    {
+      provide: SqlSmsAdminRepository,
+      useFactory: (db: Db): SqlSmsAdminRepository => new SqlSmsAdminRepository(db),
       inject: [DB],
     },
     {
@@ -101,6 +109,7 @@ import { OtpService } from './otp/otp.service';
     SmsBudgetService,
     OtpService,
     SqlSmsRepository,
+    SqlSmsAdminRepository,
     SqlOtpRepository,
     INTEGRATION_KV,
   ],

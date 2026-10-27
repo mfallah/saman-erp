@@ -39,6 +39,7 @@ const LoginPage = lazyRouteComponent(() => import('./pages/LoginPage'), 'LoginPa
 const DashboardPage = lazyRouteComponent(() => import('./pages/DashboardPage'), 'DashboardPage');
 const ProductsListPage = lazyRouteComponent(() => import('./pages/ProductsListPage'), 'ProductsListPage');
 const MergePage = lazyRouteComponent(() => import('./pages/MergePage'), 'MergePage');
+const SmsPage = lazyRouteComponent(() => import('./pages/SmsPage'), 'SmsPage');
 const ProductNewPage = lazyRouteComponent(() => import('./pages/ProductNewPage'), 'ProductNewPage');
 const ProductDetailPage = lazyRouteComponent(() => import('./pages/ProductDetailPage'), 'ProductDetailPage');
 const InventoryPage = lazyRouteComponent(() => import('./pages/InventoryPage'), 'InventoryPage');
@@ -130,6 +131,13 @@ const appRoute = createRoute({
     await guardAuthenticated(location.href);
   },
   component: AppLayout,
+});
+
+const smsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/sms',
+  beforeLoad: () => guardPermission(PERM.smsRead),
+  component: SmsPage,
 });
 
 const dashboardRoute = createRoute({
@@ -357,6 +365,7 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   appRoute.addChildren([
     dashboardRoute,
+    smsRoute,
     productsRoute,
     mergeRoute,
     productNewRoute,

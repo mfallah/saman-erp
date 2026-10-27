@@ -93,6 +93,7 @@ export const PERM = {
   notificationRead: 'notification.read',
   smsTemplateManage: 'sms.template.manage',
   smsRead: 'sms.read',
+  smsSend: 'sms.send',
 } as const;
 
 export type PermissionKey = (typeof PERM)[keyof typeof PERM];

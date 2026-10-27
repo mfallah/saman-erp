@@ -876,6 +876,7 @@ export const TABLES: TableSpec[] = [
     cols: [
       'organization_id bigint nn',
       'code varchar(80) nn',
+      'name_fa varchar(120)',
       "provider varchar(40) nn def:'limo_sms'",
       'pattern_code varchar(100)',
       'body text',

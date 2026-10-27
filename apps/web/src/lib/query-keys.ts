@@ -94,4 +94,9 @@ export const queryKeys = {
   notifications: {
     inbox: ['notifications'] as const,
   },
+  sms: {
+    templates: ['sms', 'templates'] as const,
+    messages: (params?: QueryParams) => ['sms', 'messages', params ?? {}] as const,
+    stats: ['sms', 'stats'] as const,
+  },
 } as const;

@@ -68,6 +68,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
       { label: 'فهرست کالاها', to: '/products', permission: PERM.productRead },
       { label: 'کالای جدید', to: '/products/new', permission: PERM.productCreate },
       { label: 'ادغام محصولات', to: '/products/merge', permission: PERM.productRead },
+      { label: 'پیامک‌ها', to: '/sms', permission: PERM.smsRead },
     ],
   },
   {
