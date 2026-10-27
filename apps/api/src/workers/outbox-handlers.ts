@@ -66,6 +66,44 @@ export interface HandlerDependencies {
   readonly pickAssignment: PickAssignmentPort;
 }
 
+/**
+ * Returns (creating once per organization) a placeholder variant used to keep
+ * channel order lines for items the catalogue cannot resolve yet.
+ */
+async function ensureUnmappedVariant(db: Db, organizationId: string): Promise<string> {
+  const find = async (): Promise<string | undefined> => {
+    const rows = await db<{ id: string }[]>`
+      select v.id::text as id
+        from erp.product_variants v
+        join erp.products p on p.id = v.product_id
+       where p.organization_id = ${organizationId}::bigint
+         and p.product_no = 'CHANNEL-UNMAPPED'
+         and v.sku = 'CHANNEL-UNMAPPED'
+         and v.deleted_at is null
+       limit 1`;
+    return rows[0]?.id;
+  };
+  const first = await find();
+  if (first !== undefined) return first;
+  await db`select pg_advisory_xact_lock(hashtextextended(${`unmapped-variant:${organizationId}`}, 0))`;
+  const second = await find();
+  if (second !== undefined) return second;
+  const product = await db<{ id: string }[]>`
+    insert into erp.products (organization_id, product_no, name, base_uom_id, product_type)
+    values (${organizationId}::bigint, 'CHANNEL-UNMAPPED', 'کالای نامشخص کانال', 1, 'stock')
+    returning id::text as id`;
+  const productId = product[0]?.id;
+  if (productId === undefined) throw new Error('unmapped_product_insert_failed');
+  const variant = await db<{ id: string }[]>`
+    insert into erp.product_variants (product_id, sku, is_default)
+    values (${productId}::bigint, 'CHANNEL-UNMAPPED', true)
+    returning id::text as id`;
+  const variantId = variant[0]?.id;
+  if (variantId === undefined) throw new Error('unmapped_variant_insert_failed');
+  return variantId;
+}
+
+
 export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxHandler[] {
   const webhookReceived: OutboxHandler = {
     eventType: 'channel.webhook.received',
@@ -192,13 +230,23 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
           limit 1
         `;
         const row = variant[0];
-        if (row === undefined) continue;
+        // Unmapped channel items must still become order lines: a channel can
+        // ship a variant that no longer exists in its catalogue, and dropping
+        // the line made the whole order unusable in the warehouse.
+        const resolved =
+          row === undefined
+            ? {
+                id: await ensureUnmappedVariant(db, event.organizationId),
+                sku: line.externalSku ?? 'UNMAPPED',
+                title: line.externalProductTitle ?? 'کالای نامشخص کانال',
+              }
+            : row;
         await db`
           insert into erp.sales_order_lines
             (order_id, line_no, product_variant_id, sku_snapshot, title_snapshot,
              quantity, unit_price_amount, discount_amount, net_amount, gross_amount,
              tax_percent, tax_amount, status)
-          values (${orderId}::bigint, ${lineNo}, ${row.id}::bigint, ${row.sku}, ${row.title},
+          values (${orderId}::bigint, ${lineNo}, ${resolved.id}::bigint, ${resolved.sku}, ${resolved.title},
                   ${quantity}, ${unitPrice}, ${discount}, ${net}, ${quantity * unitPrice},
                   0, 0, 'pending')
         `;
