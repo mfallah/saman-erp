@@ -22,8 +22,20 @@ export interface LabelPrintModalProps {
   readonly onClose: () => void;
   /** SVG endpoints relative to `API_BASE`, in print order (e.g. `receiptLabelsUrl(id)`). */
   readonly labelUrls: readonly string[];
+  /**
+   * POST endpoints that render labels from an unsaved document. Used instead of
+   * `labelUrls` when non-empty, e.g. the goods-receipt preview.
+   */
+  readonly labelRequests?: readonly LabelRequest[];
   readonly title?: string;
   readonly description?: string;
+}
+
+/** A label endpoint that needs a request body (preview before saving). */
+export interface LabelRequest {
+  /** Path relative to `API_BASE`. */
+  readonly url: string;
+  readonly body: unknown;
 }
 
 /** Same document path the API exposes; kept here so callers never hand-build it. */
@@ -53,15 +65,21 @@ type LoadState =
   | { readonly status: 'error'; readonly message: string };
 
 /** Fetches an SVG with the access token and turns it into an embeddable data URL. */
-async function loadLabel(url: string, signal: AbortSignal): Promise<LoadedLabel> {
+async function loadLabel(url: string, signal: AbortSignal, body?: unknown): Promise<LoadedLabel> {
   const token = getAccessToken();
   const headers: Record<string, string> = { Accept: 'image/svg+xml' };
   if (token !== null) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(url.startsWith('http') ? url : `${API_BASE}${url}`, {
+  const init: RequestInit = {
     headers,
     credentials: 'include',
     signal,
-  });
+  };
+  if (body !== undefined) {
+    init.method = 'POST';
+    init.body = JSON.stringify(body);
+    headers['Content-Type'] = 'application/json';
+  }
+  const response = await fetch(url.startsWith('http') ? url : `${API_BASE}${url}`, init);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -159,6 +177,7 @@ export function LabelPrintModal({
   open,
   onClose,
   labelUrls,
+  labelRequests = [],
   title = 'چاپ برچسب',
   description,
 }: LabelPrintModalProps) {
@@ -166,19 +185,27 @@ export function LabelPrintModal({
   const [windowBlocked, setWindowBlocked] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
-  const urlKey = useMemo(
-    () =>
-      labelUrls
-        .map((url) => url.trim())
-        .filter((url) => url.length > 0)
-        .join('|'),
-    [labelUrls],
-  );
+  // A stable key so a parent that rebuilds the arrays every render does not
+  // re-fetch in a loop; the body participates so a changed preview re-fetches.
+  const requestKey = useMemo(() => {
+    if (labelRequests.length > 0) {
+      return JSON.stringify(labelRequests.map((request) => [request.url, request.body ?? null]));
+    }
+    return labelUrls
+      .map((url) => url.trim())
+      .filter((url) => url.length > 0)
+      .join('|');
+  }, [labelUrls, labelRequests]);
 
   useEffect(() => {
     if (!open) return;
-    const urls = urlKey.length === 0 ? [] : urlKey.split('|');
-    if (urls.length === 0) {
+    const sources: readonly { url: string; body?: unknown }[] =
+      labelRequests.length > 0
+        ? labelRequests.filter((request) => request.url.trim().length > 0)
+        : requestKey.length === 0
+          ? []
+          : requestKey.split('|').map((url) => ({ url }));
+    if (sources.length === 0) {
       setState({ status: 'error', message: 'برچسبی برای چاپ انتخاب نشده است.' });
       return;
     }
@@ -188,7 +215,7 @@ export function LabelPrintModal({
     void (async () => {
       try {
         const labels: LoadedLabel[] = [];
-        for (const url of urls) labels.push(await loadLabel(url, controller.signal));
+        for (const source of sources) labels.push(await loadLabel(source.url, controller.signal, source.body));
         if (!controller.signal.aborted) setState({ status: 'ready', labels });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -197,7 +224,9 @@ export function LabelPrintModal({
       }
     })();
     return () => controller.abort();
-  }, [open, urlKey, attempt]);
+    // `requestKey` captures the url+body identity; the arrays are read fresh on
+    // every run so a changed preview body always refetches.
+  }, [open, requestKey, attempt]);
 
   const labels = state.status === 'ready' ? state.labels : [];
   const totalPages = labels.reduce((sum, label) => sum + label.pages, 0);

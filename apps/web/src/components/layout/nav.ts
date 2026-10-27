@@ -90,7 +90,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
       {
         label: 'خرید و ورود کالا',
         to: '/purchasing',
-        permissions: [PERM.purchaseRead, PERM.inventoryBalanceRead],
+        permissions: [PERM.purchaseOrderRead, PERM.inventoryBalanceRead],
       },
       { label: 'اسکن و بارکد', to: '/scan' },
     ],

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { PackagePlus, Plus, Search, Trash2 } from 'lucide-react';
+import { PackagePlus, Plus, Printer, Search, Trash2 } from 'lucide-react';
 import { api, ApiError, isNotImplemented, newRequestId, toFaErrorMessage } from '../lib/api-client';
 import { formatJalali } from '../lib/dates';
 import { useDebouncedValue, useDocumentTitle } from '../lib/hooks';
@@ -13,6 +13,8 @@ import type {
   ProductSummary,
   PurchaseReceipt,
   PurchaseReceiptInput,
+  PurchaseReceiptLabelLineInput,
+  PurchaseReceiptLabelPreviewInput,
   VariantSummary,
   Warehouse,
 } from '../types/api';
@@ -316,12 +318,14 @@ export function PurchasingPage() {
   useDocumentTitle('خرید و ورود کالا');
   const toast = useToast();
   const queryClient = useQueryClient();
-  const canRead = useHasAnyPermission([PERM.purchaseRead, PERM.inventoryBalanceRead]);
+  const canRead = useHasAnyPermission([PERM.purchaseOrderRead, PERM.inventoryBalanceRead]);
   const canReadWarehouses = useHasPermission(PERM.warehouseRead);
+  const canPrintLabels = useHasPermission(PERM.labelRead);
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [labelsFor, setLabelsFor] = useState<string | null>(null);
+  const [labelPreview, setLabelPreview] = useState<PurchaseReceiptLabelPreviewInput | null>(null);
   const [supplierName, setSupplierName] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
   const [rows, setRows] = useState<readonly ReceiptRowDraft[]>(() => [emptyRow()]);
@@ -356,6 +360,7 @@ export function PurchasingPage() {
     setWarehouseId('');
     setRows([emptyRow()]);
     setFormError(null);
+    setLabelPreview(null);
   }, []);
 
   const openModal = (): void => {
@@ -410,21 +415,18 @@ export function PurchasingPage() {
     label: warehouse.name,
   }));
 
-  const submit = (): void => {
-    if (supplierName.trim().length < 2) {
-      setFormError('نام تأمین‌کننده باید حداقل ۲ کاراکتر باشد.');
-      return;
-    }
+  /** Validates the line editors once for both save and label preview. */
+  const collectReceiptLines = (): PurchaseReceiptInput['lines'] | null => {
     if (rows.length === 0) {
       setFormError('حداقل یک سطر کالا لازم است.');
-      return;
+      return null;
     }
     const invalid = rows.find(
       (row) => row.product === null || row.variantId === '' || !isPositiveQuantity(row.quantity),
     );
     if (invalid !== undefined) {
       setFormError('برای هر سطر، کالا، تنوع و مقدار معتبر لازم است.');
-      return;
+      return null;
     }
     for (const row of rows) {
       const serials = parseSerials(row.serials);
@@ -432,11 +434,10 @@ export function PurchasingPage() {
         setFormError(
           `تعداد سریال‌ها (${serials.length}) با مقدار کالا (${row.quantity}) برابر نیست؛ برای هر واحد دقیقاً یک سریال وارد کنید.`,
         );
-        return;
+        return null;
       }
     }
-    setFormError(null);
-    const lines = rows.map((row) => {
+    return rows.map((row) => {
       const serials = parseSerials(row.serials);
       return {
         variantId: row.variantId,
@@ -445,6 +446,16 @@ export function PurchasingPage() {
         ...(serials.length === 0 ? {} : { serials }),
       };
     });
+  };
+
+  const submit = (): void => {
+    if (supplierName.trim().length < 2) {
+      setFormError('نام تأمین‌کننده باید حداقل ۲ کاراکتر باشد.');
+      return;
+    }
+    const lines = collectReceiptLines();
+    if (lines === null) return;
+    setFormError(null);
     createMutation.mutate({
       supplierName: supplierName.trim(),
       ...(warehouseId === '' ? {} : { warehouseId }),
@@ -452,11 +463,30 @@ export function PurchasingPage() {
     });
   };
 
+  /**
+   * Prints labels from the current form before the receipt exists. The API
+   * renders the same SVG sheet the saved-receipt endpoint returns.
+   */
+  const openLabelPreview = (): void => {
+    const lines = collectReceiptLines();
+    if (lines === null) return;
+    const labelLines: PurchaseReceiptLabelLineInput[] = lines.map((line) => ({
+      variantId: line.variantId,
+      quantity: line.quantity,
+      ...(line.serials === undefined ? {} : { serials: line.serials }),
+    }));
+    setFormError(null);
+    setLabelPreview({
+      ...(warehouseId === '' ? {} : { warehouseId }),
+      lines: labelLines,
+    });
+  };
+
   if (!canRead) {
     return (
       <>
         <PageHeader title="خرید و ورود کالا" />
-        <PermissionNotice permission={PERM.purchaseRead} />
+        <PermissionNotice permission={PERM.purchaseOrderRead} />
       </>
     );
   }
@@ -656,6 +686,19 @@ export function PurchasingPage() {
         description="یک برچسب به‌ازای هر سریال یا هر واحد پذیرفته‌شده."
       />
 
+      <LabelPrintModal
+        open={labelPreview !== null}
+        onClose={() => setLabelPreview(null)}
+        labelUrls={[]}
+        labelRequests={
+          labelPreview === null
+            ? []
+            : [{ url: '/goods-receipts/labels/preview', body: labelPreview }]
+        }
+        title="چاپ لیبل پیش از ثبت خرید"
+        description="برچسب اقلام همین فرم، بدون ثبت رسید و بدون تغییر موجودی."
+      />
+
       <Modal
         open={open}
         onClose={() => {
@@ -678,6 +721,17 @@ export function PurchasingPage() {
             >
               انصراف
             </Button>
+            {canPrintLabels && (
+              <Button
+                type="button"
+                variant="outline"
+                icon={<Printer aria-hidden className="size-4" />}
+                onClick={openLabelPreview}
+                disabled={createMutation.isPending}
+              >
+                چاپ لیبل
+              </Button>
+            )}
             <Button
               type="submit"
               form="purchase-receipt-form"

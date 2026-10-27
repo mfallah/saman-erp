@@ -290,7 +290,7 @@ const purchasingRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/purchasing',
   // Purchase or inventory visibility both open the receipt workspace.
-  beforeLoad: () => guardAnyPermission([PERM.purchaseRead, PERM.inventoryBalanceRead]),
+  beforeLoad: () => guardAnyPermission([PERM.purchaseOrderRead, PERM.inventoryBalanceRead]),
   component: PurchasingPage,
 });
 

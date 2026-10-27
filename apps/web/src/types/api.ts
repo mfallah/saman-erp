@@ -592,6 +592,9 @@ export interface PurchaseReceiptLineInput {
   readonly unitCost?: string;
   /** Serial numbers, one per unit received. */
   readonly serials?: readonly string[];
+  /** Optional per-line placement; falls back to the receipt-level warehouse. */
+  readonly warehouseId?: string;
+  readonly locationId?: string;
 }
 
 /** Request body for registering a purchase receipt. */
@@ -600,6 +603,19 @@ export interface PurchaseReceiptInput {
   readonly supplierId?: string;
   readonly warehouseId?: string;
   readonly lines: readonly PurchaseReceiptLineInput[];
+}
+
+/** One line of an unsaved receipt when previewing its labels. */
+export interface PurchaseReceiptLabelLineInput {
+  readonly variantId: string;
+  readonly quantity: string;
+  readonly serials?: readonly string[];
+}
+
+/** Request body for `POST /goods-receipts/labels/preview`. */
+export interface PurchaseReceiptLabelPreviewInput {
+  readonly warehouseId?: string;
+  readonly lines: readonly PurchaseReceiptLabelLineInput[];
 }
 
 export interface PurchaseReceiptLine {

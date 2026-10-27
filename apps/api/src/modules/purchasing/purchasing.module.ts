@@ -12,13 +12,14 @@ import { CatalogModule } from '../catalog/catalog.module';
 import { ChannelsModule } from '../channels/channels.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PurchasingController } from './purchasing.controller';
+import { GoodsReceiptLabelsController } from './goods-receipt-labels.controller';
 import { ReceiptLabelsController } from './receipt-labels.controller';
 import { PurchasingRepository } from './purchasing.repository';
 import { PurchasingService } from './purchasing.service';
 
 @Module({
   imports: [CatalogModule, ChannelsModule, InventoryModule],
-  controllers: [PurchasingController, ReceiptLabelsController],
+  controllers: [PurchasingController, ReceiptLabelsController, GoodsReceiptLabelsController],
   providers: [PurchasingRepository, PurchasingService],
   exports: [PurchasingService],
 })

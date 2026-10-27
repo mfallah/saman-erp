@@ -40,7 +40,7 @@ import {
   type GoodsReceiptListRow,
   type SupplierRow,
 } from './purchasing.repository';
-import type { CreateReceiptBody, CreateSupplierBody } from './dto/purchasing.dto';
+import type { CreateReceiptBody, CreateSupplierBody, ReceiptLabelsPreviewBody } from './dto/purchasing.dto';
 
 interface PreparedLine {
   readonly variant: VariantLookup;
@@ -48,6 +48,15 @@ interface PreparedLine {
   readonly unitCostAmount: bigint;
   readonly lineTotalAmount: bigint;
   readonly serials: readonly string[];
+}
+
+/** Normalized line the label renderer consumes (receipt lines or unsaved preview). */
+interface LabelSheetLine {
+  readonly variantId: string;
+  readonly quantity: string;
+  readonly serials: readonly string[];
+  readonly sku?: string | null;
+  readonly productName?: string | null;
 }
 
 export interface QueuedChannel {
@@ -292,6 +301,72 @@ export class PurchasingService {
     const receipt = await this.repo.findReceipt(this.db, ctx.orgId, receiptPublicId);
     if (receipt === null) throw notFound('goods_receipt');
     const lines = await this.repo.listReceiptLines(this.db, ctx.orgId, receiptPublicId);
+    const sheet = await this.renderLabelSheet(
+      ctx,
+      lines.map((line) => ({
+        variantId: line.variantId,
+        quantity: line.acceptedQty ?? line.quantity,
+        serials: (line.serials ?? []).map((serial) => serial.serialNo),
+        sku: line.sku,
+        productName: line.productName,
+      })),
+    );
+
+    const repeated: VariantLabel[] = [];
+    for (let copy = 0; copy < copies; copy += 1) repeated.push(...sheet);
+    return renderLabelSheetSvg(repeated);
+  }
+
+  /**
+   * Labels for a receipt that has **not been saved yet**
+   * (`POST /goods-receipts/labels/preview`): same payload/SVG as the saved-receipt
+   * endpoint, so the operator can print while the goods are still on the dock.
+   */
+  async previewReceiptLabelsSvg(ctx: TenantContext, input: ReceiptLabelsPreviewBody): Promise<string> {
+    if (input.warehouseId !== undefined) {
+      await this.inventory.assertWarehouseInOrganization(ctx, input.warehouseId);
+    }
+    const validated = new Set<string>();
+    const lines: LabelSheetLine[] = [];
+    for (const [index, line] of input.lines.entries()) {
+      if (!validated.has(line.variantId)) {
+        await this.catalog.requireVariant(ctx, line.variantId);
+        validated.add(line.variantId);
+      }
+      const quantity = normalizeQuantity(line.quantity);
+      if (compareQuantity(quantity, '0') <= 0) {
+        throw validation(`lines[${index}].quantity`, 'quantity_must_be_positive');
+      }
+      lines.push({
+        variantId: line.variantId,
+        quantity,
+        serials: this.previewSerials(index, line.serials, quantity),
+      });
+    }
+    return renderLabelSheetSvg(await this.renderLabelSheet(ctx, lines));
+  }
+
+  /** Serial count rules mirror `createReceipt`, so preview and save agree. */
+  private previewSerials(
+    index: number,
+    serials: readonly string[] | undefined,
+    quantity: string,
+  ): readonly string[] {
+    if (serials === undefined || serials.length === 0) return [];
+    if (!isWholeQuantity(quantity)) {
+      throw validation(`lines[${index}].serials`, 'serial_quantity_must_be_integer');
+    }
+    if (parseQuantity(quantity) / QUANTITY_SCALE !== BigInt(serials.length)) {
+      throw validation(`lines[${index}].serials`, 'serial_count_mismatch');
+    }
+    return serials;
+  }
+
+  /** One label per serial, else one per whole unit (fractional units = 1 label). */
+  private async renderLabelSheet(
+    ctx: TenantContext,
+    lines: readonly LabelSheetLine[],
+  ): Promise<readonly VariantLabel[]> {
     const identities = await this.catalog.labelData(
       ctx,
       lines.map((line) => line.variantId),
@@ -306,14 +381,12 @@ export class PurchasingService {
         sku: identity?.sku ?? line.sku ?? line.variantId.slice(0, 8),
         productName: identity?.productName ?? line.productName ?? '',
       };
-      const serials = (line.serials ?? [])
-        .map((serial) => serial.serialNo.trim())
-        .filter((serialNo) => serialNo.length > 0);
+      const serials = line.serials.map((serial) => serial.trim()).filter((serialNo) => serialNo.length > 0);
       if (serials.length > 0) {
         for (const serial of serials) labels.push({ ...base, serial });
         continue;
       }
-      const units = labelUnitCount(line.acceptedQty);
+      const units = labelUnitCount(line.quantity);
       for (let unit = 0; unit < units; unit += 1) labels.push(base);
     }
     if (labels.length === 0) {
@@ -323,10 +396,7 @@ export class PurchasingService {
         details: [{ rule: 'receipt_has_no_accepted_units' }],
       });
     }
-
-    const repeated: VariantLabel[] = [];
-    for (let copy = 0; copy < copies; copy += 1) repeated.push(...labels);
-    return renderLabelSheetSvg(repeated);
+    return labels;
   }
 
   /**
@@ -389,10 +459,23 @@ export class PurchasingService {
         const purchaseOrderLineInternalId = purchaseOrderLines[index];
         if (purchaseOrderLineInternalId === undefined) throw new RangeError('purchase_order_line_missing');
 
+        // Per-line placement: a line may name its own warehouse/location; every
+        // other line keeps the receipt-level placement resolved above.
+        const requested = input.lines[index];
+        const linePlacement =
+          requested !== undefined && (requested.warehouseId !== undefined || requested.locationId !== undefined)
+            ? await this.inventory.resolveInboundPlacement(
+                tx,
+                ctx,
+                requested.warehouseId ?? input.warehouseId,
+                requested.locationId,
+              )
+            : placement;
+
         // Stock truth: inbound ledger row with the purchase unit cost, in this tx.
         const movement = await this.inventory.postMovement(tx, ctx, {
-          warehouseId: placement.warehouseId,
-          locationId: placement.locationId,
+          warehouseId: linePlacement.warehouseId,
+          locationId: linePlacement.locationId,
           variantId: line.variant.id,
           type: 'receipt',
           quantity: line.quantity,
@@ -421,7 +504,7 @@ export class PurchasingService {
             await this.repo.insertSerial(tx, {
               variantInternalId: line.variant.internalId,
               serialNo,
-              locationInternalId: placement.locationInternalId,
+              locationInternalId: linePlacement.locationInternalId,
               receivedAt,
               createdBy: ctx.actorId,
             });

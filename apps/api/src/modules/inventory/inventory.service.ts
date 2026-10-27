@@ -562,20 +562,36 @@ export class InventoryService {
    * should use. A warehouse-less caller lands in the organization's default
    * warehouse — bootstrapped exactly like a stock adjustment when none exists — so
    * receiving works on a fresh install. Runs inside the caller's transaction.
+   *
+   * `locationPublicId` is the optional per-line override: when present it must be
+   * an active location of the resolved warehouse, otherwise the warehouse's first
+   * active location is used.
    */
   async resolveInboundPlacement(
     tx: Db,
     ctx: TenantContext,
     warehousePublicId?: string | undefined,
+    locationPublicId?: string | undefined,
   ): Promise<{ warehouseId: string; locationId: string; warehouseInternalId: bigint; locationInternalId: bigint }> {
     const warehouseInternalId =
       warehousePublicId === undefined
         ? await this.ensureDefaultWarehouse(tx, ctx)
         : await this.requireWarehouse(tx, ctx, warehousePublicId);
-    const locationInternalId = await this.resolveDefaultAdjustmentLocation(tx, ctx, warehouseInternalId);
+    const locationInternalId =
+      locationPublicId === undefined
+        ? await this.resolveDefaultAdjustmentLocation(tx, ctx, warehouseInternalId)
+        : await this.requireLocationInWarehouse(tx, ctx, locationPublicId, warehouseInternalId);
     const ids = await this.repo.placementPublicIds(tx, warehouseInternalId, locationInternalId);
     if (ids === null) throw notFound('warehouse');
     return { ...ids, warehouseInternalId, locationInternalId };
+  }
+
+  /**
+   * Validates a warehouse reference for a read-only flow (label preview) without
+   * bootstrapping the default warehouse or touching stock.
+   */
+  async assertWarehouseInOrganization(ctx: TenantContext, warehousePublicId: string): Promise<void> {
+    await this.requireWarehouse(this.db, ctx, warehousePublicId);
   }
 
   // ================================================================ reservations
@@ -2133,6 +2149,24 @@ export class InventoryService {
   private async requireLocation(tx: Db, ctx: TenantContext, publicId: string): Promise<bigint> {
     const internalId = await this.repo.resolveLocationId(tx, ctx.orgId, publicId);
     if (internalId === null) throw notFound('location');
+    return internalId;
+  }
+
+  /** A per-line location must be active and belong to the line's warehouse. */
+  private async requireLocationInWarehouse(
+    tx: Db,
+    ctx: TenantContext,
+    publicId: string,
+    warehouseInternalId: bigint,
+  ): Promise<bigint> {
+    const internalId = await this.repo.resolveLocationInWarehouse(tx, ctx.orgId, publicId, warehouseInternalId);
+    if (internalId === null) {
+      throw new AppError('VALIDATION_ERROR', {
+        message: 'موقعیت انتخاب‌شده به انبار این سطر تعلق ندارد.',
+        messageKey: 'inventory.location_warehouse_mismatch',
+        details: [{ field: 'locationId', rule: 'location_warehouse_mismatch' }],
+      });
+    }
     return internalId;
   }
 

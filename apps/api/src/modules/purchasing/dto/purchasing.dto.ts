@@ -79,8 +79,35 @@ export const CreateReceiptLineBody = z.object({
   unitCost: UnitCostInput.optional(),
   /** Serial numbers received for this line; the count must match the quantity. */
   serials: z.array(z.string().trim().min(1).max(150)).max(2000).optional(),
+  /**
+   * Optional per-line placement. When either id is present this line's inbound
+   * movement lands there instead of the receipt-level warehouse/location; the
+   * location must belong to the chosen (or receipt-level) warehouse. Omitted =
+   * the receipt-level placement, exactly as before.
+   */
+  warehouseId: PublicId.optional(),
+  locationId: PublicId.optional(),
 });
 export type CreateReceiptLineBody = z.infer<typeof CreateReceiptLineBody>;
+
+/**
+ * Label preview for an unsaved receipt (`POST /goods-receipts/labels/preview`).
+ * Same line shape the receipt accepts, minus the cost: labels only need the
+ * variant, the unit count and the optional serials.
+ */
+export const ReceiptLabelPreviewLineBody = z.object({
+  variantId: PublicId,
+  quantity: QuantityInput,
+  serials: z.array(z.string().trim().min(1).max(150)).max(2000).optional(),
+});
+export type ReceiptLabelPreviewLineBody = z.infer<typeof ReceiptLabelPreviewLineBody>;
+
+export const ReceiptLabelsPreviewBody = z.object({
+  /** Warehouse the operator is receiving into; validated against the organization. */
+  warehouseId: PublicId.optional(),
+  lines: z.array(ReceiptLabelPreviewLineBody).min(1).max(200),
+});
+export type ReceiptLabelsPreviewBody = z.infer<typeof ReceiptLabelsPreviewBody>;
 
 export const CreateReceiptBody = z
   .object({

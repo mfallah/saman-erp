@@ -718,6 +718,30 @@ export class InventoryRepository {
     return rows[0] === undefined ? null : BigInt(rows[0].id);
   }
 
+  /**
+   * Resolves a location **inside** a given warehouse. Inbound documents that
+   * accept a per-line location use this so a location from another warehouse (or
+   * another organization) can never receive a movement it does not belong to.
+   */
+  async resolveLocationInWarehouse(
+    tx: Db,
+    orgId: bigint,
+    publicId: string,
+    warehouseInternalId: bigint,
+  ): Promise<bigint | null> {
+    const rows = await tx<{ id: string }[]>`
+      select l.id::text as id from erp.warehouse_locations l
+      join erp.warehouses w on w.id = l.warehouse_id
+      where w.organization_id = ${orgId}
+        and w.id = ${warehouseInternalId}
+        and w.deleted_at is null
+        and l.public_id = ${publicId}
+        and l.is_active
+      limit 1
+    `;
+    return rows[0] === undefined ? null : BigInt(rows[0].id);
+  }
+
   /** First active location of a warehouse (default for location-less adjustments). */
   async resolveFirstActiveLocationId(tx: Db, orgId: bigint, warehouseInternalId: bigint): Promise<bigint | null> {
     const rows = await tx<{ id: string }[]>`
