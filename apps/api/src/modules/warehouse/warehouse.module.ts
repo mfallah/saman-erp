@@ -11,6 +11,7 @@ import { SalesModule } from '../sales/sales.module';
 import { PickAssignmentService } from './pick-assignment.service';
 import { PickBackfillScheduler } from './pick-backfill.scheduler';
 import { WarehouseRepository } from './warehouse.repository';
+import { WarehouseTreeController } from './warehouse-tree.controller';
 import { WarehouseService } from './warehouse.service';
 import {
   LocationsController,
@@ -24,7 +25,7 @@ import {
 
 @Module({
   imports: [CatalogModule, InventoryModule, SalesModule, ChannelsModule],
-  controllers: [WarehousesController, LocationsController, PutawayController, PickWavesController, PickTasksController, WarehousePickTasksController, PackTasksController],
+  controllers: [WarehouseTreeController, WarehousesController, LocationsController, PutawayController, PickWavesController, PickTasksController, WarehousePickTasksController, PackTasksController],
   providers: [WarehouseRepository, WarehouseService, PickAssignmentService, PickBackfillScheduler],
   exports: [WarehouseService, PickAssignmentService],
 })

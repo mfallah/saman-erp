@@ -940,14 +940,52 @@ export function WarehousesPage() {
           return <span className="text-xs text-slate-400">—</span>;
         }
         return (
-          <Button
-            size="sm"
-            variant="outline"
-            icon={<Plus aria-hidden className="size-3.5" />}
-            onClick={() => openLocationCreate(childLevel, node.id)}
-          >
-            افزودن زیرمجموعه
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<Plus aria-hidden className="size-3.5" />}
+              onClick={() => openLocationCreate(childLevel, node.id)}
+            >
+              افزودن زیرمجموعه
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                const nextName = window.prompt('نام/کد جدید این نود را وارد کنید', node.code);
+                if (nextName === null || nextName.trim().length === 0) return;
+                void api
+                  .patch(`/warehouses/${selectedWarehouseId}/tree/${node.level}/${node.id}`, {
+                    code: nextName.trim(),
+                    name: nextName.trim(),
+                  })
+                  .then(() => {
+                    toast.success('نود ویرایش شد');
+                    void queryClient.invalidateQueries({ queryKey: ['warehouses'] });
+                  })
+                  .catch((error) => toast.error('ویرایش نود ناموفق بود', toFaErrorMessage(error)));
+              }}
+            >
+              ویرایش
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                if (!window.confirm('این نود حذف شود؟')) return;
+                void api
+                  .del(`/warehouses/${selectedWarehouseId}/tree/${node.level}/${node.id}`)
+                  .then(() => {
+                    toast.success('نود حذف شد');
+                    void queryClient.invalidateQueries({ queryKey: ['warehouses'] });
+                  })
+                  .catch((error) => toast.error('حذف نود ناموفق بود', toFaErrorMessage(error)));
+              }}
+            >
+              حذف
+            </Button>
+          </div>
         );
       },
     },
