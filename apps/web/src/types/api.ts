@@ -162,6 +162,19 @@ export interface CatalogLookupResult {
   readonly location?: unknown;
 }
 
+/** What a scanned code resolved to (`GET /scan/lookup?q=`). */
+export type ScanLookupKind = 'product' | 'location' | 'order' | 'task';
+
+export interface ScanLookupResult {
+  readonly type: ScanLookupKind;
+  readonly id: string;
+  readonly title: string;
+  readonly subtitle: string | null;
+  readonly imageUrl: string | null;
+  /** SPA route that opens the resolved record. */
+  readonly url: string;
+}
+
 export interface CategoryNode extends Ref {
   readonly parentId?: string | null;
   readonly children?: readonly CategoryNode[];
@@ -348,9 +361,14 @@ export interface MyPickTask {
   readonly id: string;
   readonly status: string;
   readonly orderNo?: string | null;
+  readonly channelCode?: string | null;
   readonly sku?: string | null;
   readonly title?: string | null;
+  readonly productName?: string | null;
+  readonly variantSku?: string | null;
+  readonly imageUrl?: string | null;
   readonly quantity: string;
+  readonly quantityRequired?: string;
   readonly quantityPicked?: string;
   readonly locationCode: string;
   readonly sequenceNo?: number;
@@ -365,12 +383,16 @@ export interface PickBoardTask {
   readonly id: string;
   readonly orderId: string;
   readonly orderNo: string | null;
+  readonly channelCode?: string | null;
   readonly orderStatus: string;
   readonly fulfillmentStatus: string;
   readonly waveId: string | null;
   readonly waveNo: string | null;
   readonly sku: string | null;
   readonly title: string | null;
+  readonly productName?: string | null;
+  readonly variantSku?: string | null;
+  readonly imageUrl?: string | null;
   readonly quantityRequired: string;
   readonly quantityPicked: string;
   readonly locationCode: string | null;
@@ -436,11 +458,56 @@ export interface CompletePickTaskResult {
   readonly alreadyCompleted?: boolean;
 }
 
+/** Result of a barcode-first pick scan (`POST /warehouse/pick-tasks/:id/scan`). */
+export interface PickScanResult {
+  readonly matched: boolean;
+  /** The full barcode that matched (variant barcode, product barcode or SKU). */
+  readonly barcode: string;
+  readonly task: PickTask;
+  readonly orderComplete: boolean;
+  readonly packTask: PackTask | null;
+  readonly alreadyCompleted?: boolean;
+}
+
+/** Who receives the packed goods — drives the packing-station action. */
+export type PackHandling = 'digikala_warehouse' | 'ship_to_customer';
+
+/** One order line of a pack task (all lines of the order travel together). */
+export interface PackTaskItem {
+  readonly name: string;
+  readonly sku: string | null;
+  readonly qty: string;
+  readonly imageUrl: string | null;
+}
+
+/** `sales_orders.shipping_address_json` (channel payloads use slightly different keys). */
+export interface PackShippingAddress {
+  readonly receiverName?: string | null;
+  readonly receiverMobile?: string | null;
+  readonly province?: string | null;
+  readonly city?: string | null;
+  readonly district?: string | null;
+  readonly line1?: string | null;
+  readonly postalCode?: string | null;
+  readonly [key: string]: unknown;
+}
+
+/** Printable address label returned for a ship-to-customer order. */
+export interface PackAddressLabel {
+  readonly orderNo: string;
+  readonly recipient: string | null;
+  readonly phone: string | null;
+  readonly address: string | null;
+  readonly packageNo: string | null;
+}
+
 /** One pack task of the packing station (table `erp.pack_tasks`). */
 export interface PackTask {
   readonly id: string;
   readonly orderId: string;
   readonly orderNo: string | null;
+  readonly channelCode: string | null;
+  readonly handling: PackHandling;
   readonly fulfillmentStatus: string;
   readonly packageNo: string | null;
   readonly status: string;
@@ -449,10 +516,25 @@ export interface PackTask {
   readonly notes: string | null;
   readonly itemCount: number;
   readonly totalQuantity: string;
+  readonly items: readonly PackTaskItem[];
+  readonly address: PackShippingAddress | null;
+  readonly customerName: string | null;
+  readonly customerPhone: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly closedAt: string | null;
   readonly ageMinutes: number;
+}
+
+/** Result of `POST /warehouse/pack-tasks/:id/complete`. */
+export interface CompletePackTaskResult {
+  readonly packTask: PackTask;
+  readonly orderId: string;
+  readonly orderFulfillmentStatus?: string;
+  readonly handling: PackHandling;
+  /** `null` for Digikala orders (Digikala issues its own shipment barcode). */
+  readonly label: PackAddressLabel | null;
+  readonly alreadyCompleted: boolean;
 }
 
 export interface PackBoardSummary {

@@ -20,12 +20,13 @@ import {
   WarehousePickTasksController,
   PickWavesController,
   PutawayController,
+  ScanController,
   WarehousesController,
 } from './warehouse.controller';
 
 @Module({
   imports: [CatalogModule, InventoryModule, SalesModule, ChannelsModule],
-  controllers: [WarehouseTreeController, WarehousesController, LocationsController, PutawayController, PickWavesController, PickTasksController, WarehousePickTasksController, PackTasksController],
+  controllers: [WarehouseTreeController, WarehousesController, LocationsController, PutawayController, PickWavesController, PickTasksController, WarehousePickTasksController, PackTasksController, ScanController],
   providers: [WarehouseRepository, WarehouseService, PickAssignmentService, PickBackfillScheduler],
   exports: [WarehouseService, PickAssignmentService],
 })

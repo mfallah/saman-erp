@@ -13,7 +13,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { ScopeCheck, ScopeResource } from '../../common/decorators/scope-check.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { WarehouseService } from './warehouse.service';
-import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PackTaskCompleteBody, PickScanBody, PickTaskAssignBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, StationPickCompleteBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
+import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PackTaskCompleteBody, PickScanBody, PickTaskAssignBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ScanLookupQuery, ShortPickBody, StationPickCompleteBody, StationPickScanBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
 
 function offset(data: readonly unknown[], total: number, page: number, perPage: number) {
   return apiData(data, {
@@ -367,6 +367,19 @@ export class WarehousePickTasksController {
     return apiData(await this.service.completeStationPickTask(ctx, id, parseWith(StationPickCompleteBody, body ?? {})));
   }
 
+  /**
+   * Barcode-first picking: the scanned (or typed last-3-digits) barcode
+   * completes the task and auto-advances the station, exactly like `/complete`.
+   */
+  @Post(':id/scan')
+  @HttpCode(200)
+  @Permissions('warehouse.pick')
+  @Audited('warehouse.pick.scan')
+  async scan(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.scanStationPickTask(ctx, id, parseWith(StationPickScanBody, body ?? {})));
+  }
+
   @Patch(':id/assign')
   @Permissions('warehouse.pick')
   @Audited('warehouse.pick.assign')
@@ -419,5 +432,27 @@ export class PackTasksController {
   async assign(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
     const { id } = parseWith(IdParam, params);
     return apiData(await this.service.assignPackStationTask(ctx, id, parseWith(PickTaskAssignBody, body)));
+  }
+}
+
+/**
+ * Global barcode resolution (`GET /api/v1/scan/lookup?q=`).
+ *
+ * Mounted in the warehouse module because warehouse/permission ownership lives
+ * here, but the endpoint is channel-agnostic: the SPA scan page (and the pick
+ * station) can resolve a product barcode/SKU, a location barcode, an order
+ * number or a pick-task id from one scanned string.
+ */
+@ApiTags('warehouse')
+@ApiBearerAuth()
+@Controller('scan')
+export class ScanController {
+  constructor(private readonly service: WarehouseService) {}
+
+  @Get('lookup')
+  @Permissions('inventory.balance.read')
+  async lookup(@CurrentTenant() ctx: TenantContext, @Query() query: unknown) {
+    const { q } = parseWith(ScanLookupQuery, query);
+    return apiData(await this.service.scanLookup(ctx, q));
   }
 }

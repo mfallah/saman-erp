@@ -174,10 +174,24 @@ export const StationPickCompleteBody = z.object({
 });
 export type StationPickCompleteBody = z.infer<typeof StationPickCompleteBody>;
 
+/**
+ * Barcode-first station scan (`POST warehouse/pick-tasks/:id/scan`). The
+ * operator either scans the full barcode or types its last 3 characters.
+ */
+export const StationPickScanBody = z.object({
+  barcode: z.string().trim().min(1).max(150),
+});
+export type StationPickScanBody = z.infer<typeof StationPickScanBody>;
+
+/** `GET /scan/lookup?q=` — one scanned code resolved across the ERP. */
+export const ScanLookupQuery = z.object({ q: z.string().trim().min(1).max(150) });
+export type ScanLookupQuery = z.infer<typeof ScanLookupQuery>;
+
 /** `POST warehouse/pack-tasks/:id/complete`; weight is grams and stored in notes. */
 export const PackTaskCompleteBody = z.object({
   packageNo: z.string().trim().min(1).max(40).optional(),
   weight: z.coerce.number().finite().min(0).max(1_000_000).optional(),
+  note: z.string().trim().max(300).optional(),
 });
 export type PackTaskCompleteBody = z.infer<typeof PackTaskCompleteBody>;
 

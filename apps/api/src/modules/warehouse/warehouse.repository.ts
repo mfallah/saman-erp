@@ -84,9 +84,14 @@ export interface MyPickTaskRow {
   id: string;
   status: string;
   orderNo: string | null;
+  channelCode: string | null;
   sku: string | null;
   title: string | null;
+  productName: string | null;
+  variantSku: string | null;
+  imageUrl: string | null;
   quantity: string;
+  quantityRequired: string;
   quantityPicked: string;
   locationCode: string;
   sequenceNo: number;
@@ -122,12 +127,16 @@ export interface PickBoardTaskRow {
   orderInternalId: string;
   orderId: string;
   orderNo: string | null;
+  channelCode: string | null;
   orderStatus: string;
   fulfillmentStatus: string;
   waveId: string | null;
   waveNo: string | null;
   sku: string | null;
   title: string | null;
+  productName: string | null;
+  variantSku: string | null;
+  imageUrl: string | null;
   quantityRequired: string;
   quantityPicked: string;
   locationCode: string | null;
@@ -153,9 +162,19 @@ export interface PickBoardDiagnosticsRow {
   fallbackPickers: number;
 }
 
+/** One order line of a pack task, shown on the packing card. */
+export interface PackTaskItemRow {
+  name: string;
+  sku: string | null;
+  qty: string;
+  imageUrl: string | null;
+}
+
 /**
  * A pack task from `erp.pack_tasks` (created by the picking station when an
  * order is fully picked). The table is owned by the fulfilment migration.
+ * `channelCode` drives the handling rule (Digikala warehouse vs ship-to-customer);
+ * `items`, `address` and `customerName` make the packing card self-explanatory.
  */
 export interface PackTaskRow {
   internalId: string;
@@ -163,6 +182,7 @@ export interface PackTaskRow {
   orderInternalId: string;
   orderId: string;
   orderNo: string | null;
+  channelCode: string | null;
   fulfillmentStatus: string;
   packageNo: string | null;
   status: string;
@@ -171,6 +191,11 @@ export interface PackTaskRow {
   notes: string | null;
   itemCount: number;
   totalQuantity: string;
+  items: readonly PackTaskItemRow[];
+  /** `erp.sales_orders.shipping_address_json`, when the order carries one. */
+  address: Record<string, unknown> | null;
+  customerName: string | null;
+  customerPhone: string | null;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
@@ -192,6 +217,26 @@ export interface PackBoardDiagnosticsRow {
 export interface OrderChannelRefRow {
   externalOrderId: string | null;
   accountPublicId: string | null;
+}
+
+/** Every barcode a pick task's item can be identified by (station scan). */
+export interface PickTaskBarcodeRow {
+  /** Primary barcode stored on the variant (`product_variants.barcode`). */
+  variantBarcode: string | null;
+  /** Sales-order-line SKU snapshot, falling back to the variant SKU. */
+  sku: string | null;
+  /** Additional active barcodes from `erp.product_barcodes`. */
+  barcodes: string[] | null;
+}
+
+/** A scanned code resolved by `GET /scan/lookup`. */
+export interface ScanLookupRow {
+  kind: 'product' | 'location' | 'order' | 'task';
+  id: string;
+  title: string;
+  subtitle: string | null;
+  imageUrl: string | null;
+  url: string;
 }
 
 export interface PutawayTaskRow {
@@ -844,9 +889,15 @@ export class WarehouseRepository {
   ): Promise<MyPickTaskRow[]> {
     return tx<MyPickTaskRow[]>`
       select t.public_id as id, t.status, o.order_no as "orderNo",
+             ch.code as "channelCode",
              coalesce(sol.sku_snapshot, v.sku) as sku,
              coalesce(sol.title_snapshot, v.title, p.name) as title,
-             t.quantity_required::text as quantity, t.quantity_picked::text as "quantityPicked",
+             coalesce(sol.title_snapshot, v.title, p.name) as "productName",
+             coalesce(sol.sku_snapshot, v.sku) as "variantSku",
+             coalesce(v.image_url, p.image_url) as "imageUrl",
+             t.quantity_required::text as quantity,
+             t.quantity_required::text as "quantityRequired",
+             t.quantity_picked::text as "quantityPicked",
              l.full_code as "locationCode", t.sequence_no as "sequenceNo",
              au.public_id as "assignedTo", au.full_name as "assignedToName",
              t.created_at::text as "createdAt",
@@ -857,6 +908,8 @@ export class WarehouseRepository {
       join erp.products p on p.id = v.product_id
       join erp.warehouse_locations l on l.id = t.location_id
       left join erp.sales_order_lines sol on sol.id = t.sales_order_line_id
+      left join erp.channel_accounts ca on ca.id = o.channel_account_id
+      left join erp.sales_channels ch on ch.id = ca.channel_id
       left join erp.users au on au.id = t.assigned_to
       where o.organization_id = ${params.orgId}
         and t.assigned_to = ${params.assignedTo}
@@ -865,6 +918,28 @@ export class WarehouseRepository {
       order by l.pick_priority asc, l.full_code asc, t.sequence_no asc
       limit ${params.limit}
     `;
+  }
+
+  /**
+   * Barcodes that identify a pick task's item: the variant barcode, its active
+   * `product_barcodes` rows and the sales-order-line SKU snapshot (which is the
+   * SKU the channel actually shipped). Used by the station scan endpoint.
+   */
+  async findPickTaskBarcodes(tx: Db, taskInternalId: bigint): Promise<PickTaskBarcodeRow | null> {
+    const rows = await tx<PickTaskBarcodeRow[]>`
+      select v.barcode as "variantBarcode",
+             coalesce(sol.sku_snapshot, v.sku) as sku,
+             (select array_agg(b.barcode order by b.is_primary desc, b.created_at asc)
+                from erp.product_barcodes b
+               where b.product_variant_id = t.product_variant_id
+                 and b.is_active
+                 and b.deleted_at is null) as barcodes
+      from erp.pick_tasks t
+      left join erp.product_variants v on v.id = t.product_variant_id
+      left join erp.sales_order_lines sol on sol.id = t.sales_order_line_id
+      where t.id = ${taskInternalId}
+    `;
+    return rows[0] ?? null;
   }
 
   async findActiveUserId(tx: Db, orgId: bigint, publicId: string): Promise<bigint | null> {
@@ -1096,11 +1171,15 @@ export class WarehouseRepository {
     return tx<PickBoardTaskRow[]>`
       select t.public_id as id, t.order_id::text as "orderInternalId",
              coalesce(o.public_id::text, '') as "orderId", o.order_no as "orderNo",
+             ch.code as "channelCode",
              coalesce(o.status, 'unknown') as "orderStatus",
              coalesce(o.fulfillment_status, 'unfulfilled') as "fulfillmentStatus",
              pw.public_id as "waveId", pw.wave_no as "waveNo",
              coalesce(sol.sku_snapshot, v.sku) as sku,
              coalesce(sol.title_snapshot, v.title, p.name) as title,
+             coalesce(sol.title_snapshot, v.title, p.name) as "productName",
+             coalesce(sol.sku_snapshot, v.sku) as "variantSku",
+             coalesce(v.image_url, p.image_url) as "imageUrl",
              t.quantity_required::text as "quantityRequired",
              t.quantity_picked::text as "quantityPicked",
              l.full_code as "locationCode", t.sequence_no as "sequenceNo", t.status,
@@ -1114,6 +1193,8 @@ export class WarehouseRepository {
       left join erp.product_variants v on v.id = t.product_variant_id
       left join erp.products p on p.id = v.product_id
       left join erp.warehouse_locations l on l.id = t.location_id
+      left join erp.channel_accounts ca on ca.id = o.channel_account_id
+      left join erp.sales_channels ch on ch.id = ca.channel_id
       left join erp.users au on au.id = t.assigned_to
       where o.organization_id = ${params.orgId}
         and t.status in ('pending', 'in_progress')
@@ -1255,6 +1336,7 @@ export class WarehouseRepository {
     const rows = await tx<PackTaskRow[]>`
       select pt.id::text as "internalId", pt.public_id as id, pt.order_id::text as "orderInternalId",
              coalesce(o.public_id::text, '') as "orderId", o.order_no as "orderNo",
+             ch.code as "channelCode",
              coalesce(o.fulfillment_status, 'unfulfilled') as "fulfillmentStatus",
              pt.package_no as "packageNo", pt.status,
              pt.assigned_to::text as "assignedTo", au.full_name as "assignedToName",
@@ -1262,9 +1344,29 @@ export class WarehouseRepository {
              pt.closed_at::text as "closedAt",
              (select count(*) from erp.sales_order_lines l where l.order_id = pt.order_id)::int as "itemCount",
              coalesce((select sum(l.quantity) from erp.sales_order_lines l where l.order_id = pt.order_id), 0)::text as "totalQuantity",
+             o.shipping_address_json as address,
+             c.full_name as "customerName",
+             coalesce(c.mobile, o.shipping_address_json ->> 'receiverMobile') as "customerPhone",
+             -- Every line of the order travels in the same package; the packing
+             -- card shows the whole order, not a subset.
+             coalesce((
+               select json_agg(json_build_object(
+                        'name', coalesce(l.title_snapshot, v.title, p.name),
+                        'sku', coalesce(l.sku_snapshot, v.sku),
+                        'qty', l.quantity::text,
+                        'imageUrl', coalesce(v.image_url, p.image_url)
+                      ) order by l.line_no)
+                 from erp.sales_order_lines l
+                 left join erp.product_variants v on v.id = l.product_variant_id
+                 left join erp.products p on p.id = v.product_id
+                where l.order_id = pt.order_id
+             ), '[]'::json) as items,
              floor(extract(epoch from (now() - pt.created_at)) / 60)::int as "ageMinutes"
       from erp.pack_tasks pt
       left join erp.sales_orders o on o.id = pt.order_id
+      left join erp.customers c on c.id = o.customer_id
+      left join erp.channel_accounts ca on ca.id = o.channel_account_id
+      left join erp.sales_channels ch on ch.id = ca.channel_id
       left join erp.users au on au.id = pt.assigned_to
       where pt.id = ${internalId}
     `;
@@ -1504,5 +1606,139 @@ export class WarehouseRepository {
       where w.organization_id = ${orgId}
     `;
     return `WAV-${(Number(rows[0]?.total ?? '0') + 1).toString().padStart(6, '0')}`;
+  }
+
+  // ---------------------------------------------------------- global barcode
+
+  /** Variant resolved by SKU, primary barcode or any active `product_barcodes`. */
+  async scanLookupProduct(tx: Db, orgId: bigint, code: string): Promise<ScanLookupRow | null> {
+    const rows = await tx<
+      {
+        id: string;
+        productId: string;
+        name: string | null;
+        variantTitle: string | null;
+        sku: string | null;
+        imageUrl: string | null;
+        barcode: string | null;
+      }[]
+    >`
+      select v.public_id as id, p.public_id as "productId",
+             p.name, v.title as "variantTitle", v.sku, v.barcode,
+             coalesce(v.image_url, p.image_url) as "imageUrl"
+      from erp.product_variants v
+      join erp.products p on p.id = v.product_id
+      where p.organization_id = ${orgId}
+        and p.deleted_at is null and v.deleted_at is null
+        and (
+          lower(v.sku) = lower(${code})
+          or lower(coalesce(v.barcode, '')) = lower(${code})
+          or exists (
+            select 1 from erp.product_barcodes b
+            where b.product_variant_id = v.id
+              and b.is_active and b.deleted_at is null
+              and lower(b.barcode) = lower(${code})
+          )
+        )
+      order by v.is_default desc, v.sort_order asc, v.id asc
+      limit 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return null;
+    const subtitle = [row.variantTitle, row.sku === null ? null : `SKU ${row.sku}`, row.barcode]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+      .join(' · ');
+    return {
+      kind: 'product',
+      id: row.id,
+      title: row.name ?? row.variantTitle ?? row.sku ?? code,
+      subtitle: subtitle.length > 0 ? subtitle : null,
+      imageUrl: row.imageUrl,
+      url: `/products/${row.productId}`,
+    };
+  }
+
+  /** Warehouse location by its barcode or human `full_code`. */
+  async scanLookupLocation(tx: Db, orgId: bigint, code: string): Promise<ScanLookupRow | null> {
+    const rows = await tx<
+      { id: string; fullCode: string; warehouseId: string; warehouseName: string; warehouseCode: string }[]
+    >`
+      select l.public_id as id, l.full_code as "fullCode",
+             w.public_id as "warehouseId", w.name as "warehouseName", w.code as "warehouseCode"
+      from erp.warehouse_locations l
+      join erp.warehouses w on w.id = l.warehouse_id
+      where w.organization_id = ${orgId}
+        and w.deleted_at is null and l.deleted_at is null
+        and (
+          lower(l.full_code) = lower(${code})
+          or lower(coalesce(l.barcode, '')) = lower(${code})
+        )
+      order by l.is_pickable desc, l.full_code asc
+      limit 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      kind: 'location',
+      id: row.id,
+      title: row.fullCode,
+      subtitle: `انبار ${row.warehouseName} (${row.warehouseCode})`,
+      imageUrl: null,
+      url: `/warehouses/${row.warehouseId}/locations?code=${encodeURIComponent(row.fullCode)}`,
+    };
+  }
+
+  /** Sales order by its human order number. */
+  async scanLookupOrder(tx: Db, orgId: bigint, code: string): Promise<ScanLookupRow | null> {
+    const rows = await tx<{ id: string; orderNo: string; customerName: string | null; status: string }[]>`
+      select o.public_id as id, o.order_no as "orderNo",
+             coalesce(c.full_name, o.shipping_address_json ->> 'receiverName') as "customerName",
+             o.status
+      from erp.sales_orders o
+      left join erp.customers c on c.id = o.customer_id
+      where o.organization_id = ${orgId} and lower(o.order_no) = lower(${code})
+      order by o.created_at desc
+      limit 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      kind: 'order',
+      id: row.id,
+      title: row.orderNo,
+      subtitle: [row.customerName, row.status].filter((part): part is string => typeof part === 'string').join(' · ') || null,
+      imageUrl: null,
+      url: `/orders/${row.id}`,
+    };
+  }
+
+  /** Pick task by its public id (the code printed on a task sheet). */
+  async scanLookupTask(tx: Db, orgId: bigint, publicId: string): Promise<ScanLookupRow | null> {
+    const rows = await tx<
+      { id: string; orderNo: string | null; sku: string | null; locationCode: string | null; imageUrl: string | null }[]
+    >`
+      select t.public_id as id, o.order_no as "orderNo",
+             coalesce(sol.sku_snapshot, v.sku) as sku,
+             l.full_code as "locationCode",
+             coalesce(v.image_url, p.image_url) as "imageUrl"
+      from erp.pick_tasks t
+      join erp.sales_orders o on o.id = t.order_id
+      left join erp.sales_order_lines sol on sol.id = t.sales_order_line_id
+      left join erp.product_variants v on v.id = t.product_variant_id
+      left join erp.products p on p.id = v.product_id
+      left join erp.warehouse_locations l on l.id = t.location_id
+      where o.organization_id = ${orgId} and t.public_id = ${publicId}::uuid
+      limit 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      kind: 'task',
+      id: row.id,
+      title: `وظیفه برداشت ${row.orderNo ?? ''}`.trim(),
+      subtitle: [row.sku, row.locationCode].filter((part): part is string => part !== null).join(' · ') || null,
+      imageUrl: row.imageUrl,
+      url: `/picking?task=${row.id}`,
+    };
   }
 }

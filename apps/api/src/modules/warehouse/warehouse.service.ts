@@ -19,7 +19,7 @@ import type { Db } from './warehouse.pg-support';
 import { notFound, toBigInt } from './warehouse.pg-support';
 import { PickAssignmentService } from './pick-assignment.service';
 import { WarehouseRepository } from './warehouse.repository';
-import { type LocationRow, type MyPickTaskRow, type PackTaskRow, type PickBoardDiagnosticsRow, type PickBoardTaskRow, type PickTaskRow, type PickWaveRow, type WarehouseRow } from './warehouse.repository';
+import { type LocationRow, type MyPickTaskRow, type PackTaskRow, type PickBoardDiagnosticsRow, type PickBoardTaskRow, type PickTaskBarcodeRow, type PickTaskRow, type PickWaveRow, type ScanLookupRow, type WarehouseRow } from './warehouse.repository';
 import { WAREHOUSE_EVENTS, type PickTaskEventPayload, type WaveEventPayload } from './warehouse.events';
 import { assertValidLocationParent, assignPickRoute, generateLocationCode, labelNumber, normalizeLocationBarcode, orderPickTasks, suggestPutaway, verifyScan, type LocationNodeType } from './engines/location.engine';
 import type {
@@ -34,6 +34,7 @@ import type {
   PutawaySuggestionQuery,
   ReleaseWaveBody,
   StationPickCompleteBody,
+  StationPickScanBody,
   UpdateLocationBody,
   UpdateWarehouseBody,
 } from './dto/warehouse.dto';
@@ -114,9 +115,14 @@ function myPickTaskView(row: MyPickTaskRow): Record<string, unknown> {
     id: row.id,
     status: row.status,
     orderNo: row.orderNo,
+    channelCode: row.channelCode,
     sku: row.sku,
     title: row.title,
+    productName: row.productName,
+    variantSku: row.variantSku,
+    imageUrl: row.imageUrl,
     quantity: row.quantity,
+    quantityRequired: row.quantityRequired,
     quantityPicked: row.quantityPicked,
     locationCode: row.locationCode,
     sequenceNo: row.sequenceNo,
@@ -132,12 +138,16 @@ function pickBoardTaskView(row: PickBoardTaskRow): Record<string, unknown> {
     id: row.id,
     orderId: row.orderId,
     orderNo: row.orderNo,
+    channelCode: row.channelCode,
     orderStatus: row.orderStatus,
     fulfillmentStatus: row.fulfillmentStatus,
     waveId: row.waveId,
     waveNo: row.waveNo,
     sku: row.sku,
     title: row.title,
+    productName: row.productName,
+    variantSku: row.variantSku,
+    imageUrl: row.imageUrl,
     quantityRequired: row.quantityRequired,
     quantityPicked: row.quantityPicked,
     locationCode: row.locationCode,
@@ -150,11 +160,24 @@ function pickBoardTaskView(row: PickBoardTaskRow): Record<string, unknown> {
   };
 }
 
+type PackHandling = 'digikala_warehouse' | 'ship_to_customer';
+
+/**
+ * Who receives the packed goods: Digikala orders are delivered to a Digikala
+ * warehouse (Digikala issues its own shipment barcode, so the ERP must never
+ * print a customer label); Carexy/ERP orders ship to the customer address.
+ */
+function packHandling(channelCode: string | null): PackHandling {
+  return channelCode === 'digikala' ? 'digikala_warehouse' : 'ship_to_customer';
+}
+
 function packTaskView(row: PackTaskRow): Record<string, unknown> {
   return {
     id: row.id,
     orderId: row.orderId,
     orderNo: row.orderNo,
+    channelCode: row.channelCode,
+    handling: packHandling(row.channelCode),
     fulfillmentStatus: row.fulfillmentStatus,
     packageNo: row.packageNo,
     status: row.status,
@@ -163,10 +186,55 @@ function packTaskView(row: PackTaskRow): Record<string, unknown> {
     notes: row.notes,
     itemCount: row.itemCount,
     totalQuantity: row.totalQuantity,
+    items: row.items,
+    address: row.address,
+    customerName: row.customerName,
+    customerPhone: row.customerPhone,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     closedAt: row.closedAt,
     ageMinutes: row.ageMinutes,
+  };
+}
+
+/** Shipping address keys the packing label/card can use (channel payloads vary). */
+const ADDRESS_NAME_KEYS = ['receiverName', 'recipientName', 'receiver_name', 'recipient', 'name'] as const;
+const ADDRESS_PHONE_KEYS = ['receiverMobile', 'receiverPhone', 'mobile', 'phone', 'receiver_mobile'] as const;
+const ADDRESS_LINE_KEYS = ['line1', 'addressLine', 'address_line', 'address', 'line'] as const;
+
+function pickAddressString(address: Record<string, unknown> | null, keys: readonly string[]): string | null {
+  if (address === null) return null;
+  for (const key of keys) {
+    const value = address[key];
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+/** Single printable line built from the structured shipping address. */
+function formatAddressText(address: Record<string, unknown> | null): string | null {
+  if (address === null) return null;
+  const parts: string[] = [];
+  const line = pickAddressString(address, ADDRESS_LINE_KEYS);
+  if (line !== null) parts.push(line);
+  for (const key of ['district', 'city', 'province']) {
+    const value = address[key];
+    if (typeof value === 'string' && value.trim().length > 0) parts.push(value.trim());
+  }
+  const postal = address['postalCode'] ?? address['postal_code'];
+  if (typeof postal === 'string' && postal.trim().length > 0) parts.push(`کد پستی ${postal.trim()}`);
+  return parts.length > 0 ? parts.join('، ') : null;
+}
+
+/** Shape returned by `GET /scan/lookup`. */
+function scanLookupView(row: ScanLookupRow): Record<string, unknown> {
+  return {
+    type: row.kind,
+    id: row.id,
+    title: row.title,
+    subtitle: row.subtitle,
+    imageUrl: row.imageUrl,
+    url: row.url,
   };
 }
 
@@ -227,6 +295,45 @@ function isUndefinedTable(error: unknown): boolean {
     (error as { code?: unknown }).code === '42P01'
   );
 }
+
+/**
+ * Barcodes that identify a task's item, most specific first: the variant
+ * barcode, its active `product_barcodes`, then the sales-order-line SKU
+ * snapshot (what the channel actually shipped). De-duplicated, blanks dropped.
+ */
+function pickTaskBarcodeCandidates(
+  row: PickTaskBarcodeRow | null,
+  task: PickTaskRow,
+): string[] {
+  const candidates: string[] = [];
+  const push = (value: string | null | undefined): void => {
+    const trimmed = value?.trim() ?? '';
+    if (trimmed.length > 0 && !candidates.includes(trimmed)) candidates.push(trimmed);
+  };
+  push(row?.variantBarcode ?? null);
+  for (const barcode of row?.barcodes ?? []) push(barcode);
+  push(row?.sku ?? null);
+  push(task.barcode);
+  push(task.sku);
+  return candidates;
+}
+
+/**
+ * Full-barcode scan is the primary path; the last 3 characters typed by the
+ * operator are the fallback (`barcode.endsWith(input)`, case-insensitive).
+ * Shorter typed inputs are not accepted as a suffix, so `"1"` cannot match
+ * every barcode that happens to end with it.
+ */
+function matchTaskBarcode(candidates: readonly string[], input: string): string | null {
+  const value = input.trim().toLowerCase();
+  if (value.length === 0) return null;
+  const exact = candidates.find((candidate) => candidate.toLowerCase() === value);
+  if (exact !== undefined) return exact;
+  if (value.length < 3) return null;
+  return candidates.find((candidate) => candidate.toLowerCase().endsWith(value)) ?? null;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const PACK_TABLE_MISSING_MESSAGE =
   'جدول تسک‌های بسته‌بندی (erp.pack_tasks) هنوز ساخته نشده است؛ مهاجرت مربوطه باید اعمال شود.';
@@ -1212,26 +1319,123 @@ export class WarehouseService {
           details: [{ rule: 'pick_short_required', params: { required: task.quantityRequired, picked: quantity } }],
         });
       }
-      const updated = await this.repo.updatePickTask(tx, toBigInt(task.internalId), {
-        status: 'picked',
-        quantityPicked: quantity,
-        completed: true,
-        assignedTo: ctx.actorId,
-      });
-      const completion = await this.settleOrderIfPicked(tx, ctx, task, updated);
-      const payload: PickTaskEventPayload = {
-        taskId: task.id,
-        waveId: task.waveId,
-        orderId: task.orderId,
-        variantId: task.variantId,
-        locationId: task.locationId,
-        quantityRequired: task.quantityRequired,
-        quantityPicked: quantity,
-        status: 'picked',
-      };
-      await this.emit(tx, ctx, WAREHOUSE_EVENTS.pickTaskCompleted, 'pick_task', toBigInt(task.internalId), payload);
-      return { task: pickTaskView(updated), ...completion };
+      return this.settleStationTask(tx, ctx, task, quantity);
     });
+  }
+
+  /**
+   * `POST warehouse/pick-tasks/:id/scan` — barcode-first picking. The scan
+   * resolves the item's barcode (variant barcode, `product_barcodes` or the
+   * sales-order-line SKU snapshot) and accepts either the full barcode or its
+   * last 3 characters (the operator's typed fallback). A match completes the
+   * task through the same settlement path as `/complete`, so it also creates the
+   * order's pack task; a mismatch is a 422 `barcode_mismatch` that names the
+   * expected 3-character suffix.
+   */
+  async scanStationPickTask(
+    ctx: TenantContext,
+    publicId: string,
+    body: StationPickScanBody,
+  ): Promise<Record<string, unknown>> {
+    return this.db.begin(async (tx) => {
+      const task = await this.repo.lockPickTask(tx, ctx.orgId, publicId);
+      if (task === null) throw notFound('pick_task');
+      if (task.status === 'picked' || task.status === 'short') {
+        return {
+          matched: true,
+          barcode: task.barcode ?? body.barcode.trim(),
+          task: pickTaskView(task),
+          orderComplete: false,
+          packTask: null,
+          alreadyCompleted: true,
+        };
+      }
+      if (task.status !== 'pending' && task.status !== 'in_progress') {
+        throw new AppError('DOCUMENT_STATE_INVALID', {
+          message: 'این تسک قابل تکمیل نیست.',
+          details: [{ rule: 'task_not_completable', params: { status: task.status } }],
+        });
+      }
+      const barcodeRow = await this.repo.findPickTaskBarcodes(tx, toBigInt(task.internalId));
+      const candidates = pickTaskBarcodeCandidates(barcodeRow, task);
+      const variantInternalId = task.variantInternalId.length > 0 ? toBigInt(task.variantInternalId) : null;
+      const matched = matchTaskBarcode(candidates, body.barcode);
+      if (matched === null) {
+        const expected = candidates[0] ?? null;
+        await this.repo.insertPickScan(tx, {
+          taskInternalId: toBigInt(task.internalId),
+          barcode: body.barcode.trim(),
+          expectedBarcode: expected,
+          variantInternalId,
+          quantity: task.quantityRequired,
+          result: 'rejected_wrong_item',
+          scannedBy: ctx.actorId ?? 0n,
+          scanSource: 'scanner',
+          clientScanId: null,
+        });
+        throw new AppError('RULE_VIOLATION', {
+          message:
+            expected === null
+              ? 'بارکد اسکن‌شده با کالای این تسک یکسان نیست.'
+              : `بارکد اسکن‌شده با کالای این تسک یکسان نیست؛ ۳ رقم آخر «${expected.slice(-3)}» است.`,
+          messageKey: 'warehouse.barcode_mismatch',
+          details: [
+            {
+              rule: 'barcode_mismatch',
+              params: {
+                taskId: task.id,
+                expectedSuffix: expected === null ? null : expected.slice(-3),
+              },
+            },
+          ],
+        });
+      }
+      await this.repo.insertPickScan(tx, {
+        taskInternalId: toBigInt(task.internalId),
+        barcode: body.barcode.trim(),
+        expectedBarcode: matched,
+        variantInternalId,
+        quantity: task.quantityRequired,
+        result: 'accepted',
+        scannedBy: ctx.actorId ?? 0n,
+        scanSource: 'scanner',
+        clientScanId: null,
+      });
+      const completion = await this.settleStationTask(tx, ctx, task, task.quantityRequired);
+      return { matched: true, barcode: matched, ...completion };
+    });
+  }
+
+  /**
+   * Single settlement path for a station pick (manual `complete` and a matching
+   * `scan` both end here): task `picked` + full quantity, order settlement and
+   * pack-task creation when no open task is left.
+   */
+  private async settleStationTask(
+    tx: Db,
+    ctx: TenantContext,
+    task: PickTaskRow,
+    quantity: string,
+  ): Promise<{ task: Record<string, unknown>; orderComplete: boolean; packTask: Record<string, unknown> | null }> {
+    const updated = await this.repo.updatePickTask(tx, toBigInt(task.internalId), {
+      status: 'picked',
+      quantityPicked: quantity,
+      completed: true,
+      assignedTo: ctx.actorId,
+    });
+    const completion = await this.settleOrderIfPicked(tx, ctx, task, updated);
+    const payload: PickTaskEventPayload = {
+      taskId: task.id,
+      waveId: task.waveId,
+      orderId: task.orderId,
+      variantId: task.variantId,
+      locationId: task.locationId,
+      quantityRequired: task.quantityRequired,
+      quantityPicked: quantity,
+      status: 'picked',
+    };
+    await this.emit(tx, ctx, WAREHOUSE_EVENTS.pickTaskCompleted, 'pick_task', toBigInt(task.internalId), payload);
+    return { task: pickTaskView(updated), ...completion };
   }
 
   /**
@@ -1398,6 +1602,12 @@ export class WarehouseService {
    * `POST warehouse/pack-tasks/:id/complete` → task `packed`, order
    * `ready_to_ship`, then a best-effort channel ready-to-ship notification
    * (skipped silently when the adapter does not support it).
+   *
+   * Channel-aware label rule: a Digikala order is delivered to a Digikala
+   * warehouse, which issues its own shipment barcode — the ERP must NOT print a
+   * customer label for it (`label: null`) and derives the package number from
+   * the order number. Carexy/ERP orders ship to the customer, so the response
+   * carries the address label (`{ orderNo, recipient, phone, address, packageNo }`).
    */
   async completePackTask(
     ctx: TenantContext,
@@ -1413,8 +1623,15 @@ export class WarehouseService {
         if (task === null) throw notFound('pack_task');
         orderInternalId = toBigInt(task.orderInternalId);
         orderPublicId = task.orderId;
+        const handling = packHandling(task.channelCode);
         if (task.status === 'packed') {
-          return { packTask: packTaskView(task), orderId: task.orderId, alreadyCompleted: true };
+          return {
+            packTask: packTaskView(task),
+            orderId: task.orderId,
+            handling,
+            label: handling === 'digikala_warehouse' ? null : this.buildAddressLabel(task, task.packageNo),
+            alreadyCompleted: true,
+          };
         }
         if (task.status !== 'pending' && task.status !== 'packing') {
           throw new AppError('DOCUMENT_STATE_INVALID', {
@@ -1423,9 +1640,15 @@ export class WarehouseService {
           });
         }
         const count = await this.repo.countPackTasksForOrder(tx, ctx.orgId, toBigInt(task.orderInternalId));
-        const packageNo = body.packageNo ?? task.packageNo ?? this.buildPackageNo(task.orderNo, count + 1);
+        // Digikala already has the shipment barcode: the ERP package number is
+        // always derived from the order number, never operator-supplied.
+        const packageNo =
+          handling === 'digikala_warehouse'
+            ? this.buildPackageNo(task.orderNo, count + 1)
+            : (body.packageNo ?? task.packageNo ?? this.buildPackageNo(task.orderNo, count + 1));
         const weightNote = body.weight === undefined ? null : `weight_g=${Math.round(body.weight)}`;
-        const notes = [task.notes, weightNote]
+        const handlingNote = `handling=${handling}`;
+        const notes = [task.notes, handlingNote, body.note ?? null, weightNote]
           .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
           .join(' | ');
         const updated = await this.repo.updatePackTask(tx, toBigInt(task.internalId), {
@@ -1447,6 +1670,8 @@ export class WarehouseService {
           packTask: packTaskView(updated),
           orderId: task.orderId,
           orderFulfillmentStatus: 'ready_to_ship',
+          handling,
+          label: handling === 'digikala_warehouse' ? null : this.buildAddressLabel(updated, packageNo),
           alreadyCompleted: false,
         };
       }),
@@ -1457,6 +1682,33 @@ export class WarehouseService {
       await this.pushChannelReadyToShip(ctx, orderInternalId, orderPublicId);
     }
     return result;
+  }
+
+  /**
+   * Printable address label for a ship-to-customer order. Only the order number,
+   * recipient, phone and address are included (the packing UI prints exactly
+   * these); Digikala orders never reach this method.
+   */
+  private buildAddressLabel(
+    task: PackTaskRow,
+    packageNo: string | null,
+  ): {
+    orderNo: string;
+    recipient: string | null;
+    phone: string | null;
+    address: string | null;
+    packageNo: string | null;
+  } | null {
+    if (task.orderNo === null && packageNo === null) return null;
+    return {
+      orderNo: task.orderNo ?? '',
+      recipient:
+        pickAddressString(task.address, ADDRESS_NAME_KEYS) ?? task.customerName ?? null,
+      phone:
+        pickAddressString(task.address, ADDRESS_PHONE_KEYS) ?? task.customerPhone ?? null,
+      address: formatAddressText(task.address),
+      packageNo,
+    };
   }
 
   /** `POST warehouse/pack-tasks/:id/assign`; omitting `userId` releases it. */
@@ -1516,6 +1768,33 @@ export class WarehouseService {
         details: [{ rule: 'pack_tasks_table_missing' }],
       });
     }
+  }
+
+  // ============================================================ global scan
+
+  /**
+   * `GET /scan/lookup?q=` — resolves one scanned code against the ERP in the
+   * order a warehouse operator expects: product barcode/SKU first, then a
+   * warehouse location barcode/code, then a sales-order number and finally a
+   * pick-task id. The SPA scan page can route the returned `url` directly.
+   */
+  async scanLookup(ctx: TenantContext, q: string): Promise<Record<string, unknown>> {
+    const code = q.trim();
+    const product = await this.repo.scanLookupProduct(this.db, ctx.orgId, code);
+    if (product !== null) return scanLookupView(product);
+    const location = await this.repo.scanLookupLocation(this.db, ctx.orgId, code);
+    if (location !== null) return scanLookupView(location);
+    const order = await this.repo.scanLookupOrder(this.db, ctx.orgId, code);
+    if (order !== null) return scanLookupView(order);
+    if (UUID_PATTERN.test(code)) {
+      const task = await this.repo.scanLookupTask(this.db, ctx.orgId, code);
+      if (task !== null) return scanLookupView(task);
+    }
+    throw new AppError('NOT_FOUND', {
+      message: 'کالا، مکان، سفارش یا وظیفه‌ای با این کد یافت نشد.',
+      messageKey: 'warehouse.scan_not_found',
+      details: [{ rule: 'scan_not_found' }],
+    });
   }
 
   // ================================================================ helpers
