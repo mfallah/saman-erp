@@ -19,7 +19,7 @@ import type { ChannelReconcilerService } from './channel-reconciler.service';
 
 export const RECONCILE_INTERVAL_MS = 5 * 60_000;
 /** An account is due again only after this much time. */
-export const RECONCILE_STALE_MS = 10 * 60_000;
+export const RECONCILE_STALE_MS = 3 * 60_000;
 /** Bound one pass so a large tenant cannot monopolise the tick. */
 const RECONCILE_MAX_ACCOUNTS = 25;
 
