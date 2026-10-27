@@ -1083,6 +1083,7 @@ export class ChannelsAdminController {
       rows.map((row: Row) => ({
         id: String(row['id']),
         jobType: row['job_type'],
+        operationKey: row['operation_key'],
         status: row['status'],
         attempts: row['attempts'],
         maxAttempts: row['max_attempts'],

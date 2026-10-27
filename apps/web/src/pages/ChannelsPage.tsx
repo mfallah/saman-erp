@@ -95,6 +95,27 @@ const jobColumns: readonly Column<SyncJob>[] = [
     render: (job) => <StatusBadge status={job.status} />,
   },
   {
+    key: 'operation',
+    header: 'نوع عملیات',
+    render: (job) => {
+      const key = job.operationKey ?? '';
+      const label = key.startsWith('orders:backfill')
+        ? 'بازخوانی سفارش‌ها'
+        : key.startsWith('orders:')
+          ? 'دریافت سفارش'
+          : key.startsWith('products:')
+            ? 'ورود/به‌روزرسانی محصولات'
+            : key.startsWith('prices:') || key.startsWith('price')
+              ? 'ارسال قیمت'
+              : key.startsWith('inventory')
+                ? 'ارسال موجودی'
+                : key.startsWith('commissions')
+                  ? 'همگام‌سازی کمیسیون'
+                  : '—';
+      return <span className="text-xs">{label}</span>;
+    },
+  },
+  {
     key: 'progress',
     header: 'پیشرفت',
     render: (job) => {

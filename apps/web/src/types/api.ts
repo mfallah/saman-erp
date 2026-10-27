@@ -833,6 +833,7 @@ export interface PricePreview {
 
 export interface SyncJob {
   readonly jobType?: string;
+  readonly operationKey?: string | null;
   readonly summary?: Record<string, unknown>;
   readonly lastError?: string | null;
   readonly attempts?: number;
