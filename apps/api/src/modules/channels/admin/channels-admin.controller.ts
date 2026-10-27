@@ -893,16 +893,27 @@ export class ChannelsAdminController {
     if (accountInternal === null) {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
     }
-    const result = await this.sync.backfillOrders({
-      organizationId: ctx.orgId.toString(),
-      accountId: accountInternal,
-      days,
-    });
+    // Never surface a partner failure as a generic 500: the operator needs the
+    // actual reason in the UI.
+    let result: Awaited<ReturnType<typeof this.sync.backfillOrders>>;
+    try {
+      result = await this.sync.backfillOrders({
+        organizationId: ctx.orgId.toString(),
+        accountId: accountInternal,
+        days,
+      });
+    } catch (error) {
+      return apiData({
+        ok: false,
+        error: error instanceof Error ? error.message : 'backfill_failed',
+        hint: 'مغایرت اعتبارنامه یا محدودیت نرخ دیجی‌کالا؛ چند دقیقه بعد دوباره تلاش کنید.',
+      });
+    }
     // Execute after the HTTP response: the caller gets the job id immediately.
     setImmediate(() => {
       void this.sync.runJob(result.jobId).catch(() => undefined);
     });
-    return apiData(result);
+    return apiData({ ok: true, ...result });
   }
 
   /**
@@ -924,12 +935,20 @@ export class ChannelsAdminController {
     if (accountInternal === null) {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
     }
-    const result = await this.sync.syncCommissions({
-      organizationId: ctx.orgId.toString(),
-      accountId: accountInternal,
-      limit,
-    });
-    return apiData(result);
+    try {
+      const result = await this.sync.syncCommissions({
+        organizationId: ctx.orgId.toString(),
+        accountId: accountInternal,
+        limit,
+      });
+      return apiData({ ok: true, ...result });
+    } catch (error) {
+      return apiData({
+        ok: false,
+        error: error instanceof Error ? error.message : 'commissions_failed',
+        hint: 'استعلام کمیسیون دیجی‌کالا محدودیت نرخ دارد؛ با تعداد کمتر یا چند دقیقه بعد دوباره تلاش کنید.',
+      });
+    }
   }
 
   /**
