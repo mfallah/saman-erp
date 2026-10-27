@@ -146,6 +146,13 @@ const productsRoute = createRoute({
   component: ProductsListPage,
 });
 
+const mergeRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/products/merge',
+  beforeLoad: () => guardPermission(PERM.productRead),
+  component: MergePage,
+});
+
 const productNewRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/products/new',
@@ -351,6 +358,7 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     dashboardRoute,
     productsRoute,
+    mergeRoute,
     productNewRoute,
     productDetailRoute,
     inventoryRoute,
