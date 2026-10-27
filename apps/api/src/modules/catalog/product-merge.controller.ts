@@ -35,10 +35,20 @@ const CandidatesQuery = z.object({
   q: z.string().trim().max(100).optional(),
   excludeId: PublicId.optional(),
 });
+/**
+ * The workbench is not paginated, but the shared web client may append
+ * `page`/`perPage`. Accept and ignore them instead of rejecting the request.
+ */
+const PagingParams = {
+  page: z.coerce.number().int().min(1).optional(),
+  perPage: z.coerce.number().int().min(1).optional(),
+};
 const SuggestionsQuery = z.object({
+  ...PagingParams,
   limit: z.coerce.number().int().min(1).max(MAX_SUGGESTION_LIMIT).default(DEFAULT_SUGGESTION_LIMIT),
 });
 const MergeLogQuery = z.object({
+  ...PagingParams,
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 const UndoParams = z.object({ id: PublicId });

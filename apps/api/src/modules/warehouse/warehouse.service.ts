@@ -8,6 +8,8 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 
 import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { ScopeService } from '../../common/scope/scope.service';
 import { ChannelAccountService } from '../channels/services/channel-accounts.service';
 import { CatalogLookupService } from '../catalog/product.service';
 import { InventoryService } from '../inventory/inventory.service';
@@ -243,16 +245,20 @@ export class WarehouseService {
     private readonly pickAssignment: PickAssignmentService,
     @Inject(AUDIT) private readonly audit: AuditPort,
     @Inject(EVENT_BUS) private readonly events: EventPort,
+    private readonly scopes: ScopeService,
   ) {}
 
   // ============================================================= warehouses
 
   async listWarehouses(ctx: TenantContext, query: { page: number; perPage: number; status?: string | undefined; q?: string | undefined }) {
+    const warehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+    if (warehouseIds !== null && warehouseIds.length === 0) return [];
     const rows = await this.repo.listWarehouses(this.db, {
       orgId: ctx.orgId,
       status: query.status === undefined ? null : query.status === 'active',
       branchInternalId: null,
       search: query.q ?? null,
+      warehouseIds,
       limit: query.perPage,
       offset: (query.page - 1) * query.perPage,
     });
@@ -398,6 +404,9 @@ export class WarehouseService {
   async lookupLocation(ctx: TenantContext, code: string): Promise<Record<string, unknown>> {
     const row = await this.repo.findLocationByCode(this.db, ctx.orgId, null, code);
     if (row === null) throw notFound('location');
+    // Code lookup is not id-addressed, so the guard cannot see the warehouse:
+    // check it here before returning another warehouse's location.
+    this.scopes.assertWarehouse(this.scopes.forContext(ctx), row.warehouseInternalId);
     return { ...locationView(row), warehouseId: row.warehouseId };
   }
 
@@ -856,12 +865,15 @@ export class WarehouseService {
   // =============================================================== pick tasks
 
   async listPickTasks(ctx: TenantContext, query: { limit: number; status?: string | undefined; waveId?: string | undefined }) {
+    const warehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+    if (warehouseIds !== null && warehouseIds.length === 0) return [];
     const wave = query.waveId === undefined ? null : await this.repo.findWave(this.db, ctx.orgId, query.waveId);
     const rows = await this.repo.listPickTasks(this.db, {
       orgId: ctx.orgId,
       waveInternalId: wave === null ? null : toBigInt(wave.internalId),
       status: query.status ?? null,
       assignedTo: null,
+      warehouseIds,
       limit: query.limit,
     });
     return orderPickTasks(rows.map(toTaskLike)).map((task) => pickTaskView(task.task));
@@ -888,9 +900,12 @@ export class WarehouseService {
   /** Open tasks for the caller's picking station (`GET warehouse/pick-tasks/mine`). */
   async listMyPickTasks(ctx: TenantContext, limit: number): Promise<Record<string, unknown>[]> {
     if (ctx.actorId === null) return [];
+    const warehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+    if (warehouseIds !== null && warehouseIds.length === 0) return [];
     const rows = await this.repo.listMyPickTasks(this.db, {
       orgId: ctx.orgId,
       assignedTo: ctx.actorId,
+      warehouseIds,
       limit,
     });
     return rows.map(myPickTaskView);
@@ -1092,8 +1107,18 @@ export class WarehouseService {
    * grouped by order, plus the counters that explain an empty board.
    */
   async pickTaskBoard(ctx: TenantContext, limit = 200): Promise<Record<string, unknown>> {
+    const warehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+    if (warehouseIds !== null && warehouseIds.length === 0) {
+      return {
+        generatedAt: new Date().toISOString(),
+        summary: { openTasks: 0, pending: 0, inProgress: 0, orders: 0, unassigned: 0, oldestAgeMinutes: 0, truncated: false },
+        diagnostics: null,
+        orders: [],
+        tasks: [],
+      };
+    }
     const [rows, diagnostics]: [PickBoardTaskRow[], PickBoardDiagnosticsRow] = await Promise.all([
-      this.repo.listPickBoard(this.db, { orgId: ctx.orgId, limit }),
+      this.repo.listPickBoard(this.db, { orgId: ctx.orgId, warehouseIds, limit }),
       this.repo.pickBoardDiagnostics(this.db, { orgId: ctx.orgId }),
     ]);
     const tasks = rows.map(pickBoardTaskView);
@@ -1287,7 +1312,17 @@ export class WarehouseService {
   /** `GET warehouse/pack-tasks/board` — open pack tasks plus empty-state counters. */
   async packTaskBoard(ctx: TenantContext, limit = 200): Promise<Record<string, unknown>> {
     try {
-      const rows = await this.repo.listPackBoard(this.db, { orgId: ctx.orgId, limit });
+      const warehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+      if (warehouseIds !== null && warehouseIds.length === 0) {
+        return {
+          generatedAt: new Date().toISOString(),
+          tableReady: true,
+          summary: { openTasks: 0, pending: 0, packing: 0, packed: 0, unassigned: 0, oldestAgeMinutes: 0, truncated: false },
+          diagnostics: { tasksTotal: 0, pending: 0, packing: 0, packed: 0, pickedOrders: 0, pickedOrdersWithoutPackTask: 0, pickedTasks: 0 },
+          tasks: [],
+        };
+      }
+      const rows = await this.repo.listPackBoard(this.db, { orgId: ctx.orgId, warehouseIds, limit });
       const diagnostics = await this.repo.packBoardDiagnostics(this.db, { orgId: ctx.orgId });
       return {
         generatedAt: new Date().toISOString(),

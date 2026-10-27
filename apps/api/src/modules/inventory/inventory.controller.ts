@@ -242,6 +242,7 @@ export class InventoryController {
     return apiData(await this.service.submitTransfer(ctx, id));
   }
 
+  @RequireStepUp('inventory.transfer.approve')
   @Post('transfers/:id/approve')
   @HttpCode(200)
   @Permissions('inventory.transfer.approve')
@@ -342,6 +343,7 @@ export class InventoryController {
     return apiData(await this.service.submitCount(ctx, id));
   }
 
+  @RequireStepUp('inventory.count.approve')
   @Post('counts/:id/approve')
   @HttpCode(200)
   @Permissions('inventory.count.approve')
@@ -351,6 +353,7 @@ export class InventoryController {
     return apiData(await this.service.approveCount(ctx, id));
   }
 
+  @RequireStepUp('inventory.count.post')
   @Post('counts/:id/post')
   @HttpCode(200)
   @Permissions('inventory.count.post')

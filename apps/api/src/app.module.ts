@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
 
 import { AppConfigModule } from './config/config.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -8,6 +8,7 @@ import { StepUpGuard } from './common/guards/step-up.guard';
 import { ScopeGuard } from './common/guards/scope.guard';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { StepUpCoverageService } from './common/security/step-up-coverage.service';
 import { LoggingModule } from './common/logging/logging.module';
 import { PlatformModule } from './common/platform.module';
 
@@ -57,6 +58,7 @@ import { AutomationModule } from './modules/automation/automation.module';
   imports: [
     /* platform */
     AppConfigModule,
+    DiscoveryModule,
     LoggingModule,
     PlatformModule,
     HealthModule,
@@ -90,6 +92,8 @@ import { AutomationModule } from './modules/automation/automation.module';
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    // TD-16 startup self-check: logs every sensitive route missing @RequireStepUp.
+    StepUpCoverageService,
     // Authentication first: verifies the access token, loads the session/permissions
     // and publishes the tenant context; PermissionsGuard is the second fail-closed layer.
     { provide: APP_GUARD, useClass: IdentityGuard },

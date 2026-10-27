@@ -6,11 +6,17 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 import { AUDIT, DB, EVENT_BUS } from '../../common/contracts';
 import type { AuditPort, Db, EventPort, TenantContext } from '../../common/contracts';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { ScopeService, scopeDenied } from '../../common/scope/scope.service';
 import { asDb, notFound, validation } from '../treasury/persistence/sql-support';
 import { ReportingRepository } from './reporting.repository';
 import type { ExportRecord, ReportDefinitionRecord, ReportRunRecord, WidgetRecord } from './reporting.repository';
 import { ReportingReadModel } from './read-model.repository';
 import { assertReportPermissions, dashboardRequiredPermissions, entityExportPermissions, hasAllPermissions, isExportExpired, shouldRunAsync } from './report-registry';
+import { WAREHOUSE_SCOPED_REPORTS } from './read-model.repository';
+
+/** Exports with a warehouse dimension; restricted actors cannot use them (no filter). */
+const WAREHOUSE_SENSITIVE_EXPORTS: readonly string[] = ['inventory', 'inventory-ledger', 'orders'];
 
 export interface RunReportInput {
   readonly params: { readonly from: string; readonly to: string; readonly filters?: Readonly<Record<string, unknown>> };
@@ -33,6 +39,7 @@ export class ReportingService {
     @Inject(DB) private readonly db: Db,
     @Inject(AUDIT) private readonly audit: AuditPort,
     @Inject(EVENT_BUS) private readonly events: EventPort,
+    private readonly scopes: ScopeService,
   ) {}
 
   /** Catalog only lists reports the actor may run (no metadata leakage). */
@@ -55,6 +62,16 @@ export class ReportingService {
         details: [{ rule: 'report_read_model_missing', params: { code } }],
         message: 'مدل خواندنی این گزارش هنوز پیاده‌سازی نشده است.',
       });
+    }
+    // TD-32: a warehouse-scoped caller may only run reports that can be filtered
+    // by their allowed warehouses. Cross-warehouse aggregates are a 403.
+    const scope = this.scopes.forContext(ctx);
+    const warehouseIds = this.scopes.visibleWarehouseIds(scope);
+    const restricted = warehouseIds !== null || scope.branchIds !== null;
+    if (restricted) {
+      if (scope.branchIds !== null || !WAREHOUSE_SCOPED_REPORTS.includes(code)) {
+        throw scopeDenied('warehouse');
+      }
     }
     const isAsync = shouldRunAsync(input.async === true, undefined);
     return this.db.begin(async (tx) => {
@@ -82,6 +99,7 @@ export class ReportingService {
         from: input.params.from,
         to: input.params.to,
         limit: 5_000,
+        warehouseIds,
       });
       await this.repo.completeRun(tx, {
         id: runId,
@@ -167,6 +185,10 @@ export class ReportingService {
   }
 
   async summary(ctx: TenantContext, date: string): Promise<Record<string, unknown>> {
+    // TD-32: the home KPI aggregate is cross-warehouse. Restricted actors get the
+    // scoped report surface instead of organization-wide totals.
+    const dashboardScope = this.scopes.forContext(ctx);
+    if (dashboardScope.warehouseIds !== null || dashboardScope.branchIds !== null) throw scopeDenied('warehouse');
     return this.db.begin(async (tx) => {
       const result = await this.readModel.dashboardSummary(ctx.orgId, date);
       await this.audit.record(asDb(tx), {
@@ -200,6 +222,10 @@ export class ReportingService {
   ): Promise<{ exportId: bigint }> {
     const required = entityExportPermissions(input.entity);
     assertReportPermissions(ctx, required, 'export');
+    const scope = this.scopes.forContext(ctx);
+    if (scope.branchIds !== null || (scope.warehouseIds !== null && WAREHOUSE_SENSITIVE_EXPORTS.includes(input.entity))) {
+      throw scopeDenied('warehouse');
+    }
     return this.db.begin(async (tx) => {
       const exportId = await this.repo.insertExport(tx, {
         orgId: ctx.orgId,

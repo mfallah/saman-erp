@@ -27,6 +27,7 @@ import { AdapterRegistry } from './services/adapter.registry';
 import { ChannelAccountService } from './services/channel-accounts.service';
 import { CHANNEL_PRICE_SOURCE_PROVIDER } from './services/channel-price-source.service';
 import { ChannelMappingService } from './services/channel-mappings.service';
+import { ChannelReconcilerService } from './services/channel-reconciler.service';
 import { ChannelSyncService } from './services/channel-sync.service';
 import { ChannelWebhookService } from './services/channel-webhook.service';
 import { OutboundWebhookService } from './services/outbound-webhook.service';
@@ -117,6 +118,7 @@ import { ChannelMappingsAdminController } from './admin/channel-mappings.control
     ChannelAccountService,
     ChannelMappingService,
     ChannelSyncService,
+    ChannelReconcilerService,
     ChannelWebhookService,
     OutboundWebhookService,
   ],
@@ -125,6 +127,7 @@ import { ChannelMappingsAdminController } from './admin/channel-mappings.control
     ChannelAccountService,
     ChannelMappingService,
     ChannelSyncService,
+    ChannelReconcilerService,
     ChannelWebhookService,
     OutboundWebhookService,
     CHANNEL_ADAPTERS,

@@ -239,7 +239,7 @@ function normaliseImageUrl(value: unknown): string | null {
  * wins, then the nested `product.image` (a string, or an object/array whose
  * `url`/`src` holds the link). Bounded walk; anything else is ignored.
  */
-function productImageUrlOf(raw: unknown): string | null {
+export function productImageUrlOf(raw: unknown): string | null {
   const body = record(raw);
   const product = record(body['product']);
   const direct =

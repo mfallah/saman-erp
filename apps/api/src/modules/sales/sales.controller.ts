@@ -12,6 +12,8 @@ import { CurrentTenant } from '../../common/decorators/current-context.decorator
 import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { RequireStepUp } from '../../common/decorators/require-step-up.decorator';
+import { ScopeCheck, ScopeResource } from '../../common/decorators/scope-check.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { parseIfMatch } from './sales.pg-support';
 import { SalesService } from './sales.service';
@@ -145,6 +147,7 @@ export class CustomersController {
   }
 
   @Patch(':id/credit')
+  @RequireStepUp('customer.credit.update')
   @Permissions('customer.credit.update')
   @Audited('customer.credit_update')
   async updateCredit(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
@@ -155,6 +158,8 @@ export class CustomersController {
 
 @ApiTags('sales')
 @ApiBearerAuth()
+@ScopeCheck('warehouseId')
+@ScopeResource('sales_order')
 @Controller('sales-orders')
 export class SalesOrdersController {
   constructor(private readonly service: SalesService) {}
@@ -303,6 +308,7 @@ export class InvoicesController {
 
   @Post(':id/issue')
   @HttpCode(200)
+  @RequireStepUp('customer.invoice.issue')
   @Permissions('customer.invoice.issue')
   @Audited('customer.invoice.issue')
   async issue(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
@@ -312,6 +318,7 @@ export class InvoicesController {
 
   @Post(':id/void')
   @HttpCode(200)
+  @RequireStepUp('customer.invoice.void')
   @Permissions('customer.invoice.void')
   @Audited('customer.invoice.void')
   async void(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
@@ -361,6 +368,7 @@ export class ReturnsController {
 
   @Post(':id/approve')
   @HttpCode(200)
+  @RequireStepUp('sales.return.approve')
   @Permissions('sales.return.approve')
   @Audited('sales.return.approve')
   async approve(@CurrentTenant() ctx: TenantContext, @Param() params: unknown) {
@@ -401,6 +409,7 @@ export class RefundsController {
 
   @Post(':id/approve')
   @HttpCode(200)
+  @RequireStepUp('sales.refund.approve')
   @Permissions('sales.refund.approve')
   @Audited('sales.refund.approve')
   async approve(@CurrentTenant() ctx: TenantContext, @Param() params: unknown) {
@@ -410,6 +419,7 @@ export class RefundsController {
 
   @Post(':id/pay')
   @HttpCode(200)
+  @RequireStepUp('sales.refund.pay')
   @Permissions('sales.refund.pay')
   @Audited('sales.refund.pay')
   async pay(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
@@ -420,6 +430,7 @@ export class RefundsController {
 
   @Post(':id/void')
   @HttpCode(200)
+  @RequireStepUp('sales.refund.void')
   @Permissions('sales.refund.void')
   @Audited('sales.refund.void')
   async void(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {

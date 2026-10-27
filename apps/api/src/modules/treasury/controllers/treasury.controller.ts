@@ -8,6 +8,7 @@ import { BankService } from '../bank/bank.service';
 import { CashService } from '../cash/cash.service';
 import { AllocatePaymentSchema, CloseCashSessionSchema, CompleteReconciliationSchema, CreateBankAccountSchema, CreateCashBoxSchema, CreateCashTransactionSchema, CreateChequeSchema, CreatePaymentSchema, CreateReconciliationSchema, ImportStatementSchema, MatchSchema, OpenCashSessionSchema, parseDto, toBigInt, toMoney } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
+import { RequireStepUp } from '../../../common/decorators/require-step-up.decorator';
 
 @ApiTags('treasury')
 @Controller('treasury')
@@ -41,6 +42,7 @@ export class TreasuryController {
   }
 
   @Post('payments')
+  @RequireStepUp('payment.create')
   @RequirePermissions('payment.create')
   @ApiOperation({ summary: 'ایجاد پیش‌نویس پرداخت' })
   async createPayment(@Tenant() ctx: TenantContext, @Body() body: unknown): Promise<{ data: unknown }> {
@@ -82,6 +84,7 @@ export class TreasuryController {
   }
 
   @Post('payments/:id/submit')
+  @RequireStepUp('payment.submit')
   @RequirePermissions('payment.submit')
   @ApiOperation({ summary: 'ارسال پرداخت برای تأیید' })
   async submitPayment(@Tenant() ctx: TenantContext, @Param('id') id: string): Promise<{ data: unknown }> {
@@ -89,6 +92,7 @@ export class TreasuryController {
   }
 
   @Post('payments/:id/approve')
+  @RequireStepUp('payment.approve')
   @RequirePermissions('payment.approve')
   @ApiOperation({ summary: 'تأیید پرداخت' })
   async approvePayment(
@@ -100,6 +104,7 @@ export class TreasuryController {
   }
 
   @Post('payments/:id/execute')
+  @RequireStepUp('payment.execute')
   @RequirePermissions('payment.execute')
   @ApiOperation({ summary: 'اجرای پرداخت و ثبت سند حسابداری' })
   async executePayment(
@@ -111,6 +116,7 @@ export class TreasuryController {
   }
 
   @Post('payments/:id/void')
+  @RequireStepUp('payment.void')
   @RequirePermissions('payment.void')
   @ApiOperation({ summary: 'ابطال پرداخت اجرانشده' })
   async voidPayment(
@@ -129,6 +135,7 @@ export class TreasuryController {
   }
 
   @Post('payments/:id/allocations')
+  @RequireStepUp('payment.allocate')
   @RequirePermissions('payment.allocate')
   @ApiOperation({ summary: 'تخصیص پرداخت/علی‌الحساب به اسناد (سقف مبلغ)' })
   async allocate(
@@ -151,6 +158,7 @@ export class TreasuryController {
   }
 
   @Delete('payments/:id/allocations/:allocationId')
+  @RequireStepUp('payment.allocate')
   @RequirePermissions('payment.allocate')
   @ApiOperation({ summary: 'حذف تخصیص' })
   async deallocate(
@@ -182,6 +190,7 @@ export class TreasuryController {
   }
 
   @Post('cheques')
+  @RequireStepUp('cheque.issue')
   @RequirePermissions('cheque.issue')
   @ApiOperation({ summary: 'ثبت چک دریافتی/پرداختنی' })
   async createCheque(@Tenant() ctx: TenantContext, @Body() body: unknown): Promise<{ data: unknown }> {
@@ -211,6 +220,7 @@ export class TreasuryController {
   }
 
   @Post('cheques/:id/deposit')
+  @RequireStepUp('cheque.deposit')
   @RequirePermissions('cheque.deposit')
   @ApiOperation({ summary: 'سپرده چک به بانک' })
   async deposit(
@@ -227,6 +237,7 @@ export class TreasuryController {
   }
 
   @Post('cheques/:id/clear')
+  @RequireStepUp('cheque.clear')
   @RequirePermissions('cheque.clear')
   @ApiOperation({ summary: 'وصول چک' })
   async clear(
@@ -238,6 +249,7 @@ export class TreasuryController {
   }
 
   @Post('cheques/:id/bounce')
+  @RequireStepUp('cheque.bounce')
   @RequirePermissions('cheque.bounce')
   @ApiOperation({ summary: 'برگشت چک (قبل/بعد از وصول)' })
   async bounce(
@@ -249,6 +261,7 @@ export class TreasuryController {
   }
 
   @Post('cheques/:id/endorse')
+  @RequireStepUp('cheque.endorse')
   @RequirePermissions('cheque.endorse')
   @ApiOperation({ summary: 'ظهرنویسی چک' })
   async endorse(
@@ -260,6 +273,7 @@ export class TreasuryController {
   }
 
   @Post('cheques/:id/cancel')
+  @RequireStepUp('cheque.cancel')
   @RequirePermissions('cheque.cancel')
   @ApiOperation({ summary: 'ابطال چک' })
   async cancel(
@@ -465,6 +479,7 @@ export class TreasuryController {
   }
 
   @Post('cash-sessions')
+  @RequireStepUp('cash.session.open')
   @RequirePermissions('cash.session.open')
   @ApiOperation({ summary: 'باز کردن شیفت صندوق' })
   async openSession(@Tenant() ctx: TenantContext, @Body() body: unknown): Promise<{ data: unknown }> {
@@ -485,6 +500,7 @@ export class TreasuryController {
   }
 
   @Post('cash-sessions/:id/close')
+  @RequireStepUp('cash.session.close')
   @RequirePermissions('cash.session.close')
   @ApiOperation({ summary: 'بستن شیفت با شمارش فیزیکی و ثبت مغایرت' })
   async closeSession(
@@ -518,6 +534,7 @@ export class TreasuryController {
   }
 
   @Post('cash-transactions')
+  @RequireStepUp('cash.transaction.create')
   @RequirePermissions('cash.transaction.create')
   @ApiOperation({ summary: 'ثبت دریافت/پرداخت نقدی' })
   async createCashTransaction(@Tenant() ctx: TenantContext, @Body() body: unknown): Promise<{ data: unknown }> {

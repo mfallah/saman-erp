@@ -1,13 +1,18 @@
-import { type CanActivate, type ExecutionContext, Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import type { CanActivate, ExecutionContext } from '@nestjs/common';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { Reflector } from '@nestjs/core';
 import { AppError } from '@saman/shared';
 import type { FastifyRequest } from 'fastify';
 
 import type { AuthenticatedActor } from '../auth/authenticated-actor';
-import { DB, type Db } from '../contracts';
-import { SCOPE_METADATA_KEY } from '../decorators/scope-check.decorator';
+import { SCOPE_METADATA_KEY, SCOPE_RESOURCE_KEY } from '../decorators/scope-check.decorator';
+import type { ScopeResourceBinding } from '../decorators/scope-check.decorator';
+import { isUuid, scopeDenied } from '../scope/scope.service';
+import type { ScopeKind } from '../scope/scope.service';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { ScopeService } from '../scope/scope.service';
 
-type ScopeKind = 'warehouse' | 'branch';
 interface RequestLike {
   params?: Record<string, unknown>;
   query?: Record<string, unknown>;
@@ -15,81 +20,98 @@ interface RequestLike {
   user?: AuthenticatedActor;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
- * Row-level scope guard (`SECURITY.md` §5): an actor restricted to certain
+ * Row-level scope guard (`SECURITY.md` §5, TD-32): an actor restricted to certain
  * warehouses/branches may only address resources inside that scope.
- * Unrestricted actors (scope `null`) pass through.
+ *
+ * Two ways to declare protection:
+ * - `@ScopeCheck('warehouseId')` — explicit id in params/query/body (dotted
+ *   paths supported); the public id is resolved to an internal id and compared.
+ * - `@ScopeResource('sales_order')` — resource addressed by `:id`; the owning
+ *   warehouse/branch is resolved in the database so the URL cannot dodge scope.
+ *
+ * The allowed id sets are resolved once per request by `ScopeService` and cached
+ * for every check in that request. Unrestricted actors (scope `null`) pass.
  */
 @Injectable()
 export class ScopeGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
-    @Inject(DB) private readonly db: Db,
+    private readonly scopes: ScopeService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const keys = this.reflector.getAllAndOverride<string[] | undefined>(SCOPE_METADATA_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (keys === undefined || keys.length === 0) return true;
+    const [keys, resources] = [
+      this.reflector.getAllAndOverride<string[] | undefined>(SCOPE_METADATA_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]),
+      this.reflector.getAllAndOverride<ScopeResourceBinding[] | undefined>(SCOPE_RESOURCE_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]),
+    ];
+    if ((keys === undefined || keys.length === 0) && (resources === undefined || resources.length === 0)) {
+      return true;
+    }
 
     const request = context.switchToHttp().getRequest<FastifyRequest & RequestLike>();
     const actor = request.user;
     if (actor === undefined) throw new AppError('UNAUTHENTICATED');
+    const scope = this.scopes.forActor(actor);
 
-    for (const key of keys) {
-      const kind: ScopeKind = key.toLowerCase().startsWith('branch') ? 'branch' : 'warehouse';
-      const allowed = kind === 'branch' ? actor.branchIds : actor.warehouseIds;
-      if (allowed === null) continue;
-
+    for (const key of keys ?? []) {
+      const kind: ScopeKind = key.toLowerCase().includes('branch') ? 'branch' : 'warehouse';
       const raw = this.pick(key, request);
       if (raw === undefined) continue;
-      const values = Array.isArray(raw) ? raw.map(String) : [String(raw)];
 
-      for (const value of values) {
+      for (const value of this.valuesOf(raw)) {
         if (value.length === 0) continue;
-        const internal = UUID.test(value) ? await this.resolve(kind, value, actor.orgId) : value;
-        if (internal === null) {
-          throw new AppError('FORBIDDEN', {
-            message: 'دسترسی به این محدوده مجاز نیست.',
-            messageKey: 'identity.scope_denied',
-            details: [{ rule: 'scope_denied', params: { scope: kind } }],
-          });
-        }
-        if (!allowed.map((id) => id.toString()).includes(internal)) {
-          throw new AppError('FORBIDDEN', {
-            message: 'دسترسی به این محدوده مجاز نیست.',
-            messageKey: 'identity.scope_denied',
-            details: [{ rule: 'scope_denied', params: { scope: kind } }],
-          });
-        }
+        const internal = isUuid(value)
+          ? await this.scopes.resolvePublicId(kind, actor.orgId, value)
+          : value;
+        if (internal === null) throw scopeDenied(kind);
+        if (kind === 'branch') this.scopes.assertBranch(scope, internal);
+        else this.scopes.assertWarehouse(scope, internal);
+      }
+    }
+
+    for (const binding of resources ?? []) {
+      const raw = this.pick(binding.param, request);
+      if (raw === undefined) continue;
+      for (const value of this.valuesOf(raw)) {
+        if (value.length === 0) continue;
+        const target = await this.scopes.resolveTarget(actor.orgId, binding.resource, value);
+        if (target === null) throw scopeDenied(binding.resource);
+        this.scopes.assertTarget(scope, target, binding.resource);
       }
     }
     return true;
   }
 
+  /** Params → query → body, with dotted-path support (`a.b.c`). */
   private pick(key: string, request: RequestLike): unknown {
-    const fromParams = request.params?.[key];
-    if (fromParams !== undefined) return fromParams;
-    const fromQuery = request.query?.[key];
-    if (fromQuery !== undefined) return fromQuery;
-    const body = request.body;
-    if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
-      return (body as Record<string, unknown>)[key];
+    const sources: unknown[] = [request.params, request.query, request.body];
+    for (const source of sources) {
+      const found = this.readPath(source, key);
+      if (found !== undefined) return found;
     }
     return undefined;
   }
 
-  private async resolve(kind: ScopeKind, publicId: string, orgId: bigint): Promise<string | null> {
-    // Table name is chosen from a fixed union (no user input).
-    const table = kind === 'branch' ? 'branches' : 'warehouses';
-    const rows = await this.db.unsafe<{ id: string }[]>(
-      `select id::text as id from erp.${table} where organization_id = $1 and public_id = $2::uuid limit 1`,
-      [orgId.toString(), publicId],
-    );
-    return rows[0]?.id ?? null;
+  private readPath(source: unknown, path: string): unknown {
+    if (source === null || typeof source !== 'object') return undefined;
+    let current: unknown = source;
+    for (const segment of path.split('.')) {
+      if (current === null || typeof current !== 'object' || Array.isArray(current)) return undefined;
+      current = (current as Record<string, unknown>)[segment];
+    }
+    return current;
+  }
+
+  private valuesOf(raw: unknown): string[] {
+    if (Array.isArray(raw)) return raw.map((item) => String(item));
+    if (raw === undefined || raw === null) return [];
+    return [String(raw)];
   }
 }

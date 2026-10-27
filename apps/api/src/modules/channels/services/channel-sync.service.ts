@@ -384,6 +384,138 @@ export class ChannelSyncService {
   }
 
   /**
+   * Repairs Digikala external ids on **existing** mappings, in place.
+   *
+   * Digikala's seller-list row id is neither the product id nor a variant id:
+   * stocks/orders are keyed by `product_id` (≈19 9xx xxx) and the variant id
+   * (≈82 xxx xxx). Every seller product is matched to at most one local mapping
+   * — by `external_product_id` first, then by the trimmed local product name —
+   * and that mapping is re-pointed, so no product/variant is created here and
+   * re-running is a no-op.
+   *
+   * Kept HTTP-free so the webhook/reconcile paths can run it: the admin
+   * endpoint and `ChannelReconcilerService` both call this method.
+   */
+  async remapDigikalaProducts(input: {
+    organizationId: string;
+    accountId: string;
+  }): Promise<{ scanned: number; updated: number; skipped: number }> {
+    const resolved = await this.accounts.resolveForSync(input.organizationId, input.accountId);
+    const listProductCatalog = resolved.adapter.listProductCatalog;
+    const listProductVariants = resolved.adapter.listProductVariants;
+    if (
+      resolved.adapter.code !== 'digikala' ||
+      listProductCatalog === undefined ||
+      listProductVariants === undefined
+    ) {
+      throw new IntegrationError('NOT_IMPLEMENTED', {
+        messageFa: 'این حساب دیجی‌کالا نیست.',
+        details: { channel: resolved.adapter.code },
+      });
+    }
+    const catalog = listProductCatalog.bind(resolved.adapter);
+    const variantsOf = listProductVariants.bind(resolved.adapter);
+
+    // The seller list is bounded: 50 rows/page, never more than 10 pages.
+    const MAX_PAGES = 10;
+    const seen = new Set<string>();
+    let scanned = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    for await (const entry of catalog(resolved.account, { maxPages: MAX_PAGES })) {
+      const externalProductId = entry.externalProductId.trim();
+      if (externalProductId.length === 0 || seen.has(externalProductId)) continue;
+      seen.add(externalProductId);
+      scanned += 1;
+
+      const title = entry.title.trim();
+      const mappings = await this.db<
+        {
+          id: unknown;
+          external_product_id: unknown;
+          external_variant_id: unknown;
+          external_sku: unknown;
+        }[]
+      >`
+        select m.id::text as id,
+               m.external_product_id::text as external_product_id,
+               m.external_variant_id::text as external_variant_id,
+               m.external_sku::text as external_sku
+        from erp.channel_product_mappings m
+        join erp.product_variants v on v.id = m.product_variant_id
+        join erp.products p on p.id = v.product_id
+        where m.channel_account_id = ${resolved.row.id}::bigint
+          and m.deleted_at is null
+          and p.deleted_at is null
+          and (
+            m.external_product_id = ${externalProductId}
+            or (${title.length > 0}::boolean and btrim(p.name) = ${title})
+          )
+        order by (m.external_product_id = ${externalProductId}) desc, m.id asc
+        limit 1`;
+      const mapping = mappings[0];
+      if (mapping === undefined) {
+        skipped += 1;
+        continue;
+      }
+
+      const variants = await variantsOf(resolved.account, externalProductId);
+      const variant = variants.find((candidate) => /^\d+$/.test(candidate.externalVariantId.trim()));
+      if (variant === undefined) {
+        skipped += 1;
+        continue;
+      }
+      const externalVariantId = variant.externalVariantId.trim();
+      const externalSku = (variant.sku ?? '').trim();
+      const currentProductId = asString(mapping.external_product_id).trim();
+      const currentVariantId = asString(mapping.external_variant_id).trim();
+      const currentSku = asString(mapping.external_sku).trim();
+      if (
+        currentProductId === externalProductId &&
+        currentVariantId === externalVariantId &&
+        currentSku === externalSku
+      ) {
+        // Already repaired: a re-run reports no changes.
+        skipped += 1;
+        continue;
+      }
+
+      // The (account, external_variant_id) unique index rejects a second mapping
+      // for the same variant; skipping keeps the run idempotent instead of 500.
+      const changed = await this.db<{ id: unknown }[]>`
+        update erp.channel_product_mappings m
+        set external_product_id = ${externalProductId},
+            external_variant_id = ${externalVariantId},
+            external_sku = ${externalSku.length > 0 ? externalSku : null},
+            sync_status = 'synced',
+            last_synced_at = now(),
+            last_error = null
+        where m.id = ${asString(mapping.id)}::bigint
+          and not exists (
+            select 1
+            from erp.channel_product_mappings other
+            where other.channel_account_id = m.channel_account_id
+              and other.external_variant_id = ${externalVariantId}
+              and other.id <> m.id
+              and other.deleted_at is null
+          )
+        returning m.id`;
+      if (changed.length === 0) {
+        skipped += 1;
+        continue;
+      }
+      updated += 1;
+    }
+
+    this.logger.info(
+      { accountId: resolved.row.id, scanned, updated, skipped },
+      'digikala mappings remapped',
+    );
+    return { scanned, updated, skipped };
+  }
+
+  /**
    * Applies the account's pricing policy after a successful product pull.
    * `ModuleRef` + dynamic import are intentional: the channels module must not
    * statically depend on the pricing module (pricing pushes through channels).

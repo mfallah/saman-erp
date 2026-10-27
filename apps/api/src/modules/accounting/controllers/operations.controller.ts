@@ -7,6 +7,7 @@ import { TaxService } from '../tax/tax.service';
 import { ValuationService } from '../valuation/valuation.service';
 import { CloseSchema, CreateTaxDocumentSchema, CreateTaxRateSchema, StartValuationSchema, UpdateTaxRateSchema, ValuationFilterSchema, parseDto, toBigInt, toMoney } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
+import { RequireStepUp } from '../../../common/decorators/require-step-up.decorator';
 
 @ApiTags('accounting')
 @Controller()
@@ -137,6 +138,7 @@ export class AccountingOperationsController {
   }
 
   @Post('accounting/tax-documents/:id/issue')
+  @RequireStepUp('accounting.document.issue')
   @RequirePermissions('accounting.document.issue')
   @ApiOperation({ summary: 'صدور سند مالیاتی با شماره یکتا' })
   async issueTaxDocument(
@@ -148,6 +150,7 @@ export class AccountingOperationsController {
   }
 
   @Post('accounting/tax-documents/:id/void')
+  @RequireStepUp('accounting.document.void')
   @RequirePermissions('accounting.document.void')
   @ApiOperation({ summary: 'ابطال سند مالیاتی با صدور اعتبارنامه' })
   async voidTaxDocument(
@@ -185,6 +188,7 @@ export class AccountingOperationsController {
   }
 
   @Post('accounting/valuation-runs')
+  @RequireStepUp('accounting.valuation.run')
   @RequirePermissions('accounting.valuation.run')
   @ApiOperation({ summary: 'شروع اجرای ارزش‌گذاری (FIFO/میانگین متحرک)' })
   async startValuation(@Tenant() ctx: TenantContext, @Body() body: unknown): Promise<{ data: unknown }> {
@@ -215,6 +219,7 @@ export class AccountingOperationsController {
   }
 
   @Post('accounting/valuation-runs/:id/post')
+  @RequireStepUp('accounting.valuation.post')
   @RequirePermissions('accounting.valuation.post')
   @ApiOperation({ summary: 'ثبت سند اصلاح ارزش‌گذاری' })
   async postValuation(@Tenant() ctx: TenantContext, @Param('id') id: string): Promise<{ data: unknown }> {
@@ -231,6 +236,7 @@ export class AccountingOperationsController {
   }
 
   @Post('accounting/fiscal-years/:id/closing-run')
+  @RequireStepUp('accounting.fiscal_year.close')
   @RequirePermissions('accounting.fiscal_year.close')
   @ApiOperation({ summary: 'اجرای بستن سال مالی: سود و زیان → سود انباشته → اندوخته قانونی' })
   async runClosing(

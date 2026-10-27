@@ -10,6 +10,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { AppError, formatMoney, parseMoney } from '@saman/shared';
 
 import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { ScopeService } from '../../common/scope/scope.service';
 import { CatalogLookupService } from '../catalog/product.service';
 import { type VariantLookup } from '../catalog/product.service';
 import { InventoryService } from '../inventory/inventory.service';
@@ -218,6 +220,7 @@ export class SalesService {
     private readonly inventory: InventoryService,
     @Inject(AUDIT) private readonly audit: AuditPort,
     @Inject(EVENT_BUS) private readonly events: EventPort,
+    private readonly scopes: ScopeService,
   ) {}
 
   // ================================================================ customers
@@ -466,6 +469,8 @@ export class SalesService {
   // =================================================================== orders
 
   async listOrders(ctx: TenantContext, query: { limit: number; status?: string | undefined; customerId?: string | undefined; channelCode?: string | undefined; warehouseId?: string | undefined; createdAtGte?: string | undefined }) {
+    const allowedWarehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+    if (allowedWarehouseIds !== null && allowedWarehouseIds.length === 0) return [];
     const customer = query.customerId === undefined ? null : await this.requireCustomer(this.db, ctx, query.customerId);
     const warehouseInternalId =
       query.warehouseId === undefined ? null : await this.repo.resolveWarehouseId(this.db, ctx.orgId, query.warehouseId);
@@ -475,6 +480,7 @@ export class SalesService {
       customerInternalId: customer === null ? null : toBigInt(customer.internalId),
       channelCode: query.channelCode ?? null,
       warehouseInternalId,
+      warehouseIds: allowedWarehouseIds,
       createdFrom: query.createdAtGte ?? null,
       limit: query.limit,
       offset: 0,

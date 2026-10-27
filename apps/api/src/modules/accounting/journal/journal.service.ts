@@ -228,8 +228,17 @@ export class JournalService {
     return this.get(ctx, id);
   }
 
-  /** Post: number + balances + immutability, all inside the caller transaction. */
-  async post(ctx: TenantContext, id: bigint, postDate?: string): Promise<JournalRecord> {
+  /**
+   * Post: number + balances + immutability, all inside one transaction.
+   *
+   * TD-19: the effective period is derived from the **stored, server-validated**
+   * `entry.entryDate` only. A caller-supplied posting date is deliberately
+   * ignored for period resolution, so passing a date in an open period can never
+   * bypass a closed period. The period row is locked `FOR UPDATE` inside this
+   * transaction, so a concurrent close either wins (and this posting sees
+   * `closed`/`locked`) or waits until this posting commits.
+   */
+  async post(ctx: TenantContext, id: bigint, _ignoredPostDate?: string): Promise<JournalRecord> {
     return this.db.begin(async (tx) => {
       const entry = await this.repo.findById(ctx.orgId, id, tx);
       if (entry === undefined) throw new AppError('NOT_FOUND', { message: 'سند حسابداری یافت نشد.' });
@@ -265,22 +274,30 @@ export class JournalService {
         });
       }
 
-      const { period, year } = await this.calendar.resolveAndLockPeriod(tx, ctx.orgId, postDate ?? entry.entryDate);
+      // Period resolution is derived from the persisted entry date, never from
+      // the request body. The period row is locked for the rest of this tx.
+      const { period, year } = await this.calendar.resolveAndLockPeriod(tx, ctx.orgId, entry.entryDate);
       if (year.status === 'closed') {
         throw new AppError('FISCAL_YEAR_CLOSED', { message: 'سال مالی بسته شده است.' });
       }
       if (isPostingBlocked(period.status)) {
-        throw new AppError('PERIOD_CLOSED', { message: 'دوره مالی بسته شده است.' });
+        throw new AppError('PERIOD_CLOSED', {
+          details: [{ rule: 'period_closed', params: { periodNo: period.periodNo } }],
+          message: 'دوره مالی بسته شده است.',
+        });
+      }
+      if (period.id !== entry.periodId) {
+        await this.repo.assignPeriod(tx, id, period.id, period.fiscalYearId);
       }
 
-      const entryNo = await this.repo.allocateEntryNo(tx, ctx.orgId, entry.fiscalYearId, 'JV', 'JV');
+      const entryNo = await this.repo.allocateEntryNo(tx, ctx.orgId, period.fiscalYearId, 'JV', 'JV');
       await this.repo.setEntryNo(tx, id, entryNo);
       await this.repo.updateTotals(tx, id, totals);
       await this.repo.setStatus(tx, id, ['draft', 'pending_approval', 'approved'], 'posted', ctx.actorId);
       await this.repo.applyBalances(tx, {
         orgId: ctx.orgId,
-        fiscalYearId: entry.fiscalYearId,
-        periodId: entry.periodId,
+        fiscalYearId: period.fiscalYearId,
+        periodId: period.id,
         lines: entry.lines.map((line) => ({
           accountId: line.accountId,
           debit: line.debitAmount,

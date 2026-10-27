@@ -15,6 +15,8 @@
  * Other modules (sales, fulfillment, warehouse, procurement) call the public
  * methods that accept a caller transaction — never the repository.
  */
+import { createHash, randomUUID } from 'node:crypto';
+
 import { Inject, Injectable } from '@nestjs/common';
 import { AppError, parseMoney } from '@saman/shared';
 
@@ -34,6 +36,14 @@ import { applyIssueCostToAverage, applyReceiptToAverage, consumeLayersAtUnitCost
 const DEFAULT_RESERVATION_TTL_MINUTES = 30;
 /** Manual stock adjustments above this IRR value need a second approver (`ADR-0008`). */
 const ADJUSTMENT_APPROVAL_THRESHOLD = 100_000_000n;
+/** Documented fallback when the organization has no usable IANA timezone. */
+const DEFAULT_BUSINESS_TIME_ZONE = 'Asia/Tehran';
+/**
+ * Scope used in `erp.idempotency_keys` for the movement payload hash. The hash
+ * field is `erp.idempotency_keys.request_hash` (SHA-256 hex, 64 chars); the
+ * inventory ledger key itself stays in `erp.inventory_ledger_keys`.
+ */
+const MOVEMENT_IDEMPOTENCY_SCOPE = 'inventory.post_movement';
 
 export interface PostMovementInput {
   readonly warehouseId: string;
@@ -74,8 +84,99 @@ interface LockedCostState {
   readonly layers: readonly CostLayer[];
 }
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+/**
+ * Local business date for an IANA timezone. The process clock is UTC; using
+ * `toISOString().slice(0, 10)` would roll the business day at 00:00 UTC instead
+ * of the organization's midnight.
+ */
+export function businessDateInTimeZone(now: Date, timeZone: string = DEFAULT_BUSINESS_TIME_ZONE): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+    const part = (type: Intl.DateTimeFormatPartTypes): string | undefined =>
+      parts.find((entry) => entry.type === type)?.value;
+    const year = part('year');
+    const month = part('month');
+    const day = part('day');
+    if (year === undefined || month === undefined || day === undefined) {
+      throw new RangeError('invalid_business_date_parts');
+    }
+    return `${year}-${month}-${day}`;
+  } catch {
+    if (timeZone !== DEFAULT_BUSINESS_TIME_ZONE) {
+      return businessDateInTimeZone(now, DEFAULT_BUSINESS_TIME_ZONE);
+    }
+    throw new RangeError('invalid_business_timezone');
+  }
+}
+
+/** Backwards-compatible UTC-independent fallback date helper. */
+function todayIso(timeZone: string = DEFAULT_BUSINESS_TIME_ZONE): string {
+  return businessDateInTimeZone(new Date(), timeZone);
+}
+
+/**
+ * Canonical request fingerprint for a movement. The result is stored in
+ * `erp.idempotency_keys.request_hash` and compared on replay; a mismatch with
+ * the same idempotency key is a real conflict, not a retry.
+ */
+export function movementPayloadHash(input: PostMovementInput): string {
+  const canonical = {
+    warehouseId: input.warehouseId,
+    locationId: input.locationId,
+    variantId: input.variantId,
+    type: input.type,
+    quantity: normalizeQuantity(absQuantity(input.quantity)),
+    unitCostAmount: input.unitCostAmount === null || input.unitCostAmount === undefined ? null : input.unitCostAmount.toString(),
+    lotId: input.lotId ?? null,
+    referenceType: input.referenceType,
+    referenceId: input.referenceId ?? null,
+    referenceInternalId:
+      input.referenceInternalId === null || input.referenceInternalId === undefined
+        ? null
+        : input.referenceInternalId.toString(),
+    businessDate: input.businessDate ?? null,
+    reversalOfInternalId:
+      input.reversalOfInternalId === null || input.reversalOfInternalId === undefined
+        ? null
+        : input.reversalOfInternalId.toString(),
+    idempotencyKey: input.idempotencyKey ?? null,
+  };
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+/**
+ * Fallback for ledger rows written before the hash sidecar existed. It compares
+ * the fields that are persisted verbatim; omitted optional inputs are ignored so
+ * an old retry that relied on defaults can still replay.
+ */
+function legacyMovementMatches(input: PostMovementInput, existing: LedgerRow): boolean {
+  if (
+    existing.warehouseId !== input.warehouseId ||
+    existing.locationId !== input.locationId ||
+    existing.variantId !== input.variantId ||
+    existing.transactionType !== input.type ||
+    existing.referenceType !== input.referenceType ||
+    existing.referencePublicId !== (input.referenceId ?? null) ||
+    existing.lotId !== (input.lotId ?? null)
+  ) {
+    return false;
+  }
+  if (normalizeQuantity(absQuantity(existing.quantity)) !== normalizeQuantity(absQuantity(input.quantity))) {
+    return false;
+  }
+  if (input.businessDate !== undefined && existing.businessDate !== input.businessDate) return false;
+  if (input.unitCostAmount !== null && input.unitCostAmount !== undefined) {
+    if (existing.unitCostAmount !== input.unitCostAmount.toString()) return false;
+  }
+  if (input.reversalOfInternalId !== null && input.reversalOfInternalId !== undefined) {
+    if (existing.reversalOfId !== input.reversalOfInternalId.toString()) return false;
+  }
+  return true;
 }
 
 function balanceOf(row: BalanceRow) {
@@ -231,21 +332,45 @@ export class InventoryService {
    * receipt/issue is atomic with its document state change (`ARCHITECTURE.md` §6).
    */
   async postMovement(tx: Db, ctx: TenantContext, input: PostMovementInput): Promise<MovementResult> {
-    if (input.idempotencyKey !== null && input.idempotencyKey !== undefined) {
-      const existing = await this.repo.findTransactionByIdempotencyKey(tx, ctx.orgId, input.idempotencyKey);
+    const idempotencyKey = input.idempotencyKey ?? null;
+    let requestHash: string | null = null;
+    if (idempotencyKey !== null) {
+      requestHash = movementPayloadHash(input);
+      // Serialise the check-then-insert window. The ledger key table remains the
+      // durable global dedupe record; this advisory lock only closes the race.
+      await this.repo.lockMovementIdempotencyKey(tx, ctx.orgId, idempotencyKey);
+      const existing = await this.repo.findTransactionByIdempotencyKey(tx, ctx.orgId, idempotencyKey);
       if (existing !== null) {
-        throw new AppError('CONFLICT', {
-          message: 'این حرکت انبار قبلاً ثبت شده است.',
-          messageKey: 'inventory.duplicate_movement',
-          details: [{ rule: 'duplicate_movement', params: { transactionId: existing.id } }],
-        });
+        const storedHash = await this.repo.findMovementRequestHash(
+          tx,
+          ctx.orgId,
+          MOVEMENT_IDEMPOTENCY_SCOPE,
+          idempotencyKey,
+        );
+        // Rows written before this fix have no hash sidecar; fall back to the
+        // persisted fields so a mismatched legacy retry still conflicts. Every
+        // movement written from now on has the hash sidecar.
+        const hashMismatch = storedHash === null ? !legacyMovementMatches(input, existing) : storedHash !== requestHash;
+        if (hashMismatch) {
+          throw new AppError('CONFLICT', {
+            message: 'کلید ایدمپوتنسی با بدنهٔ متفاوتی استفاده شده است.',
+            messageKey: 'inventory.idempotency_key_reused',
+            details: [
+              {
+                rule: 'idempotency_key_reused',
+                params: { idempotencyKey, transactionId: existing.id },
+              },
+            ],
+          });
+        }
+        return this.replayMovement(tx, ctx, existing);
       }
     }
 
     const variant = await this.catalog.requireVariant(ctx, input.variantId);
     const warehouseInternalId = await this.requireWarehouse(tx, ctx, input.warehouseId);
     const locationInternalId = await this.requireLocation(tx, ctx, input.locationId);
-    const businessDate = input.businessDate ?? todayIso();
+    const businessDate = input.businessDate ?? (await this.organizationBusinessDate(tx, ctx));
     const period = await this.repo.lockPeriodForDate(tx, ctx.orgId, businessDate);
     if (period === null) {
       throw new AppError('RULE_VIOLATION', {
@@ -338,6 +463,17 @@ export class InventoryService {
       costState: inbound ? 'pending' : costMethod === 'fifo' ? 'layered' : 'averaged',
       createdBy: ctx.actorId,
     });
+
+    if (idempotencyKey !== null && requestHash !== null) {
+      await this.repo.saveMovementRequestHash(tx, {
+        orgId: ctx.orgId,
+        actorId: ctx.actorId,
+        scope: MOVEMENT_IDEMPOTENCY_SCOPE,
+        idempotencyKey,
+        requestHash,
+        transactionPublicId: transaction.id,
+      });
+    }
 
     const delta = applyMovementToBalance(balanceOf(balanceRow), { type: input.type, quantity: magnitude });
     await this.repo.updateBalance(tx, toBigInt(balanceRow.internalId), {
@@ -560,7 +696,14 @@ export class InventoryService {
       locationInternalId: toBigInt(candidate.locationInternalId),
       variantInternalId: toBigInt(candidate.variantInternalId),
     }));
-    await this.repo.lockBalances(tx, ctx.orgId, keys);
+    const lockedRows = await this.repo.lockBalances(tx, ctx.orgId, keys);
+    const lockedByKey = new Map<string, BalanceRow>();
+    for (const row of lockedRows) {
+      lockedByKey.set(
+        `${row.variantInternalId}:${row.warehouseInternalId}:${row.locationInternalId}`,
+        row,
+      );
+    }
     const lockedAvailability = await this.repo.availableForKeys(tx, ctx.orgId, keys);
     const lockedCandidates: BalanceCandidate[] = lockedAvailability.map((row) => ({
       warehouseId: this.publicIdFor(candidates, row.warehouseInternalId, 'warehouseInternalId'),
@@ -583,51 +726,52 @@ export class InventoryService {
     );
 
     const expiresAt = reservationExpiry(new Date(), input.ttlMinutes);
-    const reservationNoPrefix = `RSV-${Date.now().toString(36).toUpperCase()}`;
     const reservations: Record<string, unknown>[] = [];
     const balanceUpdates = new Map<string, { row: BalanceRow; reserved: string }>();
-    for (const [index, grouped] of groupReservations(plan).entries()) {
+    for (const grouped of groupReservations(plan)) {
       const variant = variants.find((item) => item.id === grouped.variantId);
       if (variant === undefined) throw notFound('variant');
       const key = allKeys.get(
         `${variant.internalId.toString()}:${toBigInt(grouped.warehouseId)}:${toBigInt(grouped.locationId)}`,
       );
+      const warehouseInternalId = key?.warehouseInternalId ?? toBigInt(grouped.warehouseId);
+      const locationInternalId = key?.locationInternalId ?? toBigInt(grouped.locationId);
+      const row = lockedByKey.get(
+        `${variant.internalId.toString()}:${warehouseInternalId.toString()}:${locationInternalId.toString()}`,
+      );
+      if (row === undefined) throw notFound('balance');
       const created = await this.repo.insertReservation(tx, {
         orgId: ctx.orgId,
-        warehouseInternalId: key?.warehouseInternalId ?? toBigInt(grouped.warehouseId),
-        locationInternalId: key?.locationInternalId ?? toBigInt(grouped.locationId),
+        warehouseInternalId,
+        locationInternalId,
         variantInternalId: variant.internalId,
         quantity: grouped.quantity,
         referenceType: input.referenceType,
         referenceInternalId: input.referenceInternalId,
-        reservationNo: `${reservationNoPrefix}-${String(index + 1).padStart(4, '0')}`,
+        // 128 random bits are collision-free for a reservation number and keep
+        // `RSV-` + 32 upper-case hex well inside the 40-char budget.
+        reservationNo: `RSV-${randomUUID().replace(/-/g, '').slice(0, 32).toUpperCase()}`,
         expiresAt,
         createdBy: ctx.actorId,
       });
-      const balanceRow = await this.repo.lockBalances(tx, ctx.orgId, [
-        {
-          warehouseInternalId: key?.warehouseInternalId ?? toBigInt(grouped.warehouseId),
-          locationInternalId: key?.locationInternalId ?? toBigInt(grouped.locationId),
-          variantInternalId: variant.internalId,
-        },
-      ]);
-      const row = balanceRow[0];
-      if (row === undefined) throw notFound('balance');
       const buffered = balanceUpdates.get(row.internalId) ?? { row, reserved: row.reserved };
-      const nextReserved = applyReservationDelta(balanceOf(row), addQuantity(grouped.quantity, '0.0000'));
-      void nextReserved;
       const reserved = applyReservationDelta(
-        { onHand: buffered.row.onHand, reserved: buffered.reserved, safetyBuffer: buffered.row.safetyBuffer, damaged: buffered.row.damaged },
+        {
+          onHand: buffered.row.onHand,
+          reserved: buffered.reserved,
+          safetyBuffer: buffered.row.safetyBuffer,
+          damaged: buffered.row.damaged,
+        },
         grouped.quantity,
       );
-      balanceUpdates.set(row.internalId, { row, reserved });
+      balanceUpdates.set(row.internalId, { row: buffered.row, reserved });
       await this.repo.updateBalance(tx, toBigInt(row.internalId), {
-        onHand: row.onHand,
+        onHand: buffered.row.onHand,
         reserved,
-        damaged: row.damaged,
-        inTransit: row.inTransit,
+        damaged: buffered.row.damaged,
+        inTransit: buffered.row.inTransit,
         lastTransactionInternalId:
-          row.lastTransactionId === null ? null : toBigInt(row.lastTransactionId),
+          buffered.row.lastTransactionId === null ? null : toBigInt(buffered.row.lastTransactionId),
       });
       reservations.push(reservationView(created));
       await this.emitReservationEvent(tx, ctx, created, INVENTORY_EVENTS.reservationCreated);
@@ -893,7 +1037,8 @@ export class InventoryService {
           : 'opening_balance'
         : 'adjustment_out';
 
-      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', todayIso());
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
+      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', businessDate);
       const adjustment = await this.repo.insertAdjustment(tx, {
         orgId: ctx.orgId,
         warehouseInternalId,
@@ -914,6 +1059,7 @@ export class InventoryService {
         referenceId: adjustment.id,
         referenceInternalId: toBigInt(adjustment.internalId),
         idempotencyKey: `stock-adjust:${adjustment.id}`,
+        businessDate,
       });
       const adjustmentLine = await this.repo.insertAdjustmentLine(tx, {
         adjustmentInternalId: toBigInt(adjustment.internalId),
@@ -949,7 +1095,7 @@ export class InventoryService {
             reasonCode: 'correction',
             kind: inbound ? 'count_gain' : 'count_shortage',
             totalCostAmount: movement.totalCostAmount.toString(),
-            businessDate: todayIso(),
+            businessDate,
             ledgerIds: [movement.transaction.id],
             status: 'applied',
           },
@@ -991,7 +1137,8 @@ export class InventoryService {
   ): Promise<Record<string, unknown>> {
     return this.db.begin(async (tx) => {
       const warehouseInternalId = await this.requireWarehouse(tx, ctx, body.warehouseId);
-      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', todayIso());
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
+      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', businessDate);
       const reasonCode = mapAdjustmentReason(body.type, body.reason);
       const lines = [];
       let totalValue = 0n;
@@ -1114,6 +1261,7 @@ export class InventoryService {
     return this.db.begin(async (tx) => {
       const adjustment = await this.requireAdjustment(tx, ctx, publicId);
       assertState(adjustment.status, ['approved'], 'adjustment_post');
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
       const lines = await this.repo.listAdjustmentLines(tx, toBigInt(adjustment.internalId));
       const ledgerIds: string[] = [];
       let gainCostAmount = 0n;
@@ -1138,6 +1286,7 @@ export class InventoryService {
           referenceId: adjustment.id,
           referenceInternalId: toBigInt(adjustment.internalId),
           idempotencyKey: `adj:${adjustment.id}:line:${line.id}`,
+          businessDate,
         });
         ledgerIds.push(movement.transaction.id);
         if (inbound) gainCostAmount += movement.totalCostAmount;
@@ -1152,7 +1301,7 @@ export class InventoryService {
         status: 'applied',
         applied: true,
       });
-      const adjustmentBusinessDate = todayIso();
+      const adjustmentBusinessDate = businessDate;
       if (gainCostAmount > 0n) {
         await this.emitAccounting(tx, ctx, INVENTORY_ACCOUNTING_EVENTS.adjustmentPosted, 'stock_adjustment', toBigInt(adjustment.internalId), {
           adjustmentId: adjustment.internalId.toString(),
@@ -1194,6 +1343,7 @@ export class InventoryService {
     return this.db.begin(async (tx) => {
       const adjustment = await this.requireAdjustment(tx, ctx, publicId);
       assertState(adjustment.status, ['applied'], 'adjustment_void');
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
       const lines = await this.repo.listAdjustmentLines(tx, toBigInt(adjustment.internalId));
       const ledgerIds: string[] = [];
       let dispatchCostAmount = 0n;
@@ -1213,6 +1363,7 @@ export class InventoryService {
           idempotencyKey: `adj-void:${adjustment.id}:line:${line.id}`,
           reversalOfInternalId:
             line.inventoryTransactionId === null ? null : toBigInt(line.inventoryTransactionId),
+          businessDate,
         });
         ledgerIds.push(movement.transaction.id);
       }
@@ -1269,7 +1420,8 @@ export class InventoryService {
           details: [{ rule: 'transfer_same_warehouse' }],
         });
       }
-      const transferNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'inventory_transfer', todayIso());
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
+      const transferNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'inventory_transfer', businessDate);
       const transfer = await this.repo.insertTransfer(tx, {
         orgId: ctx.orgId,
         transferNo,
@@ -1325,6 +1477,7 @@ export class InventoryService {
     return this.db.begin(async (tx) => {
       const transfer = await this.requireTransfer(tx, ctx, publicId);
       assertState(transfer.status, ['approved', 'pending_approval'], 'transfer_dispatch');
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
       const lines = await this.repo.listTransferLines(tx, toBigInt(transfer.internalId));
       const ledgerIds: string[] = [];
       let dispatchCostAmount = 0n;
@@ -1346,6 +1499,7 @@ export class InventoryService {
           referenceId: transfer.id,
           referenceInternalId: toBigInt(transfer.internalId),
           idempotencyKey: `trf-out:${transfer.id}:line:${line.id}`,
+          businessDate,
         });
         ledgerIds.push(movement.transaction.id);
         dispatchCostAmount += movement.totalCostAmount;
@@ -1385,7 +1539,7 @@ export class InventoryService {
         fromWarehouseId: transfer.fromWarehouseId,
         toWarehouseId: transfer.toWarehouseId,
         totalCostAmount: dispatchCostAmount.toString(),
-        businessDate: todayIso(),
+        businessDate,
         ledgerIds,
         status: 'dispatched',
       });
@@ -1401,6 +1555,7 @@ export class InventoryService {
     return this.db.begin(async (tx) => {
       const transfer = await this.requireTransfer(tx, ctx, publicId);
       assertState(transfer.status, ['dispatched', 'partially_received'], 'transfer_receive');
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
       const lines = await this.repo.listTransferLines(tx, toBigInt(transfer.internalId));
       const ledgerIds: string[] = [];
       let receiveCostAmount = 0n;
@@ -1421,6 +1576,7 @@ export class InventoryService {
           referenceId: transfer.id,
           referenceInternalId: toBigInt(transfer.internalId),
           idempotencyKey: `trf-in:${transfer.id}:line:${line.id}`,
+          businessDate,
         });
         ledgerIds.push(movement.transaction.id);
         receiveCostAmount += movement.totalCostAmount;
@@ -1466,7 +1622,7 @@ export class InventoryService {
           fromWarehouseId: transfer.fromWarehouseId,
           toWarehouseId: transfer.toWarehouseId,
           totalCostAmount: receiveCostAmount.toString(),
-          businessDate: todayIso(),
+          businessDate,
           ledgerIds,
           status,
         });
@@ -1529,7 +1685,8 @@ export class InventoryService {
   ): Promise<Record<string, unknown>> {
     return this.db.begin(async (tx) => {
       const warehouseInternalId = await this.requireWarehouse(tx, ctx, body.warehouseId);
-      const countNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_count', todayIso());
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
+      const countNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_count', businessDate);
       const locationInternalIds =
         body.scope.locationIds === undefined
           ? null
@@ -1640,11 +1797,12 @@ export class InventoryService {
     return this.db.begin(async (tx) => {
       const count = await this.requireCount(tx, ctx, publicId);
       assertState(count.status, ['approved'], 'count_post');
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
       const lines = await this.repo.listCountLines(tx, toBigInt(count.internalId));
       const variances = lines.filter(
         (line) => line.countedQuantity !== null && line.varianceQuantity !== null && compareQuantity(line.varianceQuantity, '0') !== 0,
       );
-      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', todayIso());
+      const adjustmentNo = await this.repo.allocateDocumentNo(tx, ctx.orgId, 'stock_adjustment', businessDate);
       const adjustment = await this.repo.insertAdjustment(tx, {
         orgId: ctx.orgId,
         warehouseInternalId: toBigInt(count.warehouseInternalId),
@@ -1667,6 +1825,7 @@ export class InventoryService {
           referenceId: count.id,
           referenceInternalId: toBigInt(count.internalId),
           idempotencyKey: `count:${count.id}:line:${line.id}`,
+          businessDate,
         });
         ledgerIds.push(movement.transaction.id);
         await this.repo.insertAdjustmentLine(tx, {
@@ -1738,8 +1897,9 @@ export class InventoryService {
       variantInternalId: variant?.internalId ?? null,
     });
     const totalValue = rows.reduce((total, row) => total + BigInt(row.totalValueAmount), 0n);
+    const asOf = query.asOf ?? (await this.organizationBusinessDate(this.db, ctx));
     return {
-      asOf: query.asOf ?? todayIso(),
+      asOf,
       items: rows,
       totals: {
         variants: rows.length,
@@ -1798,7 +1958,8 @@ export class InventoryService {
       const warehouseInternalId =
         input.warehouseId === undefined ? null : await this.requireWarehouse(tx, ctx, input.warehouseId);
       const method = input.method ?? 'moving_average';
-      const valuationDate = input.valuationDate ?? todayIso();
+      const businessDate = await this.organizationBusinessDate(tx, ctx);
+      const valuationDate = input.valuationDate ?? businessDate;
       const run = await this.repo.insertValuationRun(tx, {
         orgId: ctx.orgId,
         warehouseInternalId,
@@ -1869,7 +2030,7 @@ export class InventoryService {
           ...payload,
           valuationRunId: completed.internalId.toString(),
           varianceAmount: valuationVariance.toString(),
-          businessDate: todayIso(),
+          businessDate,
         });
       }
       await this.record(tx, ctx, 'inventory.valuation.run', 'inventory_valuation_run', completed.id, null, valuationRunView(completed));
@@ -1934,6 +2095,28 @@ export class InventoryService {
   }
 
   // =================================================================== helpers
+
+  /** Reconstructs the public `MovementResult` of an already-committed movement. */
+  private async replayMovement(tx: Db, ctx: TenantContext, transaction: LedgerRow): Promise<MovementResult> {
+    const balance = await this.repo.findBalanceByIdentity(tx, ctx.orgId, {
+      warehouseInternalId: toBigInt(transaction.warehouseInternalId),
+      locationInternalId: toBigInt(transaction.locationInternalId),
+      variantInternalId: toBigInt(transaction.variantInternalId),
+    });
+    if (balance === null) throw notFound('balance');
+    return {
+      transaction,
+      balance,
+      unitCostAmount: transaction.unitCostAmount === null ? 0n : BigInt(transaction.unitCostAmount),
+      totalCostAmount: transaction.totalCostAmount === null ? 0n : BigInt(transaction.totalCostAmount),
+    };
+  }
+
+  /** Organization-local business date, falling back to `Asia/Tehran`. */
+  private async organizationBusinessDate(tx: Db, ctx: TenantContext): Promise<string> {
+    const timeZone = await this.repo.organizationTimeZone(tx, ctx.orgId);
+    return businessDateInTimeZone(new Date(), timeZone ?? DEFAULT_BUSINESS_TIME_ZONE);
+  }
 
   private costMethodOf(variant: VariantLookup): CostMethod {
     if (variant.costMethod === 'fifo') return 'fifo';

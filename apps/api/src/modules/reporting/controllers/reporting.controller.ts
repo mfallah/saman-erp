@@ -5,8 +5,10 @@ import type { TenantContext } from '../../../common/contracts';
 import { ReportingService } from '../reporting.service';
 import { parseDto, toBigInt, RunReportSchema, CreateDefinitionSchema, CreateExportSchema } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
+import { ScopeCheck } from '../../../common/decorators/scope-check.decorator';
 
 @ApiTags('reporting')
+@ScopeCheck('warehouseId', 'branchId', 'params.filters.warehouseId', 'params.filters.branchId')
 @Controller()
 export class ReportingController {
   constructor(private readonly reporting: ReportingService) {}

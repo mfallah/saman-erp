@@ -266,13 +266,14 @@ export class WarehouseRepository {
 
   // =============================================================== warehouses
 
-  async listWarehouses(tx: Db, params: { orgId: bigint; status: boolean | null; branchInternalId: BigIntish | null; search: string | null; limit: number; offset: number }) {
+  async listWarehouses(tx: Db, params: { orgId: bigint; status: boolean | null; branchInternalId: BigIntish | null; search: string | null; warehouseIds?: readonly string[] | null; limit: number; offset: number }) {
     const pattern = params.search === null ? null : `%${params.search}%`;
     return tx<WarehouseRow[]>`
       select ${warehouseColumns(tx)} ${warehouseFrom(tx)}
       where w.organization_id = ${params.orgId} and w.deleted_at is null
         and (${params.status}::boolean is null or w.is_active = ${params.status}::boolean)
         and (${pattern}::text is null or w.name ilike ${pattern} or w.code ilike ${pattern})
+        and (${params.warehouseIds ?? null}::bigint[] is null or w.id = any(${params.warehouseIds ?? null}::bigint[]))
       order by w.code asc
       limit ${params.limit} offset ${params.offset}
     `;
@@ -839,7 +840,7 @@ export class WarehouseRepository {
   /** Open tasks assigned to one picker, with the fields the picking station shows. */
   async listMyPickTasks(
     tx: Db,
-    params: { orgId: bigint; assignedTo: bigint; limit: number },
+    params: { orgId: bigint; assignedTo: bigint; warehouseIds?: readonly string[] | null; limit: number },
   ): Promise<MyPickTaskRow[]> {
     return tx<MyPickTaskRow[]>`
       select t.public_id as id, t.status, o.order_no as "orderNo",
@@ -860,6 +861,7 @@ export class WarehouseRepository {
       where o.organization_id = ${params.orgId}
         and t.assigned_to = ${params.assignedTo}
         and t.status in ('pending', 'in_progress')
+        and (${params.warehouseIds ?? null}::bigint[] is null or l.warehouse_id = any(${params.warehouseIds ?? null}::bigint[]))
       order by l.pick_priority asc, l.full_code asc, t.sequence_no asc
       limit ${params.limit}
     `;
@@ -1032,7 +1034,7 @@ export class WarehouseRepository {
 
   async listPickTasks(
     tx: Db,
-    params: { orgId: bigint; waveInternalId: bigint | null; status: string | null; assignedTo: bigint | null; limit: number },
+    params: { orgId: bigint; waveInternalId: bigint | null; status: string | null; assignedTo: bigint | null; warehouseIds?: readonly string[] | null; limit: number },
   ): Promise<PickTaskRow[]> {
     const rows = await tx<{ id: string }[]>`
       select t.id::text as id
@@ -1047,6 +1049,8 @@ export class WarehouseRepository {
         )
         and (${params.status}::text is null or t.status = ${params.status})
         and (${params.assignedTo}::bigint is null or t.assigned_to = ${params.assignedTo}::bigint)
+        and (${params.warehouseIds ?? null}::bigint[] is null
+             or coalesce(l.warehouse_id, o.warehouse_id) = any(${params.warehouseIds ?? null}::bigint[]))
       order by l.pick_priority asc, l.full_code asc, t.sequence_no asc
       limit ${params.limit}
     `;
@@ -1088,7 +1092,7 @@ export class WarehouseRepository {
    * assignee, location and quantities the picking station renders. Scoping goes
    * through the sales order so channel orders without a wave are included.
    */
-  async listPickBoard(tx: Db, params: { orgId: bigint; limit: number }): Promise<PickBoardTaskRow[]> {
+  async listPickBoard(tx: Db, params: { orgId: bigint; warehouseIds?: readonly string[] | null; limit: number }): Promise<PickBoardTaskRow[]> {
     return tx<PickBoardTaskRow[]>`
       select t.public_id as id, t.order_id::text as "orderInternalId",
              coalesce(o.public_id::text, '') as "orderId", o.order_no as "orderNo",
@@ -1113,6 +1117,8 @@ export class WarehouseRepository {
       left join erp.users au on au.id = t.assigned_to
       where o.organization_id = ${params.orgId}
         and t.status in ('pending', 'in_progress')
+        and (${params.warehouseIds ?? null}::bigint[] is null
+             or coalesce(l.warehouse_id, o.warehouse_id) = any(${params.warehouseIds ?? null}::bigint[]))
       order by t.created_at asc, o.order_no asc, t.sequence_no asc
       limit ${params.limit}
     `;
@@ -1265,12 +1271,15 @@ export class WarehouseRepository {
     return rows[0] ?? null;
   }
 
-  async listPackBoard(tx: Db, params: { orgId: bigint; limit: number }): Promise<PackTaskRow[]> {
+  async listPackBoard(tx: Db, params: { orgId: bigint; warehouseIds?: readonly string[] | null; limit: number }): Promise<PackTaskRow[]> {
     const rows = await tx<{ id: string }[]>`
       select pt.id::text as id
       from erp.pack_tasks pt
+      join erp.sales_orders o on o.id = pt.order_id
       where pt.organization_id = ${params.orgId}
         and pt.status in ('pending', 'packing')
+        and (${params.warehouseIds ?? null}::bigint[] is null
+             or o.warehouse_id = any(${params.warehouseIds ?? null}::bigint[]))
       order by pt.created_at asc
       limit ${params.limit}
     `;

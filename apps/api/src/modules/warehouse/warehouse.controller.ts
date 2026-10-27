@@ -10,6 +10,7 @@ import { CurrentTenant } from '../../common/decorators/current-context.decorator
 import { Audited } from '../../common/decorators/audited.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { ScopeCheck, ScopeResource } from '../../common/decorators/scope-check.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { WarehouseService } from './warehouse.service';
 import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PackTaskCompleteBody, PickScanBody, PickTaskAssignBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, StationPickCompleteBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
@@ -27,6 +28,8 @@ function cursor(data: readonly unknown[], limit: number) {
 
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeResource('warehouse')
+@ScopeCheck('branchId')
 @Controller('warehouses')
 export class WarehousesController {
   constructor(private readonly service: WarehouseService) {}
@@ -115,6 +118,7 @@ export class WarehousesController {
 
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeResource('location')
 @Controller('locations')
 export class LocationsController {
   constructor(private readonly service: WarehouseService) {}
@@ -170,6 +174,7 @@ export class LocationsController {
 
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeCheck('warehouseId')
 @Controller('putaway')
 export class PutawayController {
   constructor(private readonly service: WarehouseService) {}
@@ -183,6 +188,8 @@ export class PutawayController {
 
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeResource('pick_wave')
+@ScopeCheck('warehouseId')
 @Controller('pick-waves')
 export class PickWavesController {
   constructor(private readonly service: WarehouseService) {}
@@ -231,6 +238,7 @@ export class PickWavesController {
 
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeResource('pick_task')
 @Controller('pick-tasks')
 export class PickTasksController {
   constructor(private readonly service: WarehouseService) {}
@@ -313,6 +321,7 @@ export class PickTasksController {
  */
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeResource('pick_task')
 @Controller('warehouse/pick-tasks')
 export class WarehousePickTasksController {
   constructor(private readonly service: WarehouseService) {}
@@ -374,6 +383,7 @@ export class WarehousePickTasksController {
  */
 @ApiTags('warehouse')
 @ApiBearerAuth()
+@ScopeResource('pack_task')
 @Controller('warehouse/pack-tasks')
 export class PackTasksController {
   constructor(private readonly service: WarehouseService) {}

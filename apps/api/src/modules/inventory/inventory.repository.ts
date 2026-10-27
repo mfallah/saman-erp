@@ -42,8 +42,11 @@ export interface LedgerRow {
   internalId: string;
   id: string;
   warehouseId: string;
+  warehouseInternalId: string;
   locationId: string;
+  locationInternalId: string;
   variantId: string;
+  variantInternalId: string;
   transactionType: string;
   quantity: string;
   unitCostAmount: string | null;
@@ -297,8 +300,11 @@ function ledgerColumns(tx: Db) {
     t.id::text as "internalId",
     t.public_id as id,
     w.public_id as "warehouseId",
+    t.warehouse_id::text as "warehouseInternalId",
     l.public_id as "locationId",
+    t.location_id::text as "locationInternalId",
     v.public_id as "variantId",
+    t.product_variant_id::text as "variantInternalId",
   v.sku as "sku",
   p.name as "productName",
   w.name as "warehouseName",
@@ -492,6 +498,34 @@ export class InventoryRepository {
       limit 1
     `;
     return rows[0] ?? null;
+  }
+
+  /** Read-only balance snapshot for an idempotent movement replay. */
+  async findBalanceByIdentity(
+    tx: Db,
+    orgId: bigint,
+    key: { warehouseInternalId: bigint; locationInternalId: bigint; variantInternalId: bigint },
+  ): Promise<BalanceRow | null> {
+    const rows = await tx<BalanceRow[]>`
+      select ${balanceColumns(tx)} ${balanceFrom(tx)}
+      where b.organization_id = ${orgId}
+        and b.warehouse_id = ${key.warehouseInternalId}
+        and b.location_id = ${key.locationInternalId}
+        and b.product_variant_id = ${key.variantInternalId}
+      limit 1
+    `;
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Organization business timezone (`erp.organizations.timezone`). Falls back to
+   * `Asia/Tehran` in the service when the row/column is absent or invalid.
+   */
+  async organizationTimeZone(tx: Db, orgId: bigint): Promise<string | null> {
+    const rows = await tx<{ timeZone: string | null }[]>`
+      select timezone as "timeZone" from erp.organizations where id = ${orgId} limit 1
+    `;
+    return rows[0]?.timeZone ?? null;
   }
 
   /** Ensures a balance row exists for every `(warehouse, location, variant)` key. */
@@ -787,6 +821,66 @@ export class InventoryRepository {
       limit 1
     `;
     return rows[0] ?? null;
+  }
+
+  /**
+   * Serialises retries for one movement key for the rest of the caller's
+   * transaction. `inventory_ledger_keys` only gives a global row identity; the
+   * advisory lock closes the check-then-insert race between two concurrent
+   * retries of the same request.
+   */
+  async lockMovementIdempotencyKey(tx: Db, orgId: bigint, idempotencyKey: string): Promise<void> {
+    await tx`
+      select pg_advisory_xact_lock(hashtextextended(${`${orgId.toString()}:${idempotencyKey}`}, 0))
+    `;
+  }
+
+  /**
+   * Payload hash sidecar for a movement idempotency key.
+   *
+   * The hash lives in the existing `erp.idempotency_keys.request_hash` field
+   * (scope `inventory.post_movement`), because the inventory schema deliberately
+   * keeps `inventory_ledger_keys` minimal and this module owns no migration.
+   */
+  async findMovementRequestHash(
+    tx: Db,
+    orgId: bigint,
+    scope: string,
+    idempotencyKey: string,
+  ): Promise<string | null> {
+    const rows = await tx<{ requestHash: string }[]>`
+      select request_hash::text as "requestHash"
+      from erp.idempotency_keys
+      where organization_id = ${orgId}
+        and scope = ${scope}
+        and key = ${idempotencyKey}
+      order by id desc
+      limit 1
+    `;
+    return rows[0]?.requestHash ?? null;
+  }
+
+  /** Stores the canonical SHA-256 payload hash before the movement commits. */
+  async saveMovementRequestHash(
+    tx: Db,
+    input: {
+      orgId: bigint;
+      actorId: bigint | null;
+      scope: string;
+      idempotencyKey: string;
+      requestHash: string;
+      transactionPublicId: string;
+    },
+  ): Promise<void> {
+    await tx`
+      insert into erp.idempotency_keys
+        (organization_id, actor_user_id, key, scope, request_hash, resource_type,
+         resource_public_id, expires_at, created_by)
+      values (${input.orgId}, ${input.actorId}, ${input.idempotencyKey}, ${input.scope},
+              ${input.requestHash}, 'inventory_transaction', ${input.transactionPublicId}::uuid,
+              now() + interval '400 days', ${input.actorId})
+      on conflict (organization_id, actor_user_id, scope, key) do nothing
+    `;
   }
 
   async listTransactions(

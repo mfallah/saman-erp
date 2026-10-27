@@ -152,6 +152,7 @@ export class UsersAdminController {
     });
   }
 
+  @RequireStepUp('user.create')
   @Post()
   @Permissions('user.create')
   create(@Body() body: unknown, @Req() request: FastifyRequest) {
@@ -164,6 +165,7 @@ export class UsersAdminController {
     return this.admin.getUser(actorOf(request), parse(idSchema, id));
   }
 
+  @RequireStepUp('user.update')
   @Patch(':id')
   @Permissions('user.update')
   update(@Param('id') id: string, @Body() body: unknown, @Req() request: FastifyRequest) {
@@ -187,12 +189,14 @@ export class UsersAdminController {
     );
   }
 
+  @RequireStepUp('user.update')
   @Post(':id/activate')
   @Permissions('user.update')
   activate(@Param('id') id: string, @Req() request: FastifyRequest) {
     return this.admin.updateUser(actorOf(request), parse(idSchema, id), { status: 'active' }, metaOf(request));
   }
 
+  @RequireStepUp('user.update')
   @Post(':id/deactivate')
   @Permissions('user.update')
   deactivate(@Param('id') id: string, @Req() request: FastifyRequest) {
@@ -223,6 +227,7 @@ export class UsersAdminController {
     return this.admin.setUserRoles(actorOf(request), parse(idSchema, id), parse(rolesSchema, body).roles, metaOf(request));
   }
 
+  @RequireStepUp('user.scope.assign')
   @Put(':id/scope')
   @Permissions('user.scope.assign')
   setScope(@Param('id') id: string, @Body() body: unknown, @Req() request: FastifyRequest) {
@@ -248,6 +253,7 @@ export class RolesAdminController {
     return this.admin.listRoles(actorOf(request));
   }
 
+  @RequireStepUp('role.create')
   @Post()
   @Permissions('role.create')
   create(@Body() body: unknown, @Req() request: FastifyRequest) {
@@ -260,18 +266,21 @@ export class RolesAdminController {
     return this.admin.getRole(actorOf(request), parse(idSchema, id));
   }
 
+  @RequireStepUp('role.update')
   @Patch(':id')
   @Permissions('role.update')
   update(@Param('id') id: string, @Body() body: unknown, @Req() request: FastifyRequest) {
     return this.admin.updateRole(actorOf(request), parse(idSchema, id), parse(updateRoleSchema, body), metaOf(request));
   }
 
+  @RequireStepUp('role.delete')
   @Delete(':id')
   @Permissions('role.delete')
   remove(@Param('id') id: string, @Req() request: FastifyRequest) {
     return this.admin.deleteRole(actorOf(request), parse(idSchema, id), metaOf(request));
   }
 
+  @RequireStepUp('role.assign')
   @Put(':id/permissions')
   @Permissions('role.assign')
   setPermissions(@Param('id') id: string, @Body() body: unknown, @Req() request: FastifyRequest) {

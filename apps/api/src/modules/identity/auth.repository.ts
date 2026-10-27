@@ -48,6 +48,7 @@ export interface OtpChallengeRecord {
   readonly attempts: number;
   readonly maxAttempts: number;
   readonly expiresAt: Date;
+  readonly consumedAt: Date | null;
 }
 
 export interface ActorAccessRecord {
@@ -115,8 +116,9 @@ export class AuthRepository {
     return asSql(this.db);
   }
 
-  async loadOrganization(): Promise<{ id: bigint; publicId: string }> {
-    const rows = await this.sql`
+  async loadOrganization(client?: SqlClient): Promise<{ id: bigint; publicId: string }> {
+    const sql = client ?? this.sql;
+    const rows = await sql`
       select id, public_id from erp.organizations
       where status <> 'archived' order by id asc limit 1
     `;
@@ -140,8 +142,9 @@ export class AuthRepository {
     return row === undefined ? null : mapUser(row);
   }
 
-  async findUserById(userId: bigint): Promise<IdentityUserRecord | null> {
-    const rows = await this.sql`
+  async findUserById(userId: bigint, client?: SqlClient): Promise<IdentityUserRecord | null> {
+    const sql = client ?? this.sql;
+    const rows = await sql`
       select id, public_id, organization_id, username, mobile, full_name, email, password_hash,
              status, must_change_password, permissions_version, mfa_enabled, failed_login_count,
              locked_until, locale, last_login_at
@@ -179,8 +182,9 @@ export class AuthRepository {
   }
 
   /** Effective permissions + roles + scope narrowing for a user. */
-  async loadAccess(userId: bigint): Promise<ActorAccessRecord> {
-    const permissionRows = await this.sql`
+  async loadAccess(userId: bigint, client?: SqlClient): Promise<ActorAccessRecord> {
+    const sql = client ?? this.sql;
+    const permissionRows = await sql`
       select distinct p.key as key
       from erp.user_roles ur
       join erp.role_permissions rp on rp.role_id = ur.role_id
@@ -189,13 +193,13 @@ export class AuthRepository {
         and (ur.expires_at is null or ur.expires_at > now())
       order by 1
     `;
-    const roleRows = await this.sql`
+    const roleRows = await sql`
       select distinct r.code as code
       from erp.user_roles ur join erp.roles r on r.id = ur.role_id
       where ur.user_id = ${userId} and (ur.expires_at is null or ur.expires_at > now())
       order by 1
     `;
-    const scopeRows = await this.sql`
+    const scopeRows = await sql`
       select scope_type, scope_id, organization_id from erp.user_scopes where user_id = ${userId}
     `;
     const permissionKeys = permissionRows
@@ -263,9 +267,10 @@ export class AuthRepository {
     mfaVerified: boolean;
     expiresAt: Date;
     absoluteExpiresAt: Date;
-  }): Promise<{ id: bigint; publicId: string; familyId: string }> {
+  }, client?: SqlClient): Promise<{ id: bigint; publicId: string; familyId: string }> {
     const familyId = input.familyId ?? randomUUID();
-    const rows = await this.sql`
+    const sql = client ?? this.sql;
+    const rows = await sql`
       insert into erp.auth_sessions (
         user_id, session_family_id, refresh_token_hash, device_id, ip_prefix, user_agent_hash,
         mfa_verified, expires_at, absolute_expires_at
@@ -415,8 +420,9 @@ export class AuthRepository {
     userAgentHash: string | null;
     trusted: boolean;
     trustedUntil: Date | null;
-  }): Promise<{ id: bigint; publicId: string }> {
-    const rows = await this.sql`
+  }, client?: SqlClient): Promise<{ id: bigint; publicId: string }> {
+    const sql = client ?? this.sql;
+    const rows = await sql`
       insert into erp.user_devices (
         user_id, device_fingerprint_hash, device_secret_hash, label, platform,
         user_agent_hash, trusted, trusted_until, last_seen_at
@@ -523,11 +529,12 @@ export class AuthRepository {
     return { id: toBigInt(row['id']), publicId: String(row['public_id']) };
   }
 
-  async findOtpChallenge(publicId: string): Promise<OtpChallengeRecord | null> {
+  async findOtpChallenge(publicId: string, client?: SqlClient): Promise<OtpChallengeRecord | null> {
     if (!UUID_PATTERN.test(publicId)) return null;
-    const rows = await this.sql`
+    const sql = client ?? this.sql;
+    const rows = await sql`
       select id, public_id, user_id, mobile, purpose, code_hash, status, attempt_count,
-             max_attempts, expires_at
+             max_attempts, expires_at, consumed_at
       from erp.otp_challenges where public_id = ${publicId}::uuid limit 1
     `;
     const row = rows[0];
@@ -543,31 +550,78 @@ export class AuthRepository {
       attempts: Number(row['attempt_count']),
       maxAttempts: Number(row['max_attempts']),
       expiresAt: toDate(row['expires_at']),
+      consumedAt: toOptionalDate(row['consumed_at']),
     };
   }
 
-  async incrementOtpAttempt(challengeId: bigint): Promise<number> {
-    const rows = await this.sql`
-      update erp.otp_challenges set attempt_count = attempt_count + 1
-      where id = ${challengeId} returning attempt_count
+  /**
+   * TD-15: verification and single-use consumption are ONE atomic statement.
+   *
+   * `UPDATE … SET consumed_at = now(), attempt_count = attempt_count + 1
+   *  WHERE public_id = $1 AND consumed_at IS NULL AND expires_at > now()
+   *    AND code_hash = $2 AND status IN ('pending','verified')
+   *  RETURNING id`
+   *
+   * Postgres serialises concurrent updates of the same row: the first commit
+   * sees `consumed_at IS NULL` and wins; every concurrent waiter re-evaluates
+   * the predicate against the new row version, sees `consumed_at` set, and
+   * returns zero rows. The caller creates a session only when exactly one row
+   * comes back, so a replayed/losing verify can never mint a second session.
+   * The `attempt_count < max_attempts` guard keeps lockout unbypassable.
+   */
+  async consumeOtpChallenge(input: {
+    publicId: string;
+    codeHash: string;
+    maxAttempts: number;
+    client?: SqlClient;
+  }): Promise<boolean> {
+    if (!UUID_PATTERN.test(input.publicId)) return false;
+    const sql = input.client ?? this.sql;
+    const rows = await sql`
+      update erp.otp_challenges
+         set consumed_at = now(),
+             verified_at = coalesce(verified_at, now()),
+             status = 'consumed',
+             attempt_count = attempt_count + 1
+       where public_id = ${input.publicId}::uuid
+         and consumed_at is null
+         and expires_at > now()
+         and code_hash = ${input.codeHash}
+         and status in ('pending', 'verified')
+         and attempt_count < ${input.maxAttempts}
+      returning id
     `;
-    const row = rows[0];
-    return row === undefined ? 0 : Number(row['attempt_count']);
+    return rows.length === 1;
   }
 
   /**
-   * Single-use consumption: the UPDATE only wins when the challenge is still
-   * unconsumed, so two concurrent verifications cannot both succeed.
+   * Failed-verification counter, also a single guarded statement: it only
+   * increments while the challenge is unconsumed, unexpired and under its
+   * attempt budget, so a replay of a consumed challenge cannot move the
+   * counter and a race cannot exceed `max_attempts`.
    */
-  async consumeOtpChallenge(challengeId: bigint): Promise<boolean> {
-    const rows = await this.sql`
+  async registerFailedOtpAttempt(input: {
+    publicId: string;
+    maxAttempts: number;
+    client?: SqlClient;
+  }): Promise<{ attempts: number; maxAttempts: number } | null> {
+    if (!UUID_PATTERN.test(input.publicId)) return null;
+    const sql = input.client ?? this.sql;
+    const rows = await sql`
       update erp.otp_challenges
-         set status = 'consumed', verified_at = coalesce(verified_at, now()), consumed_at = now()
-       where id = ${challengeId} and consumed_at is null
-         and status in ('pending', 'verified')
-      returning id
+         set attempt_count = attempt_count + 1
+       where public_id = ${input.publicId}::uuid
+         and consumed_at is null
+         and expires_at > now()
+         and attempt_count < ${input.maxAttempts}
+      returning attempt_count, max_attempts
     `;
-    return rows[0] !== undefined;
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      attempts: Number(row['attempt_count']),
+      maxAttempts: Number(row['max_attempts']),
+    };
   }
 
   async updateOtpChallenge(

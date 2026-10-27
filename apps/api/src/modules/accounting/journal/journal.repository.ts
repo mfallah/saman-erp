@@ -296,6 +296,20 @@ export class JournalRepository {
        where id = ${entryId.toString()}`;
   }
 
+  /**
+   * Re-points a draft at the period that owns its (server-validated) entry date.
+   * Posting derives the period from the stored date, so a draft edited after
+   * creation cannot keep a stale `period_id` (TD-19).
+   */
+  async assignPeriod(tx: SqlSession, entryId: bigint, periodId: bigint, fiscalYearId: bigint): Promise<void> {
+    await tx`
+      update erp.journal_entries
+         set period_id = ${periodId.toString()},
+             fiscal_year_id = ${fiscalYearId.toString()},
+             version = version + 1
+       where id = ${entryId.toString()}`;
+  }
+
   async updateDraft(
     tx: SqlSession,
     entryId: bigint,

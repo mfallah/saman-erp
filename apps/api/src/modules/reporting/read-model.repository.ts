@@ -170,7 +170,24 @@ export interface ReportRange {
   readonly from: string;
   readonly to: string;
   readonly limit: number;
+  /** Allowed internal warehouse ids (`null` = unrestricted, `[]` = none). */
+  readonly warehouseIds?: readonly string[] | null;
 }
+
+/** Reports with no warehouse dimension cannot be filtered for a scoped actor. */
+export const WAREHOUSE_SCOPED_REPORTS: readonly string[] = [
+  SALES_BY_CHANNEL,
+  SALES_BY_PRODUCT,
+  SALES_BY_CATEGORY,
+  SALES_BY_CUSTOMER,
+  INVENTORY_AGING,
+  DEAD_STOCK,
+  FAST_MOVING,
+  STOCK_TURNOVER,
+  STOCK_MOVEMENT,
+  STOCK_DISCREPANCY,
+  PROCUREMENT_RECOMMENDATIONS,
+];
 
 @Injectable()
 export class ReportingReadModel {
@@ -196,6 +213,10 @@ export class ReportingReadModel {
            where i.organization_id = ${orgId.toString()}
              and i.status in ('issued','partially_paid','paid')
              and i.invoice_date between ${range.from}::date and ${range.to}::date
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or exists (select 1 from erp.sales_orders so
+                              where so.id = i.order_id
+                                and so.warehouse_id = any(${range.warehouseIds ?? null}::bigint[])))
            group by ch.code
            order by gross_amount desc
            limit ${range.limit}`;
@@ -211,6 +232,10 @@ export class ReportingReadModel {
            where i.organization_id = ${orgId.toString()}
              and i.status in ('issued','partially_paid','paid')
              and i.invoice_date between ${range.from}::date and ${range.to}::date
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or exists (select 1 from erp.sales_orders so
+                              where so.id = i.order_id
+                                and so.warehouse_id = any(${range.warehouseIds ?? null}::bigint[])))
            group by pv.sku, p.name_fa
            order by net_amount desc
            limit ${range.limit}`;
@@ -226,6 +251,10 @@ export class ReportingReadModel {
            where i.organization_id = ${orgId.toString()}
              and i.status in ('issued','partially_paid','paid')
              and i.invoice_date between ${range.from}::date and ${range.to}::date
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or exists (select 1 from erp.sales_orders so
+                              where so.id = i.order_id
+                                and so.warehouse_id = any(${range.warehouseIds ?? null}::bigint[])))
            group by c.name_fa
            order by net_amount desc
            limit ${range.limit}`;
@@ -238,6 +267,10 @@ export class ReportingReadModel {
            where i.organization_id = ${orgId.toString()}
              and i.status in ('issued','partially_paid','paid')
              and i.invoice_date between ${range.from}::date and ${range.to}::date
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or exists (select 1 from erp.sales_orders so
+                              where so.id = i.order_id
+                                and so.warehouse_id = any(${range.warehouseIds ?? null}::bigint[])))
            group by cu.code, cu.name
            order by gross_amount desc
            limit ${range.limit}`;
@@ -259,6 +292,8 @@ export class ReportingReadModel {
             left join erp.inventory_transactions t
                    on t.warehouse_id = b.warehouse_id and t.product_variant_id = b.product_variant_id
            where b.organization_id = ${orgId.toString()}
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or b.warehouse_id = any(${range.warehouseIds ?? null}::bigint[]))
            group by pv.sku, p.name_fa, w.code
           having coalesce(sum(b.on_hand), 0) > 0
            order by inventory_value desc
@@ -270,6 +305,8 @@ export class ReportingReadModel {
             from erp.inventory_transactions t
            where t.organization_id = ${orgId.toString()}
              and t.business_date between ${range.from}::date and ${range.to}::date
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or t.warehouse_id = any(${range.warehouseIds ?? null}::bigint[]))
            group by t.transaction_type
            order by t.transaction_type`;
       case STOCK_DISCREPANCY:
@@ -283,6 +320,8 @@ export class ReportingReadModel {
             join erp.product_variants pv on pv.id = b.product_variant_id
             join erp.warehouses w on w.id = b.warehouse_id
            where b.organization_id = ${orgId.toString()}
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or b.warehouse_id = any(${range.warehouseIds ?? null}::bigint[]))
            group by pv.sku, w.code, b.warehouse_id, b.product_variant_id
            limit ${range.limit}`;
       case SUPPLIER_PERFORMANCE:
@@ -307,6 +346,8 @@ export class ReportingReadModel {
             join erp.products p on p.id = pv.product_id
             left join erp.reorder_rules rr on rr.product_variant_id = pv.id
            where b.organization_id = ${orgId.toString()}
+             and (${range.warehouseIds ?? null}::bigint[] is null
+                  or b.warehouse_id = any(${range.warehouseIds ?? null}::bigint[]))
            group by pv.sku, p.name_fa, rr.reorder_point
           having coalesce(sum(b.on_hand - b.reserved - b.safety_buffer - b.damaged), 0) <= coalesce(rr.reorder_point, 0)
            order by available

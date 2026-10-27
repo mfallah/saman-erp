@@ -18,6 +18,8 @@ import { randomUUID } from 'node:crypto';
 import { AppError, parseMoney } from '@saman/shared';
 
 import { AUDIT, DB, type AuditPort, type Db as ContractDb, type TenantContext } from '../../common/contracts';
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import { ScopeService } from '../../common/scope/scope.service';
 import { deriveInternalBarcode, renderLabelSheetSvg, type VariantLabel } from '../catalog/engines/label.engine';
 import { CatalogLookupService, type VariantLookup } from '../catalog/product.service';
 import { ChannelSyncService } from '../channels/services/channel-sync.service';
@@ -149,6 +151,7 @@ export class PurchasingService {
     private readonly sync: ChannelSyncService,
     @Inject(AUDIT) private readonly audit: AuditPort,
     private readonly moduleRef: ModuleRef,
+    private readonly scopes: ScopeService,
   ) {}
 
   // ----------------------------------------------------------------- suppliers
@@ -205,11 +208,16 @@ export class PurchasingService {
       warehouseId?: string | undefined;
     },
   ): Promise<{ items: Record<string, unknown>[]; total: number }> {
+    const allowedWarehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
+    if (allowedWarehouseIds !== null && allowedWarehouseIds.length === 0) {
+      return { items: [], total: 0 };
+    }
     const scope = {
       orgId: ctx.orgId,
       q: query.q ?? null,
       supplierPublicId: query.supplierId ?? null,
       warehousePublicId: query.warehouseId ?? null,
+      warehouseIds: allowedWarehouseIds,
     };
     const [rows, total] = await Promise.all([
       this.repo.listReceipts(this.db, {

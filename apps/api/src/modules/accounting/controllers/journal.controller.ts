@@ -140,9 +140,11 @@ export class JournalController {
   async post(
     @Tenant() ctx: TenantContext,
     @Param('id') id: string,
-    @Body() body: { postDate?: string },
+    @Body() _body: { postDate?: string },
   ): Promise<{ data: unknown }> {
-    return { data: journalOut(await this.journals.post(ctx, await this.journals.resolveId(ctx, id), body.postDate)) };
+    // Any `postDate` in the body is ignored: the period always comes from the
+    // stored entry date (TD-19), resolved and locked inside the posting tx.
+    return { data: journalOut(await this.journals.post(ctx, await this.journals.resolveId(ctx, id))) };
   }
 
   @RequireStepUp('accounting.journal.reverse')

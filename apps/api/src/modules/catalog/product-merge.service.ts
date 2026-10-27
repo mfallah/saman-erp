@@ -367,8 +367,18 @@ function normalizeName(value: string): string {
 }
 
 function parseSnapshot(value: unknown): ParsedSnapshot | null {
-  if (value === null || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
+  // postgres.js hands back jsonb as an object, but legacy rows written through
+  // `JSON.stringify(...)::jsonb` were stored as a jsonb *string*. Normalize both.
+  let normalized = value;
+  if (typeof normalized === 'string') {
+    try {
+      normalized = JSON.parse(normalized);
+    } catch {
+      return null;
+    }
+  }
+  if (normalized === null || typeof normalized !== 'object' || Array.isArray(normalized)) return null;
+  const record = normalized as Record<string, unknown>;
   const arrayOf = (key: string): readonly Record<string, unknown>[] => {
     const raw = record[key];
     return Array.isArray(raw) ? (raw as readonly Record<string, unknown>[]) : [];
@@ -830,7 +840,7 @@ export class ProductMergeService {
             ${ctx.orgId},
             ${target.id}::bigint,
             ${source.id}::bigint,
-            ${JSON.stringify(snapshot)}::jsonb,
+            ${snapshot}::jsonb,
             ${ctx.actorId}
           )
           returning public_id::text as public_id
@@ -880,7 +890,6 @@ export class ProductMergeService {
       from erp.inventory_balances b
       join erp.product_variants v on v.id = b.product_variant_id
       where b.product_variant_id = any(${variantIds.map((id) => id.toString())}::bigint[])
-        and b.deleted_at is null
       group by b.product_variant_id, v.sku
       having sum(b.on_hand) > 0
     `;
@@ -1181,7 +1190,11 @@ export class ProductMergeService {
         update erp.product_merge_log
         set snapshot = jsonb_set(
               jsonb_set(
-                coalesce(snapshot, '{}'::jsonb),
+                case
+                  when jsonb_typeof(coalesce(snapshot, '{}'::jsonb)) = 'object'
+                    then coalesce(snapshot, '{}'::jsonb)
+                  else (coalesce(snapshot, '{}'::jsonb) #>> '{}')::jsonb
+                end,
                 '{undoneAt}',
                 to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
                 true
@@ -1264,8 +1277,7 @@ export class ProductMergeService {
        left join lateral (
          select sum(b.on_hand) as on_hand
          from erp.inventory_balances b
-         where b.deleted_at is null
-           and b.product_variant_id in (
+         where b.product_variant_id in (
              select v.id from erp.product_variants v
              where v.product_id = p.id and v.deleted_at is null
            )

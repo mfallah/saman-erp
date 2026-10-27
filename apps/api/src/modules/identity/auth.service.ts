@@ -7,7 +7,7 @@ import { ModuleRef } from '@nestjs/core';
 import { AppError, PERMISSION_COUNT } from '@saman/shared';
 
 import { AuthRepository } from './auth.repository';
-import { type ActorAccessRecord } from './auth.repository';
+import { type ActorAccessRecord, type OtpChallengeRecord, type SqlClient } from './auth.repository';
 import { AuthRateLimitService } from './auth-rate-limit.service';
 import { hashMatches, hashSecret, TokenService, ttlToSeconds } from './token.service';
 import { OtpService } from './otp.service';
@@ -260,74 +260,81 @@ export class AuthService {
   async verifyOtp(input: VerifyOtpInput, context: AuthRequestContext): Promise<AuthOutcome> {
     const challenge = await this.repository.findOtpChallenge(input.challengeId);
     if (challenge === null) throw new AppError('NOT_FOUND');
-    const now = Date.now();
-    if (challenge.status !== 'pending' && challenge.status !== 'verified') {
-      throw new AppError(challenge.status === 'consumed' ? 'OTP_INVALID' : 'OTP_EXPIRED');
-    }
-    if (challenge.expiresAt.getTime() <= now) {
+    if (challenge.consumedAt !== null) throw new AppError('OTP_INVALID');
+    if (challenge.expiresAt.getTime() <= Date.now()) {
       await this.repository.updateOtpChallenge(challenge.id, { status: 'expired' });
       throw new AppError('OTP_EXPIRED');
     }
-    const attempts = await this.repository.incrementOtpAttempt(challenge.id);
-    if (attempts > challenge.maxAttempts) {
+    if (challenge.attempts >= challenge.maxAttempts) {
       await this.repository.updateOtpChallenge(challenge.id, { status: 'locked' });
       throw new AppError('OTP_ATTEMPTS_EXCEEDED');
     }
-    const matches = this.otpService.matches(challenge.codeHash, challenge.mobile, challenge.purpose, input.code);
-    if (!matches) {
-      await this.repository.recordLoginAttempt({
-        ipPrefix: context.ipPrefix ?? null,
-        username: null,
-        mobile: challenge.mobile,
-        userId: challenge.userId,
-        attemptType: 'otp_verify',
-        success: false,
-        failureReason: 'otp_invalid',
-        userAgentHash: context.userAgentHash ?? null,
-      });
-      throw new AppError('OTP_INVALID');
-    }
-    const consumed = await this.repository.consumeOtpChallenge(challenge.id);
-    if (!consumed) throw new AppError('OTP_INVALID');
 
-    const user =
-      challenge.userId === null ? null : await this.repository.findUserById(challenge.userId);
-    if (user === null) {
+    const candidateHash = this.otpService.hash(challenge.mobile, challenge.purpose, input.code);
+
+    // TD-15: verification (hash + expiry + lockout + single use) and consumption
+    // are ONE atomic UPDATE inside the verification transaction. Only the winner
+    // of that statement may create a session; a concurrent verifier returns zero
+    // rows and is rejected below.
+    const outcome = await this.db.begin(async (tx) => {
+      const client = tx as unknown as SqlClient;
+      const consumed = await this.repository.consumeOtpChallenge({
+        publicId: challenge.publicId,
+        codeHash: candidateHash,
+        maxAttempts: challenge.maxAttempts,
+        client,
+      });
+      if (!consumed) return { kind: 'not_consumed' } as const;
+
+      const user =
+        challenge.userId === null
+          ? null
+          : await this.repository.findUserById(challenge.userId, client);
+      if (user === null) return { kind: 'no_user' } as const;
+
+      let deviceId: bigint | null = null;
+      let deviceSecret: string | undefined;
+      const fingerprint = input.deviceFingerprint ?? null;
+      if (input.trustDevice === true && fingerprint !== null) {
+        const secret = this.tokenService.generateOpaqueToken();
+        const fingerprintHash = hashSecret(fingerprint, this.config.otpPepper ?? this.config.jwtAccessSecret);
+        const device = await this.repository.upsertDevice({
+          userId: user.id,
+          fingerprintHash,
+          secretHash: hashSecret(secret, this.config.otpPepper ?? this.config.jwtAccessSecret),
+          label: input.deviceName ?? null,
+          platform: null,
+          userAgentHash: context.userAgentHash ?? null,
+          trusted: true,
+          trustedUntil: addDays(DEVICE_TRUST_DAYS),
+        }, client);
+        deviceId = device.id;
+        deviceSecret = secret;
+      }
+
+      const session = await this.issueSession(user, {
+        deviceId,
+        mfaVerified: true,
+        authMethod: 'otp',
+        context,
+      }, client);
+      return { kind: 'ok', session, deviceSecret, user } as const;
+    });
+
+    if (outcome.kind === 'not_consumed') {
+      const failure = await this.registerFailedOtpVerification(challenge, context);
+      throw new AppError(failure === 'locked' ? 'OTP_ATTEMPTS_EXCEEDED' : 'OTP_INVALID');
+    }
+    if (outcome.kind === 'no_user') {
       throw new AppError('UNAUTHENTICATED', { messageKey: 'identity.device_untrusted' });
     }
 
-    let deviceId: bigint | null = null;
-    let deviceSecret: string | undefined;
-    const fingerprint = input.deviceFingerprint ?? null;
-    if (input.trustDevice === true && fingerprint !== null) {
-      const secret = this.tokenService.generateOpaqueToken();
-      const fingerprintHash = hashSecret(fingerprint, this.config.otpPepper ?? this.config.jwtAccessSecret);
-      const device = await this.repository.upsertDevice({
-        userId: user.id,
-        fingerprintHash,
-        secretHash: hashSecret(secret, this.config.otpPepper ?? this.config.jwtAccessSecret),
-        label: input.deviceName ?? null,
-        platform: null,
-        userAgentHash: context.userAgentHash ?? null,
-        trusted: true,
-        trustedUntil: addDays(DEVICE_TRUST_DAYS),
-      });
-      deviceId = device.id;
-      deviceSecret = secret;
-    }
-
-    const issued = await this.issueSession(user, {
-      deviceId,
-      mfaVerified: true,
-      authMethod: 'otp',
-      context,
-    });
-    await this.auditAction(user.organizationId, user.id, 'identity.login.succeeded', {
-      sessionId: issued.sessionPublicId,
+    await this.auditAction(outcome.user.organizationId, outcome.user.id, 'identity.login.succeeded', {
+      sessionId: outcome.session.sessionPublicId,
       method: 'otp',
       requestId: context.requestId,
     });
-    return this.tokensOutcome(issued, deviceSecret);
+    return this.tokensOutcome(outcome.session, outcome.deviceSecret);
   }
 
   // --- Refresh / logout ----------------------------------------------------
@@ -475,13 +482,24 @@ export class AuthService {
         (await this.passwords.verifyPassword(user.passwordHash, input.password));
     } else if (input.challengeId !== undefined && input.code !== undefined) {
       const challenge = await this.repository.findOtpChallenge(input.challengeId);
-      if (challenge !== null && challenge.expiresAt.getTime() > Date.now()) {
-        const attempts = await this.repository.incrementOtpAttempt(challenge.id);
-        verified =
-          attempts <= challenge.maxAttempts &&
-          this.otpService.matches(challenge.codeHash, challenge.mobile, challenge.purpose, input.code);
-        if (verified) {
-          if (!(await this.repository.consumeOtpChallenge(challenge.id))) throw new AppError('STEP_UP_REQUIRED');
+      if (
+        challenge !== null &&
+        challenge.consumedAt === null &&
+        challenge.expiresAt.getTime() > Date.now()
+      ) {
+        // Same atomic verify+consume contract as login OTPs: a step-up code can
+        // never be replayed and its attempt budget cannot be bypassed.
+        const consumed = await this.repository.consumeOtpChallenge({
+          publicId: challenge.publicId,
+          codeHash: this.otpService.hash(challenge.mobile, challenge.purpose, input.code),
+          maxAttempts: challenge.maxAttempts,
+        });
+        verified = consumed;
+        if (!verified) {
+          const failure = await this.registerFailedOtpVerification(challenge, {
+            requestId: _meta.requestId,
+          });
+          if (failure === 'locked') throw new AppError('OTP_ATTEMPTS_EXCEEDED');
         }
       }
     }
@@ -550,9 +568,10 @@ export class AuthService {
   private async issueSession(
     user: UserRecord,
     options: { deviceId: bigint | null; mfaVerified: boolean; authMethod: 'password' | 'otp'; context: AuthRequestContext },
+    client?: SqlClient,
   ): Promise<IssuedSession> {
-    const organization = await this.repository.loadOrganization();
-    const access = await this.repository.loadAccess(user.id);
+    const organization = await this.repository.loadOrganization(client);
+    const access = await this.repository.loadAccess(user.id, client);
     const refreshToken = this.tokenService.generateOpaqueToken();
     const session = await this.repository.createSession({
       userId: user.id,
@@ -563,7 +582,7 @@ export class AuthService {
       mfaVerified: options.mfaVerified,
       expiresAt: addSeconds(this.refreshTokenTtl),
       absoluteExpiresAt: addDays(30),
-    });
+    }, client);
     const accessToken = this.tokenService.signAccessToken({
       sub: user.publicId,
       sid: session.publicId,
@@ -814,6 +833,37 @@ export class AuthService {
     if (claims.sid !== sessionPublicId) throw new AppError('STEP_UP_REQUIRED');
     // Single-use enforcement is completed via the step-up store in the identity module
     // wiring; the token itself is short-lived (5 min) and bound to (session, action).
+  }
+
+  /**
+   * Accounts one failed OTP verification atomically. Returns `locked` once the
+   * attempt budget is exhausted; a replay of an already-consumed challenge
+   * increments nothing (`registerFailedOtpAttempt` is guarded) and is reported
+   * as a plain invalid code.
+   */
+  private async registerFailedOtpVerification(
+    challenge: OtpChallengeRecord,
+    context: { readonly requestId: string; readonly ipPrefix?: string; readonly userAgentHash?: string },
+  ): Promise<'recorded' | 'locked'> {
+    const attempt = await this.repository.registerFailedOtpAttempt({
+      publicId: challenge.publicId,
+      maxAttempts: challenge.maxAttempts,
+    });
+    await this.repository.recordLoginAttempt({
+      ipPrefix: context.ipPrefix ?? null,
+      username: null,
+      mobile: challenge.mobile,
+      userId: challenge.userId,
+      attemptType: 'otp_verify',
+      success: false,
+      failureReason: 'otp_invalid',
+      userAgentHash: context.userAgentHash ?? null,
+    });
+    if (attempt !== null && attempt.attempts >= attempt.maxAttempts) {
+      await this.repository.updateOtpChallenge(challenge.id, { status: 'locked' });
+      return 'locked';
+    }
+    return 'recorded';
   }
 
   private async recordLoginAttempt(

@@ -132,10 +132,36 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
         on conflict (organization_id, order_no) do nothing
         returning id::text as id
       `;
-      const orderId = inserted[0]?.id;
+      let orderId = inserted[0]?.id;
       if (orderId === undefined) {
-        deps.logger.info({ externalOrderId: parsed.externalOrderId }, 'channel order already materialised');
-        return;
+        const existing = await db<{ id: string }[]>`
+          select id::text as id
+          from erp.sales_orders
+          where organization_id = ${org}
+            and order_no = ${orderNo}
+          limit 1`;
+        const existingId = existing[0]?.id;
+        if (existingId === undefined) {
+          deps.logger.info({ externalOrderId: parsed.externalOrderId }, 'channel order already materialised');
+          return;
+        }
+        // Repair path: an order created by an older run may have been written
+        // before its product/variant mapping was usable, leaving zero lines.
+        // Attaching the lines of a re-delivered event heals it, and the
+        // line-count guard keeps a normal replay from duplicating them.
+        const lined = await db<{ lines: unknown }[]>`
+          select count(*)::int as lines
+          from erp.sales_order_lines
+          where order_id = ${existingId}::bigint`;
+        if (Number(lined[0]?.lines ?? 0) > 0) {
+          deps.logger.info({ externalOrderId: parsed.externalOrderId }, 'channel order already materialised');
+          return;
+        }
+        orderId = existingId;
+        deps.logger.info(
+          { externalOrderId: parsed.externalOrderId, orderId: existingId },
+          'channel order has no lines; attaching them from the re-delivered event',
+        );
       }
       let lineNo = 0;
       for (const line of lines) {

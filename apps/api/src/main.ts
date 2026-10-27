@@ -13,13 +13,18 @@ import { LOGGER, type AppLogger } from './common/logging/logger.token';
 import { PinoNestLogger } from './common/logging/nest-logger.service';
 import { getAppVersion } from './common/version';
 import { ChannelSyncService } from './modules/channels/services/channel-sync.service';
+import { ChannelReconcilerService } from './modules/channels/services/channel-reconciler.service';
 import { startAutoSyncScheduler } from './modules/channels/services/auto-sync.scheduler';
+import { startChannelReconcilerScheduler } from './modules/channels/services/channel-reconciler.scheduler';
 
 let stopAutoSync: (() => void) | null = null;
+let stopReconciler: (() => void) | null = null;
 
 function shutdown(logger: AppLogger, signal: string): void {
   stopAutoSync?.();
   stopAutoSync = null;
+  stopReconciler?.();
+  stopReconciler = null;
   logger.info({ signal }, 'shutdown_started');
 }
 
@@ -70,6 +75,15 @@ async function bootstrap(): Promise<void> {
     sync: app.get(ChannelSyncService),
     logger,
     enabled: config.autoSyncEnabled,
+  });
+
+  // Self-healing Digikala reconcile: remaps bad variant ids, re-pulls zero-line
+  // orders, fills product images and missing commissions every five minutes.
+  stopReconciler = startChannelReconcilerScheduler({
+    db: app.get<Db>(DB),
+    reconciler: app.get(ChannelReconcilerService),
+    logger,
+    enabled: config.channelReconcileEnabled,
   });
 }
 

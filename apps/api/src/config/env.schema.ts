@@ -190,6 +190,8 @@ const EnvSchema = z.object({
   channelSyncEnabled: boolFromEnv(true),
   /** In-process order-pull loop started by the API bootstrap (see auto-sync.scheduler). */
   autoSyncEnabled: boolFromEnv(true),
+  /** In-process Digikala self-healing reconcile loop (see channel-reconciler.scheduler). */
+  channelReconcileEnabled: boolFromEnv(true),
   channelStockDebounceMs: intFromEnv(3000, 0, 60_000),
   channelHttpTimeoutMs: intFromEnv(15_000, 1000, 120_000),
 

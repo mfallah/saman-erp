@@ -204,9 +204,14 @@ export class FiscalCalendarRepository {
   }
 
   /**
-   * Resolves the period owning a legal date and locks it `FOR SHARE` while
-   * posting (ARCHITECTURE §6). Returns the year too so the caller can assert the
-   * year is not closed.
+   * Resolves the period owning a legal date and locks **the period row**
+   * (`FOR UPDATE OF p`) while posting (ARCHITECTURE §6, TD-19). The year is read
+   * without a lock: closing takes year → period, so lock order is preserved
+   * without a second lock and without a deadlock.
+   *
+   * Posting MUST pass the server-stored entry date here, never a caller-supplied
+   * posting date; a concurrent close then blocks on this row until the posting
+   * transaction commits or rolls back.
    */
   async resolveAndLockPeriod(
     tx: SqlSession,
@@ -224,7 +229,7 @@ export class FiscalCalendarRepository {
          and ${entryDate}::date between y.start_date and y.end_date
        order by p.period_no
        limit 1
-       for share`;
+       for update of p`;
     const row = rows[0];
     if (row === undefined) throw notFound('دوره مالی برای تاریخ سند');
     const period = toPeriod(row);

@@ -14,6 +14,7 @@ import { DatabaseProvider } from './providers/db.provider';
 import { OutboxWriter } from './providers/outbox.provider';
 import { REDIS, RedisProvider } from './providers/redis.provider';
 import { TenantService } from './tenant/tenant.service';
+import { ScopeService } from './scope/scope.service';
 import { MetricsService } from '../modules/metrics/metrics.service';
 
 /**
@@ -45,6 +46,7 @@ import { MetricsService } from '../modules/metrics/metrics.service';
     { provide: CRYPTO, useExisting: CryptoService },
     TenantService,
     { provide: TENANT, useExisting: TenantService },
+    ScopeService,
     MetricsService,
   ],
   exports: [
@@ -54,6 +56,7 @@ import { MetricsService } from '../modules/metrics/metrics.service';
     EVENT_BUS,
     CRYPTO,
     TENANT,
+    ScopeService,
     MetricsService,
     DatabaseProvider,
     RedisProvider,

@@ -6,6 +6,7 @@ import { ChartOfAccountsService } from '../coa/chart-of-accounts.service';
 import { FiscalCalendarService } from '../periods/fiscal-calendar.service';
 import { AccountFilterSchema, CloseSchema, CreateAccountSchema, CreateFiscalYearSchema, ReopenSchema, UpdateAccountSchema, parseDto, toBigInt } from '../dto';
 import { RequirePermissions, Tenant } from '../http/decorators';
+import { RequireStepUp } from '../../../common/decorators/require-step-up.decorator';
 import { accountOut, fiscalYearOut, periodOut } from '../http/serialise';
 
 @ApiTags('accounting')
@@ -136,6 +137,7 @@ export class AccountingStructureController {
   }
 
   @Post('fiscal-years/:id/close')
+  @RequireStepUp('accounting.fiscal_year.close')
   @RequirePermissions('accounting.fiscal_year.close')
   @ApiOperation({ summary: 'بستن سال مالی' })
   async closeYear(
@@ -159,6 +161,7 @@ export class AccountingStructureController {
   }
 
   @Post('fiscal-years/:id/adjustment-period')
+  @RequireStepUp('accounting.period.close')
   @RequirePermissions('accounting.period.close')
   @ApiOperation({ summary: 'ایجاد دوره ۱۳ تعدیلات' })
   async addAdjustment(
@@ -169,6 +172,7 @@ export class AccountingStructureController {
   }
 
   @Post('periods/:id/close')
+  @RequireStepUp('accounting.period.close')
   @RequirePermissions('accounting.period.close')
   @ApiOperation({ summary: 'بستن دوره مالی' })
   async closePeriod(
@@ -181,6 +185,7 @@ export class AccountingStructureController {
   }
 
   @Post('periods/:id/reopen')
+  @RequireStepUp('accounting.period.reopen')
   @RequirePermissions('accounting.period.reopen')
   @ApiOperation({ summary: 'بازگشایی دوره مالی با دلیل' })
   async reopenPeriod(
@@ -193,6 +198,7 @@ export class AccountingStructureController {
   }
 
   @Post('fiscal-years/:id/reopen')
+  @RequireStepUp('accounting.fiscal_year.reopen')
   @RequirePermissions('accounting.fiscal_year.reopen')
   @ApiOperation({ summary: 'بازگشایی سال مالی (فقط سوپرادمین)' })
   async reopenYear(

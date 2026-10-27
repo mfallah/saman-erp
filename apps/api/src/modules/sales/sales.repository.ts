@@ -483,6 +483,8 @@ export class SalesRepository {
       customerInternalId: BigIntish | null;
       channelCode: string | null;
       warehouseInternalId: BigIntish | null;
+      /** Allowed internal warehouse ids (`null` = unrestricted, `[]` = none). */
+      warehouseIds?: readonly string[] | null;
       createdFrom: string | null;
       limit: number;
       offset: number;
@@ -496,6 +498,7 @@ export class SalesRepository {
         and (${params.customerInternalId}::bigint is null or o.customer_id = ${params.customerInternalId}::bigint)
         and (${params.channelCode}::text is null or ch.code = ${params.channelCode})
         and (${params.warehouseInternalId}::bigint is null or o.warehouse_id = ${params.warehouseInternalId}::bigint)
+        and (${params.warehouseIds ?? null}::bigint[] is null or o.warehouse_id = any(${params.warehouseIds ?? null}::bigint[]))
         and (${params.createdFrom}::timestamptz is null or o.created_at >= ${params.createdFrom}::timestamptz)
       order by o.created_at desc, o.id desc
       limit ${params.limit} offset ${params.offset}

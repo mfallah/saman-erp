@@ -19,7 +19,7 @@ import { Audited } from '../../common/decorators/audited.decorator';
 import { CurrentTenant } from '../../common/decorators/current-context.decorator';
 import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import { ScopeCheck } from '../../common/decorators/scope-check.decorator';
+import { ScopeCheck, ScopeResource } from '../../common/decorators/scope-check.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import {
   CreateReceiptBody,
@@ -41,6 +41,7 @@ function offset(data: readonly unknown[], total: number, page: number, perPage: 
 @ApiTags('purchasing')
 @ApiBearerAuth()
 @ScopeCheck('warehouseId')
+@ScopeResource('goods_receipt')
 @Controller('purchasing')
 export class PurchasingController {
   constructor(private readonly service: PurchasingService) {}

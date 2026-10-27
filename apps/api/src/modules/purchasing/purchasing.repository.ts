@@ -84,6 +84,8 @@ export interface ReceiptListParams {
   q: string | null;
   supplierPublicId: string | null;
   warehousePublicId: string | null;
+  /** Allowed internal warehouse ids (`null` = unrestricted, `[]` = none). */
+  warehouseIds?: readonly string[] | null;
   limit: number;
   offset: number;
 }
@@ -411,6 +413,7 @@ export class PurchasingRepository {
              or coalesce(po.po_no, '') ilike '%' || ${params.q}::text || '%')
         and (${params.supplierPublicId}::uuid is null or s.public_id = ${params.supplierPublicId}::uuid)
         and (${params.warehousePublicId}::uuid is null or w.public_id = ${params.warehousePublicId}::uuid)
+        and (${params.warehouseIds ?? null}::bigint[] is null or gr.warehouse_id = any(${params.warehouseIds ?? null}::bigint[]))
       order by gr.received_at desc, gr.id desc
       limit ${params.limit} offset ${params.offset}
     `;
@@ -432,6 +435,7 @@ export class PurchasingRepository {
              or coalesce(po.po_no, '') ilike '%' || ${params.q}::text || '%')
         and (${params.supplierPublicId}::uuid is null or s.public_id = ${params.supplierPublicId}::uuid)
         and (${params.warehousePublicId}::uuid is null or w.public_id = ${params.warehousePublicId}::uuid)
+        and (${params.warehouseIds ?? null}::bigint[] is null or gr.warehouse_id = any(${params.warehouseIds ?? null}::bigint[]))
     `;
     return Number(rows[0]?.total ?? '0');
   }

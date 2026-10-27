@@ -32,6 +32,8 @@ export interface ProductRow {
   warrantyMonths: number | null;
   isMarketplaceAllowed: boolean;
   publishedAt: string | null;
+  /** Absolute image URL (channel imports write it); NULL when never supplied. */
+  imageUrl: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -51,6 +53,8 @@ export interface VariantRow {
   sku: string;
   title: string | null;
   barcode: string | null;
+  /** Absolute variant image URL; NULL when the channel never supplied one. */
+  imageUrl: string | null;
   unitId: string | null;
   weightGrams: number | null;
   isDefault: boolean;
@@ -159,6 +163,7 @@ function productColumns(tx: Db) {
     p.warranty_months as "warrantyMonths",
     p.is_marketplace_allowed as "isMarketplaceAllowed",
     p.published_at::text as "publishedAt",
+    p.image_url as "imageUrl",
     p.version,
     p.created_at::text as "createdAt",
     p.updated_at::text as "updatedAt",
@@ -189,6 +194,7 @@ function variantColumns(tx: Db) {
     v.sku,
     v.title,
     v.barcode,
+    v.image_url as "imageUrl",
     u.public_id::text as "unitId",
     v.weight_grams as "weightGrams",
     v.is_default as "isDefault",

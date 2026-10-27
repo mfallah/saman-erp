@@ -212,7 +212,7 @@ export function MergePage() {
 
   const suggestions = useQuery({
     queryKey: ['products', 'merge-suggestions', { limit: SUGGESTION_LIMIT }],
-    queryFn: () => api.getPage<SuggestionPair>('/products/merge/suggestions', { limit: SUGGESTION_LIMIT }),
+    queryFn: () => api.get<SuggestionPair[]>('/products/merge/suggestions', { limit: SUGGESTION_LIMIT }),
   });
 
   const merges = useQuery({
@@ -221,7 +221,7 @@ export function MergePage() {
     enabled: tab === 'history',
   });
 
-  const pairs = suggestions.data?.items ?? [];
+  const pairs = suggestions.data ?? [];
 
   const pairByKey = useMemo(() => {
     const map = new Map<string, SuggestionPair>();
@@ -405,8 +405,6 @@ export function MergePage() {
   ];
 
   const allSelected = pairs.length > 0 && pairs.every((pair) => selected.has(pairKey(pair)));
-  const similarityMethod = (suggestions.data?.meta as { similarityMethod?: string } | undefined)
-    ?.similarityMethod;
 
   /* -------------------------------------------------------------- history -- */
 
@@ -507,11 +505,7 @@ export function MergePage() {
           <Card>
             <CardHeader
               title="جفت‌های مشکوک به تکرار"
-              description={
-                similarityMethod === undefined
-                  ? 'شباهت نام روی محصولات فعال محاسبه می‌شود (حداقل ۵۵٪).'
-                  : `شباهت نام با روش ${similarityMethod === 'pg_trgm' ? 'pg_trgm' : 'bigram نرمال‌شده'} محاسبه شده است.`
-              }
+              description="شباهت نام روی محصولات فعال محاسبه می‌شود (حداقل ۵۵٪)."
               actions={
                 <div className="flex flex-wrap items-center gap-2">
                   <Checkbox
