@@ -91,6 +91,9 @@ interface ReservedLock {
 
 @Injectable()
 export class ChannelReconcilerService {
+  private readonly releasedLocks = new WeakSet<object>();
+  private readonly activeLocks = new Map<string, ReservedLock>();
+
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly accounts: ChannelAccountService,
@@ -102,7 +105,34 @@ export class ChannelReconcilerService {
    * Runs every repair step for one account, in order, and returns the counts.
    * A step failure is logged and reported; the other steps still run.
    */
+  /**
+   * Public entry point. Guarantees the reserved-connection lock is released even
+   * when a step throws or the channel stalls, and bounds the run so a rate
+   * limited partner can never block the scheduler forever.
+   */
   async reconcileAccount(organizationId: string, accountId: string): Promise<ReconcileSummary> {
+    const startedAt = Date.now();
+    const budgetMs = 240_000;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.reconcileAccountRun(organizationId, accountId),
+        new Promise<ReconcileSummary>((resolve) => {
+          timer = setTimeout(() => {
+            this.logger.warn({ accountId }, 'digikala reconcile exceeded its time budget');
+            resolve(this.emptySummary({ skipped: 'timeout', durationMs: Date.now() - startedAt }));
+          }, budgetMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      const held = this.activeLocks.get(accountId);
+      if (held !== undefined) await this.releaseAccountLock(held, accountId);
+    }
+  }
+
+  private async reconcileAccountRun(organizationId: string, accountId: string): Promise<ReconcileSummary> {
     const startedAt = Date.now();
     let lock: ReservedLock | null;
     try {
@@ -118,6 +148,7 @@ export class ChannelReconcilerService {
       this.logger.info({ accountId }, 'digikala reconcile skipped: another worker holds the lock');
       return this.emptySummary({ skipped: 'locked', durationMs: Date.now() - startedAt });
     }
+    this.activeLocks.set(accountId, lock);
 
     const errors: string[] = [];
     let resolved: ResolvedAdapterAccount | null = null;
@@ -423,6 +454,9 @@ export class ChannelReconcilerService {
   }
 
   private async releaseAccountLock(lock: ReservedLock, accountId: string): Promise<void> {
+    if (this.releasedLocks.has(lock)) return;
+    this.releasedLocks.add(lock);
+    this.activeLocks.delete(accountId);
     try {
       await lock.reserved`
         select pg_advisory_unlock(hashtextextended(${`digikala-reconcile:${accountId}`}, 0))`;
