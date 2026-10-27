@@ -5,6 +5,7 @@
 import { Module } from '@nestjs/common';
 
 import { CatalogModule } from '../catalog/catalog.module';
+import { ChannelsModule } from '../channels/channels.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { SalesModule } from '../sales/sales.module';
 import { PickAssignmentService } from './pick-assignment.service';
@@ -12,6 +13,7 @@ import { WarehouseRepository } from './warehouse.repository';
 import { WarehouseService } from './warehouse.service';
 import {
   LocationsController,
+  PackTasksController,
   PickTasksController,
   WarehousePickTasksController,
   PickWavesController,
@@ -20,8 +22,8 @@ import {
 } from './warehouse.controller';
 
 @Module({
-  imports: [CatalogModule, InventoryModule, SalesModule],
-  controllers: [WarehousesController, LocationsController, PutawayController, PickWavesController, PickTasksController, WarehousePickTasksController],
+  imports: [CatalogModule, InventoryModule, SalesModule, ChannelsModule],
+  controllers: [WarehousesController, LocationsController, PutawayController, PickWavesController, PickTasksController, WarehousePickTasksController, PackTasksController],
   providers: [WarehouseRepository, WarehouseService, PickAssignmentService],
   exports: [WarehouseService, PickAssignmentService],
 })

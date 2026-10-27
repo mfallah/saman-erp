@@ -58,6 +58,7 @@ export interface PickTaskRow {
   waveInternalId: string | null;
   waveId: string | null;
   orderId: string;
+  orderNo: string | null;
   orderInternalId: string;
   variantId: string;
   variantInternalId: string;
@@ -70,7 +71,12 @@ export interface PickTaskRow {
   sequenceNo: number;
   status: string;
   assignedTo: string | null;
+  assignedToName: string | null;
   barcode: string | null;
+  sku: string | null;
+  title: string | null;
+  createdAt: string;
+  ageMinutes: number;
 }
 
 /** Row returned by the picker's own task feed (`GET warehouse/pick-tasks/mine`). */
@@ -86,6 +92,15 @@ export interface MyPickTaskRow {
   sequenceNo: number;
   assignedTo: string | null;
   assignedToName: string | null;
+  createdAt: string;
+  ageMinutes: number;
+}
+
+/** An order that has lines but no pick task yet (backfill candidate). */
+export interface PickBackfillCandidateRow {
+  internalId: string;
+  orderId: string;
+  orderNo: string | null;
 }
 
 /** An order line still waiting for its auto-created pick task. */
@@ -99,6 +114,84 @@ export interface PickQueueLineRow {
 export interface PickerRow {
   id: string;
   openTasks: number;
+}
+
+/** One open pick task as shown on the picking board (order + location + owner). */
+export interface PickBoardTaskRow {
+  id: string;
+  orderInternalId: string;
+  orderId: string;
+  orderNo: string | null;
+  orderStatus: string;
+  fulfillmentStatus: string;
+  waveId: string | null;
+  waveNo: string | null;
+  sku: string | null;
+  title: string | null;
+  quantityRequired: string;
+  quantityPicked: string;
+  locationCode: string | null;
+  sequenceNo: number;
+  status: string;
+  assignedTo: string | null;
+  assignedToName: string | null;
+  createdAt: string;
+  ageMinutes: number;
+}
+
+/** Aggregates that explain *why* the picking board may be empty. */
+export interface PickBoardDiagnosticsRow {
+  tasksTotal: number;
+  openTasks: number;
+  ordersTotal: number;
+  ordersWithLines: number;
+  ordersWithoutLines: number;
+  ordersWithoutTasks: number;
+  ordersWithoutWarehouse: number;
+  warehouses: number;
+  activePickers: number;
+  fallbackPickers: number;
+}
+
+/**
+ * A pack task from `erp.pack_tasks` (created by the picking station when an
+ * order is fully picked). The table is owned by the fulfilment migration.
+ */
+export interface PackTaskRow {
+  internalId: string;
+  id: string;
+  orderInternalId: string;
+  orderId: string;
+  orderNo: string | null;
+  fulfillmentStatus: string;
+  packageNo: string | null;
+  status: string;
+  assignedTo: string | null;
+  assignedToName: string | null;
+  notes: string | null;
+  itemCount: number;
+  totalQuantity: string;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  ageMinutes: number;
+}
+
+/** Counters behind the packing board's empty-state explanation. */
+export interface PackBoardDiagnosticsRow {
+  tasksTotal: number;
+  pending: number;
+  packing: number;
+  packed: number;
+  pickedOrders: number;
+  pickedOrdersWithoutPackTask: number;
+  pickedTasks: number;
+}
+
+/** Channel reference of an order, used for the best-effort ready-to-ship push. */
+export interface OrderChannelRefRow {
+  externalOrderId: string | null;
+  accountPublicId: string | null;
 }
 
 export interface PutawayTaskRow {
@@ -691,19 +784,29 @@ export class WarehouseRepository {
   }
 
   private async findPickTaskById(tx: Db, internalId: bigint): Promise<PickTaskRow | null> {
+    // Left joins keep a task visible even when its location/order row was
+    // removed or soft-deleted; a station must never hide work silently.
     const rows = await tx<PickTaskRow[]>`
       select t.id::text as "internalId", t.public_id as id, t.wave_id::text as "waveInternalId",
-             pw.public_id as "waveId", o.public_id as "orderId", t.order_id::text as "orderInternalId",
-             v.public_id as "variantId", t.product_variant_id::text as "variantInternalId",
-             l.public_id as "locationId", t.location_id::text as "locationInternalId",
-             l.full_code as "locationFullCode", l.pick_priority as "pickPriority",
+             pw.public_id as "waveId", coalesce(o.public_id::text, '') as "orderId",
+             o.order_no as "orderNo", t.order_id::text as "orderInternalId",
+             coalesce(v.public_id::text, '') as "variantId", t.product_variant_id::text as "variantInternalId",
+             coalesce(l.public_id::text, '') as "locationId", coalesce(t.location_id::text, '') as "locationInternalId",
+             coalesce(l.full_code, '') as "locationFullCode", coalesce(l.pick_priority, 0) as "pickPriority",
              t.quantity_required::text as "quantityRequired", t.quantity_picked::text as "quantityPicked",
              t.sequence_no as "sequenceNo", t.status, t.assigned_to::text as "assignedTo",
-             v.barcode
+             au.full_name as "assignedToName",
+             v.barcode, coalesce(sol.sku_snapshot, v.sku) as sku,
+             coalesce(sol.title_snapshot, v.title, p.name) as title,
+             t.created_at::text as "createdAt",
+             floor(extract(epoch from (now() - t.created_at)) / 60)::int as "ageMinutes"
       from erp.pick_tasks t
-      join erp.warehouse_locations l on l.id = t.location_id
-      join erp.product_variants v on v.id = t.product_variant_id
-      join erp.sales_orders o on o.id = t.order_id
+      left join erp.warehouse_locations l on l.id = t.location_id
+      left join erp.product_variants v on v.id = t.product_variant_id
+      left join erp.products p on p.id = v.product_id
+      left join erp.sales_order_lines sol on sol.id = t.sales_order_line_id
+      left join erp.sales_orders o on o.id = t.order_id
+      left join erp.users au on au.id = t.assigned_to
       left join erp.pick_waves pw on pw.id = t.wave_id
       where t.id = ${internalId}
     `;
@@ -744,7 +847,9 @@ export class WarehouseRepository {
              coalesce(sol.title_snapshot, v.title, p.name) as title,
              t.quantity_required::text as quantity, t.quantity_picked::text as "quantityPicked",
              l.full_code as "locationCode", t.sequence_no as "sequenceNo",
-             au.public_id as "assignedTo", au.full_name as "assignedToName"
+             au.public_id as "assignedTo", au.full_name as "assignedToName",
+             t.created_at::text as "createdAt",
+             floor(extract(epoch from (now() - t.created_at)) / 60)::int as "ageMinutes"
       from erp.pick_tasks t
       join erp.sales_orders o on o.id = t.order_id
       join erp.product_variants v on v.id = t.product_variant_id
@@ -790,11 +895,26 @@ export class WarehouseRepository {
 
   // ---------------------------------------------------- channel-order dispatch
 
+  /**
+   * Warehouse to pick an order from. Channel orders are materialised without a
+   * header warehouse, so fall back to the line's warehouse and finally to the
+   * organization's first active warehouse — otherwise no pick task is ever
+   * created for those orders.
+   */
   async findOrderWarehouse(tx: Db, orgId: bigint, orderInternalId: bigint): Promise<string | null> {
     const rows = await tx<{ warehouseInternalId: string | null }[]>`
-      select warehouse_id::text as "warehouseInternalId"
-      from erp.sales_orders
-      where id = ${orderInternalId} and organization_id = ${orgId}
+      select coalesce(
+        o.warehouse_id,
+        (select l.warehouse_id from erp.sales_order_lines l
+          where l.order_id = o.id and l.warehouse_id is not null
+          order by l.line_no asc limit 1),
+        (select w.id from erp.warehouses w
+          where w.organization_id = o.organization_id
+            and w.deleted_at is null and w.is_active
+          order by w.id asc limit 1)
+      )::text as "warehouseInternalId"
+      from erp.sales_orders o
+      where o.id = ${orderInternalId} and o.organization_id = ${orgId}
     `;
     return rows[0]?.warehouseInternalId ?? null;
   }
@@ -805,6 +925,7 @@ export class WarehouseRepository {
       select l.id::text as id, l.product_variant_id::text as "variantInternalId", l.quantity::text as quantity
       from erp.sales_order_lines l
       where l.order_id = ${orderInternalId}
+        and l.quantity > 0
         and not exists (select 1 from erp.pick_tasks t where t.sales_order_line_id = l.id)
       order by l.line_no asc
     `;
@@ -822,10 +943,37 @@ export class WarehouseRepository {
         and u.deleted_at is null
         and exists (
           select 1 from erp.user_roles ur
+          join erp.roles r on r.id = ur.role_id and r.deleted_at is null
           join erp.role_permissions rp on rp.role_id = ur.role_id
           join erp.permissions p on p.id = rp.permission_id
           where ur.user_id = u.id
             and p.key = 'warehouse.pick'
+            and (ur.expires_at is null or ur.expires_at > now())
+        )
+      order by u.id asc
+    `;
+  }
+
+  /**
+   * Safety net when nobody holds `warehouse.pick`: active users with a warehouse
+   * or admin role (including the seeded `warehouse_manager` /
+   * `warehouse_operator` codes). The board must never be unusable just because
+   * the execute permission was not granted yet.
+   */
+  async listFallbackPickers(tx: Db, orgId: bigint): Promise<PickerRow[]> {
+    return tx<PickerRow[]>`
+      select u.id::text as id,
+             (select count(*) from erp.pick_tasks t
+               where t.assigned_to = u.id and t.status in ('pending', 'in_progress'))::int as "openTasks"
+      from erp.users u
+      where u.organization_id = ${orgId}
+        and u.status = 'active'
+        and u.deleted_at is null
+        and exists (
+          select 1 from erp.user_roles ur
+          join erp.roles r on r.id = ur.role_id and r.deleted_at is null
+          where ur.user_id = u.id
+            and r.code in ('warehouse', 'warehouse_manager', 'warehouse_operator', 'admin')
             and (ur.expires_at is null or ur.expires_at > now())
         )
       order by u.id asc
@@ -931,6 +1079,341 @@ export class WarehouseRepository {
       where id = ${internalId}
     `;
     return (await this.findPickTaskById(tx, internalId)) as PickTaskRow;
+  }
+
+  // ------------------------------------------------------- pick station board
+
+  /**
+   * Every open pick task of the organization, newest order first, with the
+   * assignee, location and quantities the picking station renders. Scoping goes
+   * through the sales order so channel orders without a wave are included.
+   */
+  async listPickBoard(tx: Db, params: { orgId: bigint; limit: number }): Promise<PickBoardTaskRow[]> {
+    return tx<PickBoardTaskRow[]>`
+      select t.public_id as id, t.order_id::text as "orderInternalId",
+             coalesce(o.public_id::text, '') as "orderId", o.order_no as "orderNo",
+             coalesce(o.status, 'unknown') as "orderStatus",
+             coalesce(o.fulfillment_status, 'unfulfilled') as "fulfillmentStatus",
+             pw.public_id as "waveId", pw.wave_no as "waveNo",
+             coalesce(sol.sku_snapshot, v.sku) as sku,
+             coalesce(sol.title_snapshot, v.title, p.name) as title,
+             t.quantity_required::text as "quantityRequired",
+             t.quantity_picked::text as "quantityPicked",
+             l.full_code as "locationCode", t.sequence_no as "sequenceNo", t.status,
+             t.assigned_to::text as "assignedTo", au.full_name as "assignedToName",
+             t.created_at::text as "createdAt",
+             floor(extract(epoch from (now() - t.created_at)) / 60)::int as "ageMinutes"
+      from erp.pick_tasks t
+      join erp.sales_orders o on o.id = t.order_id
+      left join erp.pick_waves pw on pw.id = t.wave_id
+      left join erp.sales_order_lines sol on sol.id = t.sales_order_line_id
+      left join erp.product_variants v on v.id = t.product_variant_id
+      left join erp.products p on p.id = v.product_id
+      left join erp.warehouse_locations l on l.id = t.location_id
+      left join erp.users au on au.id = t.assigned_to
+      where o.organization_id = ${params.orgId}
+        and t.status in ('pending', 'in_progress')
+      order by t.created_at asc, o.order_no asc, t.sequence_no asc
+      limit ${params.limit}
+    `;
+  }
+
+  /** Counters behind the empty state of the picking board. */
+  async pickBoardDiagnostics(tx: Db, params: { orgId: bigint }): Promise<PickBoardDiagnosticsRow> {
+    const rows = await tx<PickBoardDiagnosticsRow[]>`
+      select
+        (select count(*) from erp.pick_tasks t
+           join erp.sales_orders o on o.id = t.order_id
+          where o.organization_id = ${params.orgId})::int as "tasksTotal",
+        (select count(*) from erp.pick_tasks t
+           join erp.sales_orders o on o.id = t.order_id
+          where o.organization_id = ${params.orgId} and t.status in ('pending', 'in_progress'))::int as "openTasks",
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId})::int as "ordersTotal",
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId}
+            and exists (select 1 from erp.sales_order_lines l where l.order_id = o.id))::int as "ordersWithLines",
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId}
+            and not exists (select 1 from erp.sales_order_lines l where l.order_id = o.id))::int as "ordersWithoutLines",
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId}
+            and o.status not in ('cancelled', 'closed', 'delivered')
+            and exists (select 1 from erp.sales_order_lines l where l.order_id = o.id)
+            and not exists (select 1 from erp.pick_tasks t where t.order_id = o.id))::int as "ordersWithoutTasks",
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId}
+            and o.warehouse_id is null
+            and exists (select 1 from erp.sales_order_lines l where l.order_id = o.id)
+            and not exists (
+              select 1 from erp.sales_order_lines l
+               where l.order_id = o.id and l.warehouse_id is not null
+            ))::int as "ordersWithoutWarehouse",
+        (select count(*) from erp.warehouses w
+          where w.organization_id = ${params.orgId}
+            and w.deleted_at is null and w.is_active)::int as "warehouses",
+        (select count(*) from erp.users u
+          where u.organization_id = ${params.orgId}
+            and u.status = 'active' and u.deleted_at is null
+            and exists (
+              select 1 from erp.user_roles ur
+              join erp.roles r on r.id = ur.role_id and r.deleted_at is null
+              join erp.role_permissions rp on rp.role_id = ur.role_id
+              join erp.permissions p on p.id = rp.permission_id
+              where ur.user_id = u.id and p.key = 'warehouse.pick'
+                and (ur.expires_at is null or ur.expires_at > now())
+            ))::int as "activePickers",
+        (select count(*) from erp.users u
+          where u.organization_id = ${params.orgId}
+            and u.status = 'active' and u.deleted_at is null
+            and exists (
+              select 1 from erp.user_roles ur
+              join erp.roles r on r.id = ur.role_id and r.deleted_at is null
+              where ur.user_id = u.id and r.code in ('warehouse', 'warehouse_manager', 'warehouse_operator', 'admin')
+                and (ur.expires_at is null or ur.expires_at > now())
+            ))::int as "fallbackPickers"
+    `;
+    const row = rows[0];
+    if (row === undefined) {
+      return {
+        tasksTotal: 0,
+        openTasks: 0,
+        ordersTotal: 0,
+        ordersWithLines: 0,
+        ordersWithoutLines: 0,
+        ordersWithoutTasks: 0,
+        ordersWithoutWarehouse: 0,
+        warehouses: 0,
+        activePickers: 0,
+        fallbackPickers: 0,
+      };
+    }
+    return row;
+  }
+
+  /** Orders with lines but no pick task at all — the station's backfill queue. */
+  async listOrdersAwaitingPickTasks(
+    tx: Db,
+    params: { orgId: bigint; limit: number },
+  ): Promise<PickBackfillCandidateRow[]> {
+    return tx<PickBackfillCandidateRow[]>`
+      select o.id::text as "internalId", o.public_id as "orderId", o.order_no as "orderNo"
+      from erp.sales_orders o
+      where o.organization_id = ${params.orgId}
+        and o.status not in ('cancelled', 'closed', 'delivered')
+        and exists (select 1 from erp.sales_order_lines l where l.order_id = o.id)
+        and not exists (select 1 from erp.pick_tasks t where t.order_id = o.id)
+      order by o.id asc
+      limit ${params.limit}
+    `;
+  }
+
+  /** Open pick tasks left on an order; `0` means the order is fully picked. */
+  async countOpenOrderPickTasks(tx: Db, orderInternalId: bigint): Promise<number> {
+    const rows = await tx<{ count: number }[]>`
+      select count(*)::int as count
+      from erp.pick_tasks t
+      where t.order_id = ${orderInternalId}
+        and t.status in ('pending', 'in_progress')
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  async setOrderFulfillmentStatus(
+    tx: Db,
+    orgId: bigint,
+    orderInternalId: bigint,
+    fulfillmentStatus: string,
+  ): Promise<void> {
+    await tx`
+      update erp.sales_orders
+      set fulfillment_status = ${fulfillmentStatus}, updated_at = now()
+      where id = ${orderInternalId} and organization_id = ${orgId}
+    `;
+  }
+
+  /** Channel account + external order id, for the best-effort ready-to-ship push. */
+  async findOrderChannelRef(tx: Db, orgId: bigint, orderInternalId: bigint): Promise<OrderChannelRefRow | null> {
+    const rows = await tx<OrderChannelRefRow[]>`
+      select o.external_order_id as "externalOrderId", a.public_id as "accountPublicId"
+      from erp.sales_orders o
+      left join erp.channel_accounts a on a.id = o.channel_account_id
+      where o.id = ${orderInternalId} and o.organization_id = ${orgId}
+    `;
+    return rows[0] ?? null;
+  }
+
+  // ------------------------------------------------------------- pack tasks
+
+  private async findPackTaskById(tx: Db, internalId: bigint): Promise<PackTaskRow | null> {
+    const rows = await tx<PackTaskRow[]>`
+      select pt.id::text as "internalId", pt.public_id as id, pt.order_id::text as "orderInternalId",
+             coalesce(o.public_id::text, '') as "orderId", o.order_no as "orderNo",
+             coalesce(o.fulfillment_status, 'unfulfilled') as "fulfillmentStatus",
+             pt.package_no as "packageNo", pt.status,
+             pt.assigned_to::text as "assignedTo", au.full_name as "assignedToName",
+             pt.notes, pt.created_at::text as "createdAt", pt.updated_at::text as "updatedAt",
+             pt.closed_at::text as "closedAt",
+             (select count(*) from erp.sales_order_lines l where l.order_id = pt.order_id)::int as "itemCount",
+             coalesce((select sum(l.quantity) from erp.sales_order_lines l where l.order_id = pt.order_id), 0)::text as "totalQuantity",
+             floor(extract(epoch from (now() - pt.created_at)) / 60)::int as "ageMinutes"
+      from erp.pack_tasks pt
+      left join erp.sales_orders o on o.id = pt.order_id
+      left join erp.users au on au.id = pt.assigned_to
+      where pt.id = ${internalId}
+    `;
+    return rows[0] ?? null;
+  }
+
+  async listPackBoard(tx: Db, params: { orgId: bigint; limit: number }): Promise<PackTaskRow[]> {
+    const rows = await tx<{ id: string }[]>`
+      select pt.id::text as id
+      from erp.pack_tasks pt
+      where pt.organization_id = ${params.orgId}
+        and pt.status in ('pending', 'packing')
+      order by pt.created_at asc
+      limit ${params.limit}
+    `;
+    const tasks: PackTaskRow[] = [];
+    for (const row of rows) {
+      const task = await this.findPackTaskById(tx, BigInt(row.id));
+      if (task !== null) tasks.push(task);
+    }
+    return tasks;
+  }
+
+  async lockPackTask(tx: Db, orgId: bigint, publicId: string): Promise<PackTaskRow | null> {
+    const rows = await tx<{ id: string }[]>`
+      select pt.id::text as id from erp.pack_tasks pt
+      where pt.organization_id = ${orgId} and pt.public_id = ${publicId}
+      for update of pt
+    `;
+    const row = rows[0];
+    return row === undefined ? null : this.findPackTaskById(tx, BigInt(row.id));
+  }
+
+  async findOpenPackTaskForOrder(tx: Db, orgId: bigint, orderInternalId: bigint): Promise<PackTaskRow | null> {
+    const rows = await tx<{ id: string }[]>`
+      select pt.id::text as id from erp.pack_tasks pt
+      where pt.organization_id = ${orgId} and pt.order_id = ${orderInternalId}
+        and pt.status in ('pending', 'packing')
+      order by pt.created_at asc
+      limit 1
+    `;
+    const row = rows[0];
+    return row === undefined ? null : this.findPackTaskById(tx, BigInt(row.id));
+  }
+
+  /** Idempotent: one open pack task per order; returns the existing one if any. */
+  async insertPackTask(
+    tx: Db,
+    input: {
+      orgId: bigint;
+      orderInternalId: bigint;
+      packageNo: string;
+      assignedTo: bigint | null;
+      notes: string | null;
+    },
+  ): Promise<PackTaskRow | null> {
+    const rows = await tx<{ id: string }[]>`
+      insert into erp.pack_tasks
+        (public_id, organization_id, order_id, package_no, status, assigned_to, notes)
+      select gen_random_uuid(), ${input.orgId}::bigint, ${input.orderInternalId}::bigint,
+             ${input.packageNo}::text, 'pending', ${input.assignedTo}::bigint, ${input.notes}::text
+      where not exists (
+        select 1 from erp.pack_tasks pt
+        where pt.organization_id = ${input.orgId} and pt.order_id = ${input.orderInternalId}
+          and pt.status in ('pending', 'packing')
+      )
+      returning id::text as id
+    `;
+    const row = rows[0];
+    if (row !== undefined) return this.findPackTaskById(tx, BigInt(row.id));
+    return this.findOpenPackTaskForOrder(tx, input.orgId, input.orderInternalId);
+  }
+
+  async updatePackTask(
+    tx: Db,
+    internalId: bigint,
+    patch: {
+      status: string;
+      packageNo?: string;
+      assignedTo?: bigint;
+      notes?: string;
+      closed?: boolean;
+    },
+  ): Promise<PackTaskRow> {
+    await tx`
+      update erp.pack_tasks
+      set status = ${patch.status},
+          package_no = coalesce(${patch.packageNo ?? null}, package_no),
+          assigned_to = coalesce(${patch.assignedTo ?? null}, assigned_to),
+          notes = coalesce(${patch.notes ?? null}, notes),
+          closed_at = case when ${patch.closed === true}::boolean then now() else closed_at end,
+          updated_at = now()
+      where id = ${internalId}
+    `;
+    return (await this.findPackTaskById(tx, internalId)) as PackTaskRow;
+  }
+
+  /** `assignedTo: null` releases the task back to the packing pool. */
+  async assignPackTask(
+    tx: Db,
+    orgId: bigint,
+    publicId: string,
+    assignedTo: bigint | null,
+  ): Promise<PackTaskRow | null> {
+    const rows = await tx<{ id: string }[]>`
+      update erp.pack_tasks pt
+      set assigned_to = ${assignedTo}, updated_at = now()
+      where pt.organization_id = ${orgId} and pt.public_id = ${publicId}
+      returning pt.id::text as id
+    `;
+    const row = rows[0];
+    return row === undefined ? null : this.findPackTaskById(tx, BigInt(row.id));
+  }
+
+  async countPackTasksForOrder(tx: Db, orgId: bigint, orderInternalId: bigint): Promise<number> {
+    const rows = await tx<{ count: number }[]>`
+      select count(*)::int as count from erp.pack_tasks pt
+      where pt.organization_id = ${orgId} and pt.order_id = ${orderInternalId}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
+  /** Counters behind the packing board's empty state; requires `pack_tasks` to exist. */
+  async packBoardDiagnostics(tx: Db, params: { orgId: bigint }): Promise<PackBoardDiagnosticsRow> {
+    const rows = await tx<PackBoardDiagnosticsRow[]>`
+      select
+        (select count(*) from erp.pack_tasks pt where pt.organization_id = ${params.orgId})::int as "tasksTotal",
+        (select count(*) from erp.pack_tasks pt where pt.organization_id = ${params.orgId} and pt.status = 'pending')::int as pending,
+        (select count(*) from erp.pack_tasks pt where pt.organization_id = ${params.orgId} and pt.status = 'packing')::int as packing,
+        (select count(*) from erp.pack_tasks pt where pt.organization_id = ${params.orgId} and pt.status = 'packed')::int as packed,
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId} and o.fulfillment_status = 'picked')::int as "pickedOrders",
+        (select count(*) from erp.sales_orders o
+          where o.organization_id = ${params.orgId} and o.fulfillment_status = 'picked'
+            and not exists (
+              select 1 from erp.pack_tasks pt
+              where pt.order_id = o.id and pt.status in ('pending', 'packing')
+            ))::int as "pickedOrdersWithoutPackTask",
+        (select count(*) from erp.pick_tasks t
+          join erp.sales_orders o on o.id = t.order_id
+          where o.organization_id = ${params.orgId} and t.status = 'picked')::int as "pickedTasks"
+    `;
+    const row = rows[0];
+    if (row === undefined) {
+      return {
+        tasksTotal: 0,
+        pending: 0,
+        packing: 0,
+        packed: 0,
+        pickedOrders: 0,
+        pickedOrdersWithoutPackTask: 0,
+        pickedTasks: 0,
+      };
+    }
+    return row;
   }
 
   async updateWaveStatus(

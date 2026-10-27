@@ -9,6 +9,7 @@
  *   natural key `channel:order:{id}` and the outbox write share one transaction.
  */
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 
 import { AppError } from '@saman/shared';
 import { DB, type Db } from '../../../common/contracts';
@@ -17,7 +18,7 @@ import { hashNaturalKey } from '../infrastructure/backoff';
 import { backoffDelayMs, shouldDeadLetter } from '../infrastructure/backoff';
 import { debounceKey } from '../infrastructure/backoff';
 import { maxDecimalZero, subtractDecimal, unitsToDecimal, decimalToUnits } from '../domain/decimal';
-import { withTransaction, asNumber, asString, isUniqueViolation } from '../infrastructure/sql';
+import { withTransaction, asNumber, asRecord, asString, isUniqueViolation } from '../infrastructure/sql';
 import type { AppLogger } from '../ports/logger.port';
 import { LOGGER } from '../ports/logger.port';
 import { CHANNEL_PRICE_SOURCE, type ChannelPriceSourcePort } from '../ports/channel-price.port';
@@ -71,7 +72,29 @@ interface ProductSpec {
   readonly description: string | null;
   readonly attributes: Record<string, string> | null;
   readonly categoryId: string | null;
+  /** Absolute http(s) image URL, written to `products.image_url` when present. */
+  readonly imageUrl: string | null;
 }
+
+/** Live commission lookup exposed by channel adapters that support it (Digikala). */
+interface CommissionCapableAdapter {
+  fetchProductCommission?: (
+    account: unknown,
+    productId: string,
+  ) => Promise<{ percent: number | null; raw: Record<string, unknown> }>;
+}
+
+/** Outcome of importing one channel product. */
+interface ImportOutcome {
+  readonly outcome: 'imported' | 'updated' | 'skipped';
+  /** Local variant id, when the row was created or refreshed. */
+  readonly variantId: string | null;
+}
+
+/** How far back `backfill-orders` re-reads the channel. */
+const ORDER_BACKFILL_DAYS = 7;
+/** `sync-commissions` is bounded so one request cannot walk a whole catalogue. */
+const COMMISSION_SYNC_LIMIT = 200;
 
 @Injectable()
 export class ChannelSyncService {
@@ -84,6 +107,7 @@ export class ChannelSyncService {
     @Inject(DB) private readonly db: Db,
     private readonly accounts: ChannelAccountService,
     @Inject(LOGGER) private readonly logger: AppLogger,
+    private readonly moduleRef: ModuleRef,
     @Optional()
     @Inject(CHANNEL_PRICE_SOURCE)
     private readonly priceSource?: ChannelPriceSourcePort,
@@ -181,6 +205,11 @@ export class ChannelSyncService {
           });
       }
       await this.sync.markSucceeded(job.id, summary as unknown as import('../domain/pii').JsonValue);
+      // Pulled products get the account's pricing policy applied automatically
+      // when `autoApply` is on (lazy lookup keeps pricing/channels acyclic).
+      if (job.jobType === 'product_import' && job.operationKey?.startsWith('products:dry:') !== true) {
+        await this.autoApplyPricing(job);
+      }
       return { jobId: job.id, jobType: job.jobType, status: 'succeeded', summary };
     } catch (error) {
       const integration =
@@ -224,6 +253,155 @@ export class ChannelSyncService {
         status: dead ? 'dead' : 'failed',
         summary: { errorCode: integration.code, messageFa: integration.messageFa, attempts },
       };
+    }
+  }
+
+  /**
+   * Re-reads the last `days` of channel orders and re-emits `channel.order.received`
+   * for them (admin repair). The order cursor and the per-order idempotency keys
+   * of this account are cleared in one transaction, then a `pull_orders` job is
+   * queued with a backfill operation key so the worker widens its window;
+   * re-emitting is still idempotent because `sales` owns the natural key.
+   */
+  async backfillOrders(input: {
+    organizationId: string;
+    accountId: string;
+    days?: number;
+  }): Promise<{
+    jobId: string;
+    status: string;
+    since: string;
+    clearedCursors: number;
+    clearedIdempotencyKeys: number;
+  }> {
+    const days = Math.min(30, Math.max(1, Math.trunc(input.days ?? ORDER_BACKFILL_DAYS)));
+    const resolved = await this.accounts.resolveForSync(input.organizationId, input.accountId);
+    if (!resolved.adapter.supports('order.pull')) {
+      throw new IntegrationError('NOT_IMPLEMENTED', {
+        messageFa: 'این کانال خواندن سفارش ندارد.',
+        details: { channel: resolved.adapter.code, capability: 'order.pull' },
+      });
+    }
+    const scope = `channels.order_pull:${resolved.row.id}`;
+    const cleared = await withTransaction(this.db, async (tx) => {
+      const cursors = await tx`
+        delete from erp.channel_sync_cursors
+        where channel_account_id = ${resolved.row.id}::bigint and stream = 'orders'
+        returning id`;
+      const keys = await tx`
+        delete from erp.idempotency_keys
+        where organization_id = ${resolved.row.organizationId}::bigint and scope = ${scope}
+        returning id`;
+      return { cursors: cursors.length, keys: keys.length };
+    });
+
+    const since = new Date(this.now().getTime() - days * 24 * 60 * 60 * 1000);
+    const job = await this.sync.enqueue({
+      organizationId: resolved.row.organizationId,
+      accountId: resolved.row.id,
+      jobType: 'pull_orders',
+      // `pull_orders` reads the window from this prefix (see `pullOrders`).
+      operationKey: `orders:backfill:${resolved.row.id}:${this.now().getTime()}`,
+    });
+    this.logger.info(
+      {
+        jobId: job.id,
+        accountId: resolved.row.id,
+        clearedCursors: cleared.cursors,
+        clearedIdempotencyKeys: cleared.keys,
+        since: since.toISOString(),
+      },
+      'channel order backfill queued',
+    );
+    return {
+      jobId: job.id,
+      status: job.status,
+      since: since.toISOString(),
+      clearedCursors: cleared.cursors,
+      clearedIdempotencyKeys: cleared.keys,
+    };
+  }
+
+  /**
+   * Refreshes `erp.channel_product_costs` for the account's mapped variants
+   * (bounded). Counts are returned so the admin UI can report progress.
+   */
+  async syncCommissions(input: {
+    organizationId: string;
+    accountId: string;
+    limit?: number;
+  }): Promise<{ scanned: number; updated: number; failed: number; withPercent: number; skipped: number }> {
+    const resolved = await this.accounts.resolveForSync(input.organizationId, input.accountId);
+    const adapter = resolved.adapter as unknown as CommissionCapableAdapter;
+    if (typeof adapter.fetchProductCommission !== 'function') {
+      throw new IntegrationError('NOT_IMPLEMENTED', {
+        messageFa: 'نرخ کمیسیون برای این کانال قابل خواندن نیست.',
+        details: { channel: resolved.adapter.code },
+      });
+    }
+    const limit = Math.min(
+      COMMISSION_SYNC_LIMIT,
+      Math.max(1, Math.trunc(input.limit ?? COMMISSION_SYNC_LIMIT)),
+    );
+    const rows = await this.db<{ product_variant_id: unknown; external_product_id: unknown }[]>`
+      select m.product_variant_id, m.external_product_id
+      from erp.channel_product_mappings m
+      where m.channel_account_id = ${resolved.row.id}::bigint
+        and m.deleted_at is null
+        and m.external_product_id ~ '^[0-9]+$'
+      order by m.id
+      limit ${limit}`;
+    let scanned = 0;
+    let updated = 0;
+    let failed = 0;
+    let withPercent = 0;
+    let skipped = 0;
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const variantId = asString(row.product_variant_id);
+      if (variantId.length === 0 || seen.has(variantId)) {
+        skipped += 1;
+        continue;
+      }
+      seen.add(variantId);
+      scanned += 1;
+      const result = await this.storeProductCommission(
+        resolved,
+        variantId,
+        asString(row.external_product_id),
+        adapter,
+      );
+      if (result.status === 'stored') updated += 1;
+      else if (result.status === 'failed') failed += 1;
+      else skipped += 1;
+      if (result.percent !== null) withPercent += 1;
+    }
+    this.logger.info(
+      { accountId: resolved.row.id, scanned, updated, failed, skipped, withPercent },
+      'channel commissions refreshed',
+    );
+    return { scanned, updated, failed, withPercent, skipped };
+  }
+
+  /**
+   * Applies the account's pricing policy after a successful product pull.
+   * `ModuleRef` + dynamic import are intentional: the channels module must not
+   * statically depend on the pricing module (pricing pushes through channels).
+   */
+  private async autoApplyPricing(job: SyncJobRow): Promise<void> {
+    try {
+      const { PricingPolicyService } = await import('../../pricing/pricing-policy.service');
+      const policies = this.moduleRef.get(PricingPolicyService, { strict: false });
+      await policies.applyForAccount(job.organizationId, job.accountId, { onlyIfAutoApply: true });
+    } catch (error) {
+      this.logger.warn(
+        {
+          jobId: job.id,
+          accountId: job.accountId,
+          error: error instanceof Error ? error.message : 'pricing_auto_apply_failed',
+        },
+        'automatic pricing apply after product pull failed',
+      );
     }
   }
 
@@ -330,8 +508,13 @@ export class ChannelSyncService {
     resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
     job: SyncJobRow,
   ): Promise<Record<string, unknown>> {
-    const cursor = await this.sync.getCursor(resolved.row.id, 'orders');
-    const since = cursor?.cursorAt ?? new Date(this.now().getTime() - 24 * 60 * 60 * 1000);
+    // `backfill-orders` clears the cursor and queues a job with this prefix: the
+    // window is then fixed at seven days instead of "since the last cursor".
+    const backfill = job.operationKey?.startsWith('orders:backfill:') === true;
+    const cursor = backfill ? null : await this.sync.getCursor(resolved.row.id, 'orders');
+    const since = backfill
+      ? new Date(this.now().getTime() - ORDER_BACKFILL_DAYS * 24 * 60 * 60 * 1000)
+      : cursor?.cursorAt ?? new Date(this.now().getTime() - 24 * 60 * 60 * 1000);
     let received = 0;
     let duplicates = 0;
     let latestMs: number | null = null;
@@ -483,9 +666,11 @@ export class ChannelSyncService {
     let updated = 0;
     let skipped = 0;
     let failed = 0;
+    let commissions = 0;
+    let commissionAttempts = 0;
     for (const [externalId, item] of products) {
       try {
-        const outcome = await this.importProduct(
+        const result = await this.importProduct(
           resolved,
           item,
           externalId,
@@ -493,9 +678,33 @@ export class ChannelSyncService {
           prefix,
           categoryCache,
         );
-        if (outcome === 'imported') imported += 1;
-        else if (outcome === 'updated') updated += 1;
+        if (result.outcome === 'imported') imported += 1;
+        else if (result.outcome === 'updated') updated += 1;
         else skipped += 1;
+        // Commission is read from the channel for every imported/refreshed row
+        // (bounded per run) so `channel_product_costs` fills up with the import.
+        // A commission failure must never turn a successful product into a
+        // failed import row, so it is isolated from the import try/catch above.
+        if (result.variantId !== null && commissionAttempts < COMMISSION_SYNC_LIMIT) {
+          commissionAttempts += 1;
+          try {
+            const stored = await this.storeProductCommission(
+              resolved,
+              result.variantId,
+              externalId,
+            );
+            if (stored.status === 'stored') commissions += 1;
+          } catch (error) {
+            this.logger.warn(
+              {
+                accountId: resolved.row.id,
+                externalProductId: externalId,
+                error: error instanceof Error ? error.message : 'commission_store_failed',
+              },
+              'channel commission could not be stored',
+            );
+          }
+        }
       } catch (error) {
         failed += 1;
         const message = error instanceof Error ? error.message : 'import_failed';
@@ -506,7 +715,7 @@ export class ChannelSyncService {
         );
       }
     }
-    return { imported, updated, skipped, failed, samples, jobId: job.id };
+    return { imported, updated, skipped, failed, commissions, samples, jobId: job.id };
   }
 
   private async firstBaseUomId(organizationId: string): Promise<string | null> {
@@ -542,7 +751,7 @@ export class ChannelSyncService {
     baseUomId: string,
     prefix: string,
     categoryCache: Map<string, string | null>,
-  ): Promise<'imported' | 'updated' | 'skipped'> {
+  ): Promise<ImportOutcome> {
     const organizationId = resolved.row.organizationId;
     const accountId = resolved.row.id;
     const title = (item.title.trim() || externalId).slice(0, 300);
@@ -577,7 +786,7 @@ export class ChannelSyncService {
             last_error = null
         where id = ${asString(mapped[0].id)}::bigint`;
       await this.refreshProductText(organizationId, variantId, title, barcode, spec);
-      return 'updated';
+      return { outcome: 'updated', variantId };
     }
 
     const productId = await this.productIdFor(
@@ -589,10 +798,17 @@ export class ChannelSyncService {
       baseUomId,
       spec,
     );
-    if (productId === null) return 'skipped';
+    if (productId === null) return { outcome: 'skipped', variantId: null };
 
-    const variantId = await this.variantIdFor(productId, sku, externalId, title, barcode);
-    if (variantId === null) return 'skipped';
+    const variantId = await this.variantIdFor(
+      productId,
+      sku,
+      externalId,
+      title,
+      barcode,
+      spec.imageUrl,
+    );
+    if (variantId === null) return { outcome: 'skipped', variantId: null };
 
     const outcome = await this.upsertMapping(
       accountId,
@@ -601,7 +817,7 @@ export class ChannelSyncService {
       externalVariantId,
       externalSku,
     );
-    return outcome;
+    return { outcome, variantId };
   }
 
   /**
@@ -624,11 +840,13 @@ export class ChannelSyncService {
       const candidate = attempt === 1 ? productNo : `${base}-${attempt}`;
       const rows = await this.db<{ id: unknown }[]>`
         insert into erp.products (
-          organization_id, product_no, name, base_uom_id, category_id, description, attributes_json
+          organization_id, product_no, name, base_uom_id, category_id, description,
+          attributes_json, image_url
         )
         values (
           ${organizationId}::bigint, ${candidate}, ${title}, ${baseUomId}::bigint,
-          ${spec.categoryId}::bigint, ${spec.description}, ${attributesJson}::jsonb
+          ${spec.categoryId}::bigint, ${spec.description}, ${attributesJson}::jsonb,
+          ${spec.imageUrl}::text
         )
         on conflict (organization_id, product_no) where deleted_at is null do nothing
         returning id`;
@@ -679,12 +897,13 @@ export class ChannelSyncService {
     externalId: string,
     title: string,
     barcode: string | null,
+    imageUrl: string | null,
   ): Promise<string | null> {
     const suffixed = `${sku.slice(0, 80)}-${externalId}`.slice(0, 100);
     for (const candidate of [sku, suffixed]) {
       const inserted = await this.db<{ id: unknown; product_id: unknown }[]>`
-        insert into erp.product_variants (product_id, sku, title, barcode)
-        values (${productId}::bigint, ${candidate}, ${title}, ${barcode})
+        insert into erp.product_variants (product_id, sku, title, barcode, image_url)
+        values (${productId}::bigint, ${candidate}, ${title}, ${barcode}, ${imageUrl}::text)
         on conflict (sku) do nothing
         returning id, product_id`;
       if (inserted[0] !== undefined) return asString(inserted[0].id);
@@ -696,7 +915,10 @@ export class ChannelSyncService {
       const variantId = asString(row.id);
       await this.db`
         update erp.product_variants
-        set title = ${title}, barcode = coalesce(${barcode}::text, barcode), updated_at = now()
+        set title = ${title},
+            barcode = coalesce(${barcode}::text, barcode),
+            image_url = coalesce(${imageUrl}::text, image_url),
+            updated_at = now()
         where id = ${variantId}::bigint`;
       return variantId;
     }
@@ -808,7 +1030,10 @@ export class ChannelSyncService {
   ): Promise<void> {
     await this.db`
       update erp.product_variants
-      set title = ${title}, barcode = coalesce(${barcode}::text, barcode), updated_at = now()
+      set title = ${title},
+          barcode = coalesce(${barcode}::text, barcode),
+          image_url = coalesce(${spec.imageUrl}::text, image_url),
+          updated_at = now()
       where id = ${variantId}::bigint`;
     const attributesJson = this.attributesJson(spec.attributes);
     await this.db`
@@ -816,6 +1041,7 @@ export class ChannelSyncService {
       set name = ${title},
           description = coalesce(${spec.description}::text, p.description),
           category_id = coalesce(${spec.categoryId}::bigint, p.category_id),
+          image_url = coalesce(${spec.imageUrl}::text, p.image_url),
           attributes_json = case
             when ${attributesJson}::jsonb = '{}'::jsonb then p.attributes_json
             else ${attributesJson}::jsonb
@@ -832,12 +1058,20 @@ export class ChannelSyncService {
     productId: string,
     spec: ProductSpec,
   ): Promise<void> {
-    if (spec.description === null && spec.categoryId === null && spec.attributes === null) return;
+    if (
+      spec.description === null &&
+      spec.categoryId === null &&
+      spec.attributes === null &&
+      spec.imageUrl === null
+    ) {
+      return;
+    }
     const attributesJson = this.attributesJson(spec.attributes);
     await this.db`
       update erp.products
       set description = coalesce(${spec.description}::text, description),
           category_id = coalesce(${spec.categoryId}::bigint, category_id),
+          image_url = coalesce(${spec.imageUrl}::text, image_url),
           attributes_json = case
             when ${attributesJson}::jsonb = '{}'::jsonb then attributes_json
             else ${attributesJson}::jsonb
@@ -847,8 +1081,71 @@ export class ChannelSyncService {
         and organization_id = ${organizationId}::bigint`;
   }
 
+  /**
+   * Reads the live commission rate for one channel product and upserts it into
+   * `erp.channel_product_costs`. A channel without a commission endpoint (or a
+   * non-numeric product id) is a no-op, not an error; a failed lookup is logged
+   * and reported so the import itself still succeeds.
+   */
+  private async storeProductCommission(
+    resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
+    variantId: string,
+    externalProductId: string,
+    adapter?: CommissionCapableAdapter,
+  ): Promise<{ status: 'stored' | 'empty' | 'failed'; percent: number | null }> {
+    const capable = adapter ?? (resolved.adapter as unknown as CommissionCapableAdapter);
+    if (typeof capable.fetchProductCommission !== 'function') {
+      return { status: 'empty', percent: null };
+    }
+    const productId = (externalProductId ?? '').trim();
+    if (!/^\d+$/.test(productId)) return { status: 'empty', percent: null };
+
+    let result: { percent: number | null; raw: Record<string, unknown> };
+    try {
+      result = await capable.fetchProductCommission(resolved.account, productId);
+    } catch (error) {
+      this.logger.warn(
+        {
+          accountId: resolved.row.id,
+          productId,
+          error: error instanceof Error ? error.message : 'commission_lookup_failed',
+        },
+        'channel commission lookup failed',
+      );
+      return { status: 'failed', percent: null };
+    }
+
+    const raw = asRecord(result.raw);
+    const percent =
+      typeof result.percent === 'number' && Number.isFinite(result.percent)
+        ? Math.min(100, Math.max(0, result.percent))
+        : null;
+    if (percent === null && Object.keys(raw).length === 0) {
+      return { status: 'empty', percent: null };
+    }
+    // Bound what a partner payload can put in the row without truncating JSON.
+    const feesJson = JSON.stringify(raw);
+    const otherFees = feesJson.length <= 20_000 ? feesJson : '{}';
+
+    await this.db`
+      insert into erp.channel_product_costs (
+        organization_id, channel_account_id, product_variant_id,
+        commission_percent, other_fees, fetched_at
+      ) values (
+        ${resolved.row.organizationId}::bigint, ${resolved.row.id}::bigint, ${variantId}::bigint,
+        ${percent}::numeric, ${otherFees}::jsonb, now()
+      )
+      on conflict (channel_account_id, product_variant_id) do update set
+        commission_percent = excluded.commission_percent,
+        other_fees = excluded.other_fees,
+        fetched_at = now()`;
+    return { status: 'stored', percent };
+  }
+
   /** Bounded channel detail: 5000-char description, ≤50 short attribute pairs. */
-  private normalizedSpec(item: ExternalProduct): Pick<ProductSpec, 'description' | 'attributes'> {
+  private normalizedSpec(
+    item: ExternalProduct,
+  ): Pick<ProductSpec, 'description' | 'attributes' | 'imageUrl'> {
     const raw = typeof item.description === 'string' ? item.description.trim() : '';
     const description = raw.length === 0 ? null : raw.slice(0, 5000);
     const attributes: Record<string, string> = {};
@@ -873,7 +1170,15 @@ export class ChannelSyncService {
     return {
       description,
       attributes: Object.keys(attributes).length === 0 ? null : attributes,
+      imageUrl: this.normalisedImageUrl(item.imageUrl),
     };
+  }
+
+  /** Only an absolute http(s) URL is stored; anything else leaves the value alone. */
+  private normalisedImageUrl(value: string | undefined): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim().slice(0, 1000);
+    return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null;
   }
 
   private attributesJson(attributes: Record<string, string> | null): string {

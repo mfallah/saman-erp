@@ -63,7 +63,8 @@ function grantsFor(role: string, all: string[]): string[] {
       ]) && !exact(k, ['product.cost.read']));
     case 'warehouse_operator':
       return all.filter((k) => exact(k, [
-        'warehouse.pick.read', 'warehouse.pack.read', 'warehouse.putaway.read', 'warehouse.wave.read', 'warehouse.device.read',
+        'warehouse.pick.read', 'warehouse.pick', 'warehouse.pack.read', 'warehouse.pack',
+        'warehouse.putaway.read', 'warehouse.putaway', 'warehouse.wave.read', 'warehouse.device.read',
         'inventory.balance.read', 'inventory.transfer.read', 'inventory.lot.read', 'inventory.serial.read', 'inventory.unit.read',
         'goods.receipt.execute', 'label.read', 'label.reprint',
       ]));

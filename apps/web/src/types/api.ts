@@ -356,6 +356,132 @@ export interface MyPickTask {
   readonly sequenceNo?: number;
   readonly assignedTo?: string | null;
   readonly assignedToName?: string | null;
+  readonly createdAt?: string;
+  readonly ageMinutes?: number;
+}
+
+/** One row of the picking board (`GET /warehouse/pick-tasks/board`). */
+export interface PickBoardTask {
+  readonly id: string;
+  readonly orderId: string;
+  readonly orderNo: string | null;
+  readonly orderStatus: string;
+  readonly fulfillmentStatus: string;
+  readonly waveId: string | null;
+  readonly waveNo: string | null;
+  readonly sku: string | null;
+  readonly title: string | null;
+  readonly quantityRequired: string;
+  readonly quantityPicked: string;
+  readonly locationCode: string | null;
+  readonly sequenceNo: number;
+  readonly status: string;
+  readonly assignedTo: string | null;
+  readonly assignedToName: string | null;
+  readonly createdAt: string;
+  readonly ageMinutes: number;
+}
+
+/** Tasks of one order, grouped for the station table. */
+export interface PickBoardOrder {
+  readonly orderId: string;
+  readonly orderNo: string | null;
+  readonly orderStatus: string;
+  readonly fulfillmentStatus: string;
+  readonly waveNo: string | null;
+  readonly taskCount: number;
+  readonly openCount: number;
+  readonly assigneeNames: readonly string[];
+  readonly oldestAgeMinutes: number;
+  readonly tasks: readonly PickBoardTask[];
+}
+
+export interface PickBoardSummary {
+  readonly openTasks: number;
+  readonly pending: number;
+  readonly inProgress: number;
+  readonly orders: number;
+  readonly unassigned: number;
+  readonly oldestAgeMinutes: number;
+  readonly truncated: boolean;
+}
+
+/** Counters that explain why the picking board is empty. */
+export interface PickBoardDiagnostics {
+  readonly tasksTotal: number;
+  readonly openTasks: number;
+  readonly ordersTotal: number;
+  readonly ordersWithLines: number;
+  readonly ordersWithoutLines: number;
+  readonly ordersWithoutTasks: number;
+  readonly ordersWithoutWarehouse: number;
+  readonly warehouses: number;
+  readonly activePickers: number;
+  readonly fallbackPickers: number;
+}
+
+export interface PickTaskBoard {
+  readonly generatedAt: string;
+  readonly summary: PickBoardSummary;
+  readonly diagnostics: PickBoardDiagnostics;
+  readonly orders: readonly PickBoardOrder[];
+  readonly tasks: readonly PickBoardTask[];
+}
+
+/** Result of completing a task on the picking station. */
+export interface CompletePickTaskResult {
+  readonly task: PickTask;
+  readonly orderComplete: boolean;
+  readonly packTask: PackTask | null;
+  readonly alreadyCompleted?: boolean;
+}
+
+/** One pack task of the packing station (table `erp.pack_tasks`). */
+export interface PackTask {
+  readonly id: string;
+  readonly orderId: string;
+  readonly orderNo: string | null;
+  readonly fulfillmentStatus: string;
+  readonly packageNo: string | null;
+  readonly status: string;
+  readonly assignedTo: string | null;
+  readonly assignedToName: string | null;
+  readonly notes: string | null;
+  readonly itemCount: number;
+  readonly totalQuantity: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly closedAt: string | null;
+  readonly ageMinutes: number;
+}
+
+export interface PackBoardSummary {
+  readonly openTasks: number;
+  readonly pending: number;
+  readonly packing: number;
+  readonly packed: number;
+  readonly unassigned: number;
+  readonly oldestAgeMinutes: number;
+  readonly truncated: boolean;
+}
+
+export interface PackBoardDiagnostics {
+  readonly tasksTotal: number;
+  readonly pending: number;
+  readonly packing: number;
+  readonly packed: number;
+  readonly pickedOrders: number;
+  readonly pickedOrdersWithoutPackTask: number;
+  readonly pickedTasks: number;
+}
+
+export interface PackTaskBoard {
+  readonly generatedAt: string;
+  readonly tableReady: boolean;
+  readonly warning?: string;
+  readonly summary: PackBoardSummary;
+  readonly diagnostics: PackBoardDiagnostics;
+  readonly tasks: readonly PackTask[];
 }
 
 export interface PackingStation extends Ref {
@@ -538,7 +664,8 @@ export interface RsaKeyCompareResult {
 }
 
 export type PricingMode = 'margin' | 'cost_plus_fees';
-export type CostSource = 'last_purchase' | 'avg_cost' | 'manual';
+export type CostSource = 'last_purchase' | 'moving_average' | 'avg_cost' | 'manual';
+export type CommissionMode = 'product' | 'fixed' | 'percent';
 export type RoundingStep = 'none' | '1000' | '500';
 
 export interface ChannelPricingPolicy {
@@ -551,6 +678,10 @@ export interface ChannelPricingPolicy {
   readonly fixedCommission: number;
   readonly vatPercent: number;
   readonly rounding: RoundingStep;
+  /** Policy fields returned by `/pricing/channels` (absent on legacy rows). */
+  readonly commissionMode?: CommissionMode;
+  readonly autoApply?: boolean;
+  readonly autoPush?: boolean;
   readonly updatedAt: string | null;
 }
 
@@ -562,6 +693,27 @@ export interface ChannelPricingPolicyRow {
   readonly channelCode: string;
   readonly isActive: boolean;
   readonly policy: ChannelPricingPolicy;
+}
+
+/** One row per active channel account (`GET /pricing/channels`). */
+export interface ChannelPricingAccountView {
+  readonly accountId: string;
+  readonly channelCode: string;
+  readonly channelName: string;
+  readonly accountName: string;
+  readonly policy: ChannelPricingPolicy;
+  readonly lastAppliedAt: string | null;
+  readonly lastPushStatus: string | null;
+  readonly mappedVariants: number;
+}
+
+export interface PolicyApplyResult {
+  readonly accountId: string;
+  readonly applied: number;
+  readonly pushed: number;
+  readonly missingCommission?: number;
+  readonly pushError?: string;
+  readonly skipped?: string;
 }
 
 export interface PriceBreakdown {

@@ -1,7 +1,7 @@
 import { appErrorFromZod } from '@saman/shared';
 import { z, type ZodTypeAny } from 'zod';
 
-import { COST_SOURCES, PRICING_MODES, ROUNDING_STEPS } from './pricing.types';
+import { COMMISSION_MODES, COST_SOURCES, POLICY_COST_SOURCES, PRICING_MODES, ROUNDING_STEPS } from './pricing.types';
 
 const MoneyNumber = z.coerce.number().int().min(0).max(1_000_000_000_000);
 const PercentNumber = z.coerce.number().min(0).max(1000);
@@ -18,6 +18,25 @@ export const PricingPolicyBody = z.object({
   rounding: z.enum(ROUNDING_STEPS).default('none'),
 });
 export type PricingPolicyBody = z.infer<typeof PricingPolicyBody>;
+
+/**
+ * Channel-account policy written to `channel_accounts.settings.pricing`.
+ * This is the single source of truth for the new `/pricing/channels` API.
+ */
+export const ChannelPolicyBody = z.object({
+  costSource: z.enum(POLICY_COST_SOURCES).default('last_purchase'),
+  marginPercent: z.coerce.number().min(0).max(1000).default(0),
+  processingFee: MoneyNumber.default(0),
+  shippingFee: MoneyNumber.default(0),
+  commissionMode: z.enum(COMMISSION_MODES).default('percent'),
+  commissionPercent: z.coerce.number().min(0).lt(100).default(0),
+  fixedCommission: MoneyNumber.optional().default(0),
+  vatPercent: z.coerce.number().min(0).max(100).default(0),
+  rounding: z.enum(ROUNDING_STEPS).default('none'),
+  autoApply: z.coerce.boolean().default(false),
+  autoPush: z.coerce.boolean().default(true),
+});
+export type ChannelPolicyBody = z.infer<typeof ChannelPolicyBody>;
 
 export const PublicId = z.string().uuid({ message: 'invalid_uuid' });
 

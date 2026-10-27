@@ -40,6 +40,8 @@ export interface ExternalProduct {
   readonly categoryName?: string;
   /** Scalar specification pairs from the channel; persisted as `attributes_json`. */
   readonly attributes?: Readonly<Record<string, string>>;
+  /** Absolute http(s) image URL; persisted on `erp.products.image_url` / variants. */
+  readonly imageUrl?: string;
   readonly raw?: unknown;
 }
 

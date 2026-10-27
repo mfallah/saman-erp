@@ -12,7 +12,7 @@ import { Idempotent } from '../../common/decorators/idempotent.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { apiData } from '../../common/interceptors/response.interceptor';
 import { WarehouseService } from './warehouse.service';
-import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PickScanBody, PickTaskAssignBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
+import { AssignTaskBody, BulkCreateLocationsBody, CreatePickWaveBody, CreateWarehouseBody, IdParam, LocationListQuery, LocationLookupQuery, LocationNodeInput, MoveLocationBody, PackTaskCompleteBody, PickScanBody, PickTaskAssignBody, PickTaskListQuery, PutawaySuggestionQuery, ReleaseWaveBody, ShortPickBody, StationPickCompleteBody, TaskCancelBody, UpdateLocationBody, UpdateWarehouseBody, WarehouseListQuery, WaveCancelBody, WaveListQuery, parseWith } from './dto/warehouse.dto';
 
 function offset(data: readonly unknown[], total: number, page: number, perPage: number) {
   return apiData(data, {
@@ -323,11 +323,91 @@ export class WarehousePickTasksController {
     return apiData(await this.service.listMyPickTasks(ctx, 100));
   }
 
+  /** Board of all open tasks, grouped by order, for the picking station. */
+  @Get('board')
+  @Permissions('warehouse.pick.read')
+  async board(@CurrentTenant() ctx: TenantContext) {
+    return apiData(await this.service.pickTaskBoard(ctx, 200));
+  }
+
+  /** Creates missing pick tasks for orders whose lines already exist. */
+  @Post('backfill')
+  @HttpCode(200)
+  @Permissions('warehouse.pick')
+  @Audited('warehouse.pick.backfill')
+  async backfill(@CurrentTenant() ctx: TenantContext) {
+    return apiData(await this.service.backfillPickTasks(ctx, 50));
+  }
+
+  @Post(':id/start')
+  @HttpCode(200)
+  @Permissions('warehouse.pick')
+  @Audited('warehouse.pick.start')
+  async start(@CurrentTenant() ctx: TenantContext, @Param() params: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.startPickTask(ctx, id));
+  }
+
+  /** Completion with the operator's confirmed quantity (and optional scan). */
+  @Post(':id/complete')
+  @HttpCode(200)
+  @Permissions('warehouse.pick')
+  @Audited('warehouse.pick.complete')
+  async complete(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.completeStationPickTask(ctx, id, parseWith(StationPickCompleteBody, body ?? {})));
+  }
+
   @Patch(':id/assign')
   @Permissions('warehouse.pick')
   @Audited('warehouse.pick.assign')
   async assign(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
     const { id } = parseWith(IdParam, params);
     return apiData(await this.service.reassignPickTask(ctx, id, parseWith(PickTaskAssignBody, body)));
+  }
+}
+
+/**
+ * Packing station (`warehouse/pack-tasks`). Tasks are created by the picking
+ * station once an order is fully picked; completion marks the order
+ * `ready_to_ship` and performs a best-effort channel notification.
+ */
+@ApiTags('warehouse')
+@ApiBearerAuth()
+@Controller('warehouse/pack-tasks')
+export class PackTasksController {
+  constructor(private readonly service: WarehouseService) {}
+
+  @Get('board')
+  @Permissions('warehouse.pack.read')
+  async board(@CurrentTenant() ctx: TenantContext) {
+    return apiData(await this.service.packTaskBoard(ctx, 200));
+  }
+
+  @Post(':id/start')
+  @HttpCode(200)
+  @Permissions('warehouse.pack')
+  @Audited('warehouse.pack.start')
+  async start(@CurrentTenant() ctx: TenantContext, @Param() params: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.startPackTask(ctx, id));
+  }
+
+  @Post(':id/complete')
+  @HttpCode(200)
+  @Permissions('warehouse.pack')
+  @Audited('warehouse.pack.complete')
+  async complete(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.completePackTask(ctx, id, parseWith(PackTaskCompleteBody, body ?? {})));
+  }
+
+  @Post(':id/assign')
+  @HttpCode(200)
+  @Permissions('warehouse.pack')
+  @Audited('warehouse.pack.assign')
+  async assign(@CurrentTenant() ctx: TenantContext, @Param() params: unknown, @Body() body: unknown) {
+    const { id } = parseWith(IdParam, params);
+    return apiData(await this.service.assignPackStationTask(ctx, id, parseWith(PickTaskAssignBody, body)));
   }
 }

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Layers, MapPin, Pencil, Plus, Trash2, Warehouse as WarehouseIcon } from 'lucide-react';
 import { api, newRequestId, toFaErrorMessage } from '../lib/api-client';
 import { useDebouncedValue, useDocumentTitle } from '../lib/hooks';
+import { formatQuantity } from '../lib/money';
 import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { useHasPermission } from '../lib/use-auth';
@@ -53,14 +54,27 @@ interface LocationTreeNode {
   readonly code: string;
   readonly name?: string;
   readonly level?: string;
+  readonly fullCode?: string | null;
+  readonly parentId?: string | null;
+  readonly abcClass?: string | null;
+  readonly capacityQuantity?: string | null;
+  readonly pickPriority?: number | null;
   readonly children?: readonly LocationTreeNode[];
 }
 
 interface FlatLocationNode {
   readonly id: string;
   readonly code: string;
+  readonly name?: string;
+  readonly fullCode: string | null;
   readonly level: LocationNodeLevel;
+  readonly parentId: string | null;
+  readonly parentCode: string | null;
+  readonly depth: number;
   readonly label: string;
+  readonly capacityQuantity: string | null;
+  readonly pickPriority: number | null;
+  readonly abcClass: string | null;
 }
 
 interface CreateWarehousePayload {
@@ -142,6 +156,30 @@ const PARENT_LEVEL: Readonly<Record<LocationNodeLevel, LocationNodeLevel | null>
   location: 'bin',
 };
 
+function childLevelOf(level: LocationNodeLevel): LocationNodeLevel | null {
+  const index = LOCATION_LEVELS.indexOf(level);
+  return index >= 0 && index < LOCATION_LEVELS.length - 1
+    ? (LOCATION_LEVELS[index + 1] ?? null)
+    : null;
+}
+
+function locationLevelTone(
+  level: LocationNodeLevel,
+): 'brand' | 'info' | 'success' | 'warning' | 'neutral' {
+  switch (level) {
+    case 'zone':
+      return 'brand';
+    case 'aisle':
+      return 'info';
+    case 'rack':
+      return 'success';
+    case 'shelf':
+      return 'warning';
+    default:
+      return 'neutral';
+  }
+}
+
 const WAREHOUSE_TYPE_OPTIONS: readonly SelectOption[] = [
   { value: 'main', label: 'انبار اصلی' },
   { value: 'transit', label: 'انبار ترانزیتی' },
@@ -198,18 +236,98 @@ function normalizeWarehouseType(type: string | undefined): WarehouseTypeValue {
   return 'main';
 }
 
-function flattenLocationTree(
+interface CollectedLocationNode {
+  readonly node: LocationTreeNode;
+  readonly parentId: string | null;
+}
+
+function collectLocationNodes(
   nodes: readonly LocationTreeNode[],
-  ancestors: readonly string[] = [],
-  depth = 0,
-  result: FlatLocationNode[] = [],
-): FlatLocationNode[] {
+  inheritedParentId: string | null,
+  result: CollectedLocationNode[],
+  seen: Set<string>,
+): void {
   for (const node of nodes) {
-    const level = isLocationNodeLevel(node.level) ? node.level : (LOCATION_LEVELS[depth] ?? 'location');
-    const path = [...ancestors, node.code];
-    result.push({ id: node.id, code: node.code, level, label: path.join(' / ') });
+    if (seen.has(node.id)) {
+      continue;
+    }
+    seen.add(node.id);
+    result.push({ node, parentId: node.parentId ?? inheritedParentId });
     if (node.children !== undefined && node.children.length > 0) {
-      flattenLocationTree(node.children, path, depth + 1, result);
+      collectLocationNodes(node.children, node.id, result, seen);
+    }
+  }
+}
+
+/**
+ * Normalizes both response shapes: the current API sends a flat list with
+ * `parentId` (union of zones → locations), while older responses nested the
+ * nodes in `children`. The resulting rows are ordered depth-first so a table
+ * can render them as an indented tree.
+ */
+function flattenLocationTree(nodes: readonly LocationTreeNode[]): FlatLocationNode[] {
+  const collected: CollectedLocationNode[] = [];
+  collectLocationNodes(nodes, null, collected, new Set<string>());
+
+  const byId = new Map(collected.map((entry) => [entry.node.id, entry]));
+  const childrenByParent = new Map<string | null, CollectedLocationNode[]>();
+  for (const entry of collected) {
+    const resolvedParentId =
+      entry.parentId !== null && byId.has(entry.parentId) ? entry.parentId : null;
+    const siblings = childrenByParent.get(resolvedParentId);
+    if (siblings === undefined) {
+      childrenByParent.set(resolvedParentId, [entry]);
+    } else {
+      siblings.push(entry);
+    }
+  }
+
+  const result: FlatLocationNode[] = [];
+  const visited = new Set<string>();
+
+  const visit = (
+    entry: CollectedLocationNode,
+    depth: number,
+    ancestors: readonly string[],
+  ): void => {
+    if (visited.has(entry.node.id)) {
+      return;
+    }
+    visited.add(entry.node.id);
+    const { node } = entry;
+    const level = isLocationNodeLevel(node.level)
+      ? node.level
+      : (LOCATION_LEVELS[depth] ?? 'location');
+    const path = [...ancestors, node.code];
+    const resolvedParentId =
+      entry.parentId !== null && byId.has(entry.parentId) ? entry.parentId : null;
+    result.push({
+      id: node.id,
+      code: node.code,
+      name: node.name,
+      fullCode: node.fullCode ?? null,
+      level,
+      parentId: resolvedParentId,
+      parentCode:
+        resolvedParentId === null ? null : (byId.get(resolvedParentId)?.node.code ?? null),
+      depth,
+      label: node.fullCode ?? path.join(' / '),
+      capacityQuantity: node.capacityQuantity ?? null,
+      pickPriority: typeof node.pickPriority === 'number' ? node.pickPriority : null,
+      abcClass: node.abcClass ?? null,
+    });
+    for (const child of childrenByParent.get(node.id) ?? []) {
+      visit(child, depth + 1, path);
+    }
+  };
+
+  for (const root of childrenByParent.get(null) ?? []) {
+    visit(root, 0, []);
+  }
+  // Defensive fallback for cycles or orphaned parent references.
+  for (const entry of collected) {
+    if (!visited.has(entry.node.id)) {
+      visit(entry, 0, []);
     }
   }
   return result;
@@ -315,6 +433,10 @@ export function WarehousesPage() {
             .filter((node) => node.level === parentLevel)
             .map((node) => ({ value: node.id, label: node.label })),
     [flatTree, parentLevel],
+  );
+  const selectedParentNode = useMemo(
+    () => flatTree.find((node) => node.id === locationParentId) ?? null,
+    [flatTree, locationParentId],
   );
 
   const locations = useMemo(
@@ -506,11 +628,14 @@ export function WarehousesPage() {
     });
   };
 
-  const openLocationCreate = (): void => {
+  const openLocationCreate = (
+    level: LocationNodeLevel = 'location',
+    parentId = '',
+  ): void => {
     setLocationCode('');
     setLocationName('');
-    setLocationLevel('location');
-    setLocationParentId('');
+    setLocationLevel(level);
+    setLocationParentId(parentId);
     setLocationUsage('bin');
     setLocationCapacity('');
     setLocationBarcode('');
@@ -739,6 +864,95 @@ export function WarehousesPage() {
     },
   ];
 
+  const treeColumns: readonly Column<FlatLocationNode>[] = [
+    {
+      key: 'level',
+      header: 'سطح',
+      render: (node) => (
+        <Badge tone={locationLevelTone(node.level)}>{LOCATION_LEVEL_LABELS[node.level]}</Badge>
+      ),
+    },
+    {
+      key: 'code',
+      header: 'کد',
+      render: (node) => (
+        <span
+          className="inline-flex items-center gap-2"
+          style={{ paddingInlineStart: `${node.depth * 16}px` }}
+        >
+          {node.depth > 0 && (
+            <span aria-hidden className="text-slate-300 dark:text-slate-600">
+              ↳
+            </span>
+          )}
+          <span
+            dir="ltr"
+            className="font-mono text-xs text-slate-700 dark:text-slate-200"
+          >
+            {node.code}
+          </span>
+          {node.name !== undefined && node.name !== '' && (
+            <span className="text-xs text-slate-500 dark:text-slate-400">{node.name}</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: 'parent',
+      header: 'کد والد',
+      render: (node) =>
+        node.parentCode === null ? (
+          '—'
+        ) : (
+          <span dir="ltr" className="font-mono text-xs text-slate-500 dark:text-slate-400">
+            {node.parentCode}
+          </span>
+        ),
+    },
+    {
+      key: 'capacity',
+      header: 'ظرفیت',
+      align: 'center',
+      render: (node) =>
+        node.capacityQuantity === null ? (
+          '—'
+        ) : (
+          <span className="tabular">{formatQuantity(node.capacityQuantity)}</span>
+        ),
+    },
+    {
+      key: 'priority',
+      header: 'اولویت برداشت',
+      align: 'center',
+      render: (node) =>
+        node.pickPriority === null ? (
+          '—'
+        ) : (
+          <span className="tabular">{node.pickPriority.toLocaleString('fa-IR')}</span>
+        ),
+    },
+    {
+      key: 'actions',
+      header: 'عملیات',
+      render: (node) => {
+        const childLevel = childLevelOf(node.level);
+        if (childLevel === null || !canCreateLocations) {
+          return <span className="text-xs text-slate-400">—</span>;
+        }
+        return (
+          <Button
+            size="sm"
+            variant="outline"
+            icon={<Plus aria-hidden className="size-3.5" />}
+            onClick={() => openLocationCreate(childLevel, node.id)}
+          >
+            افزودن زیرمجموعه
+          </Button>
+        );
+      },
+    },
+  ];
+
   const creatingWarehouse = editingWarehouse === null;
   const total = warehousesQuery.data?.pagination?.total;
   const totalPages = warehousesQuery.data?.pagination?.totalPages;
@@ -813,61 +1027,110 @@ export function WarehousesPage() {
         />
       ) : null}
 
-      <Card className="mt-5">
-        <CardHeader
-          title={
-            <span className="inline-flex items-center gap-2">
-              <Layers aria-hidden className="size-4 text-brand-700 dark:text-brand-300" />
-              موقعیت‌های انبار
-            </span>
-          }
-          description={
-            selectedWarehouse === null
-              ? 'برای مشاهده و مدیریت موقعیت‌ها، یک انبار را از فهرست بالا انتخاب کنید.'
-              : `${selectedWarehouse.name} — ${selectedWarehouse.code}`
-          }
-          actions={
-            selectedWarehouse !== null && canReadLocations && canCreateLocations ? (
-              <Button
-                size="sm"
-                icon={<Plus aria-hidden className="size-4" />}
-                onClick={openLocationCreate}
-              >
-                موقعیت جدید
-              </Button>
-            ) : undefined
-          }
-        />
-
-        {selectedWarehouse === null ? (
+      {selectedWarehouse === null ? (
+        <Card className="mt-5">
           <EmptyState
             icon={<WarehouseIcon className="size-9" />}
             title="انباری انتخاب نشده است"
-            description="روی یک ردیف از جدول انبارها بزنید یا دکمهٔ «موقعیت‌ها» را انتخاب کنید."
+            description="روی یک ردیف از جدول انبارها بزنید یا دکمهٔ «موقعیت‌ها» را انتخاب کنید تا ساختار و موقعیت‌های موجودی آن نمایش داده شود."
           />
-        ) : !canReadLocations ? (
+        </Card>
+      ) : !canReadLocations ? (
+        <Card className="mt-5">
           <PermissionNotice permission={PERM.locationRead} />
-        ) : (
-          <DataTable
-            columns={locationColumns}
-            rows={locations}
-            rowKey={(location) => location.id}
-            loading={locationsQuery.isLoading}
-            error={locationsQuery.isError ? locationsQuery.error : undefined}
-            onRetry={() => void locationsQuery.refetch()}
-            caption={`موقعیت‌های ${selectedWarehouse.name}`}
-            emptyTitle="موقعیتی برای این انبار ثبت نشده است"
-            emptyDescription="با دکمهٔ «موقعیت جدید» ساختار انبار را ایجاد کنید. ترتیب سطوح: ناحیه ← راهرو ← رَک ← طبقه ← بین ← موقعیت برگ."
-            emptyAction={
-              canCreateLocations ? (
-                <Button icon={<Plus aria-hidden className="size-4" />} onClick={openLocationCreate}>
-                  موقعیت جدید
-                </Button>
-              ) : undefined
-            }
-          />
-        )}
-      </Card>
+        </Card>
+      ) : (
+        <>
+          <Card className="mt-5">
+            <CardHeader
+              title={
+                <span className="inline-flex items-center gap-2">
+                  <Layers aria-hidden className="size-4 text-brand-700 dark:text-brand-300" />
+                  ساختار انبار
+                </span>
+              }
+              description={`${selectedWarehouse.name} — ${selectedWarehouse.code} · ${flatTree.length.toLocaleString('fa-IR')} گره در ساختار`}
+              actions={
+                canCreateLocations ? (
+                  <Button
+                    size="sm"
+                    icon={<Plus aria-hidden className="size-4" />}
+                    onClick={() => openLocationCreate('zone')}
+                  >
+                    افزودن ناحیه
+                  </Button>
+                ) : undefined
+              }
+            />
+            <DataTable
+              columns={treeColumns}
+              rows={flatTree}
+              rowKey={(node) => node.id}
+              loading={treeQuery.isLoading}
+              error={treeQuery.isError ? treeQuery.error : undefined}
+              onRetry={() => void treeQuery.refetch()}
+              caption={`ساختار انبار ${selectedWarehouse.name}`}
+              emptyTitle="ساختار انبار هنوز ایجاد نشده است"
+              emptyDescription="برای شروع اولین ناحیه (Zone) را بسازید؛ سپس با «افزودن زیرمجموعه» هر ردیف، راهرو، رَک، طبقه، بین و موقعیت برگ را اضافه کنید."
+              emptyAction={
+                canCreateLocations ? (
+                  <Button
+                    icon={<Plus aria-hidden className="size-4" />}
+                    onClick={() => openLocationCreate('zone')}
+                  >
+                    افزودن اولین ناحیه
+                  </Button>
+                ) : undefined
+              }
+            />
+          </Card>
+
+          <Card className="mt-5">
+            <CardHeader
+              title={
+                <span className="inline-flex items-center gap-2">
+                  <MapPin aria-hidden className="size-4 text-brand-700 dark:text-brand-300" />
+                  موقعیت‌های موجودی
+                </span>
+              }
+              description={`${locations.length.toLocaleString('fa-IR')} موقعیت برگ برای ${selectedWarehouse.name}`}
+              actions={
+                canCreateLocations ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    icon={<Plus aria-hidden className="size-4" />}
+                    onClick={() => openLocationCreate('location')}
+                  >
+                    افزودن موقعیت
+                  </Button>
+                ) : undefined
+              }
+            />
+            <DataTable
+              columns={locationColumns}
+              rows={locations}
+              rowKey={(location) => location.id}
+              loading={locationsQuery.isLoading}
+              error={locationsQuery.isError ? locationsQuery.error : undefined}
+              onRetry={() => void locationsQuery.refetch()}
+              caption={`موقعیت‌های ${selectedWarehouse.name}`}
+              emptyTitle="موقعیت برگ برای این انبار ثبت نشده است"
+              emptyDescription="بعد از ساخت زنجیرهٔ ناحیه ← راهرو ← رَک ← طبقه ← بین، یک موقعیت برگ بسازید تا موجودی قابل نگهداری شود."
+              emptyAction={
+                canCreateLocations ? (
+                  <Button
+                    icon={<Plus aria-hidden className="size-4" />}
+                    onClick={() => openLocationCreate('location')}
+                  >
+                    افزودن موقعیت
+                  </Button>
+                ) : undefined
+              }
+            />
+          </Card>
+        </>
+      )}
 
       <Modal
         open={warehouseModalOpen}
@@ -985,8 +1248,12 @@ export function WarehousesPage() {
       <Modal
         open={locationCreateOpen}
         onClose={() => setLocationCreateOpen(false)}
-        title="ایجاد موقعیت انبار"
-        description="سطح موردنظر و والد آن را انتخاب کنید. کد موقعیت برگ از زنجیرهٔ والدین ساخته می‌شود."
+        title={selectedParentNode === null ? 'ایجاد موقعیت انبار' : 'افزودن زیرمجموعه'}
+        description={
+          selectedParentNode === null
+            ? 'سطح موردنظر و والد آن را انتخاب کنید. کد موقعیت برگ از زنجیرهٔ والدین ساخته می‌شود.'
+            : `سطح «${LOCATION_LEVEL_LABELS[locationLevel]}» زیر «${selectedParentNode.fullCode ?? selectedParentNode.label}» ساخته می‌شود؛ والد را می‌توانید تغییر دهید.`
+        }
         size="lg"
         footer={
           <>

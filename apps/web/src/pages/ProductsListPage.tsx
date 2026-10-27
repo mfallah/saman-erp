@@ -55,7 +55,53 @@ interface MergeResult {
   readonly archivedSourceId: string;
 }
 
-const columns: readonly Column<ProductSummary>[] = [
+/**
+ * Product list rows may expose the imported source image under either the
+ * camelCase field returned by the API mapper or the raw DB column name.
+ */
+interface ProductListRow extends ProductSummary {
+  readonly imageUrl?: string | null;
+  readonly image_url?: string | null;
+}
+
+function productImageUrl(product: ProductListRow): string | null {
+  const value = product.imageUrl ?? product.image_url;
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+/** 48px hotlinked thumbnail with a first-letter fallback for missing/broken images. */
+function ProductThumb({ product }: { readonly product: ProductListRow }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const url = productImageUrl(product);
+  if (url === null || failedUrl === url) {
+    return (
+      <span
+        aria-hidden
+        className="grid size-12 shrink-0 place-items-center rounded-lg border border-slate-200 bg-slate-100 text-base font-semibold text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+      >
+        {Array.from(product.nameFa.trim())[0] ?? '؟'}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt={product.nameFa}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailedUrl(url)}
+      className="size-12 shrink-0 rounded-lg border border-slate-200 object-cover dark:border-slate-700"
+    />
+  );
+}
+
+const columns: readonly Column<ProductListRow>[] = [
+  {
+    key: 'image',
+    header: 'تصویر',
+    width: '1%',
+    render: (product) => <ProductThumb product={product} />,
+  },
   {
     key: 'nameFa',
     header: 'نام کالا',
@@ -124,7 +170,7 @@ export function ProductsListPage() {
   const query = useQuery({
     queryKey: queryKeys.catalog.products({ q: debouncedSearch, status, page }),
     queryFn: () =>
-      api.getPage<ProductSummary>('/products', {
+      api.getPage<ProductListRow>('/products', {
         page,
         perPage: 20,
         ...(debouncedSearch.length >= 2 ? { q: debouncedSearch } : {}),
@@ -185,7 +231,7 @@ export function ProductsListPage() {
     mergeConfirm.trim() === MERGE_CONFIRM_WORD &&
     !merge.isPending;
 
-  const mergeColumn: Column<ProductSummary> = {
+  const mergeColumn: Column<ProductListRow> = {
     key: 'merge',
     header: '',
     align: 'end',

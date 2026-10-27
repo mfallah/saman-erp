@@ -67,6 +67,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     children: [
       { label: 'فهرست کالاها', to: '/products', permission: PERM.productRead },
       { label: 'کالای جدید', to: '/products/new', permission: PERM.productCreate },
+      { label: 'ادغام محصولات', to: '/products/merge', permission: PERM.productRead },
     ],
   },
   {
@@ -99,8 +100,11 @@ export const NAV_ITEMS: readonly NavItem[] = [
     label: 'قیمت‌گذاری',
     icon: BadgeDollarSign,
     children: [
-      { label: 'قیمت‌گذاری کانال‌ها', to: '/pricing/channels', permission: PERM.accountRead },
-      { label: 'فهرست‌ها و قواعد قیمت', to: '/pricing', permission: 'price.list.read' },
+      {
+        label: 'سیاست قیمت‌گذاری کانال‌ها',
+        to: '/pricing/channels',
+        permission: PERM.pricingRuleRead,
+      },
     ],
   },
   {

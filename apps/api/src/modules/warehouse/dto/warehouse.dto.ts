@@ -160,6 +160,27 @@ export const PickScanBody = z.object({
 });
 export type PickScanBody = z.infer<typeof PickScanBody>;
 
+/**
+ * Station completion (`POST warehouse/pick-tasks/:id/complete`). The operator
+ * confirms the picked quantity on the station; `scannedBarcode` is optional but
+ * verified against the task's variant barcode/SKU when supplied.
+ */
+export const StationPickCompleteBody = z.object({
+  // Accept a JSON number too: station screens sometimes send `2` rather than "2".
+  quantityPicked: z
+    .preprocess((value) => (typeof value === 'number' ? String(value) : value), QuantityString)
+    .optional(),
+  scannedBarcode: z.string().trim().max(150).optional(),
+});
+export type StationPickCompleteBody = z.infer<typeof StationPickCompleteBody>;
+
+/** `POST warehouse/pack-tasks/:id/complete`; weight is grams and stored in notes. */
+export const PackTaskCompleteBody = z.object({
+  packageNo: z.string().trim().min(1).max(40).optional(),
+  weight: z.coerce.number().finite().min(0).max(1_000_000).optional(),
+});
+export type PackTaskCompleteBody = z.infer<typeof PackTaskCompleteBody>;
+
 export const ShortPickBody = z.object({
   lines: z.array(z.object({ lineId: PublicId, pickedQuantity: QuantityString, reason: z.string().max(300) })).min(1),
 });

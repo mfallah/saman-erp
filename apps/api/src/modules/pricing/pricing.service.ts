@@ -12,6 +12,7 @@ import {
 import {
   PRICING_SETTINGS_KEY,
   type ChannelPricingPolicyRow,
+  type CommissionMode,
   type CostSource,
   type PriceCalculation,
   type PricingMode,
@@ -49,13 +50,13 @@ interface VariantCostRow {
 
 const PERCENT_SCALE = 1_000_000n;
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (typeof value === 'string') {
+function asRecord(value: unknown, depth = 0): Record<string, unknown> {
+  if (typeof value === 'string' && depth < 3) {
     try {
       const parsed: unknown = JSON.parse(value);
-      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
+      // Repair the historical double-encoded shape: settings.pricing was stored
+      // as a JSON *string* of the policy object, so unwrap more than one level.
+      return asRecord(parsed, depth + 1);
     } catch {
       return {};
     }
@@ -79,7 +80,17 @@ function asMode(value: unknown, fallback: PricingMode): PricingMode {
 }
 
 function asCostSource(value: unknown): CostSource {
-  return value === 'avg_cost' || value === 'manual' ? value : 'last_purchase';
+  return value === 'moving_average' || value === 'avg_cost' || value === 'manual'
+    ? value
+    : 'last_purchase';
+}
+
+function asCommissionMode(value: unknown, fallback: CommissionMode): CommissionMode {
+  return value === 'product' || value === 'fixed' || value === 'percent' ? value : fallback;
+}
+
+function asBoolean(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1';
 }
 
 function asRounding(value: unknown): RoundingStep {
@@ -131,43 +142,11 @@ export class PricingService {
     const sql = this.db as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
     const account = await this.getAccount(input.accountId);
     const orgId = ctx.orgId;
-
-    let listRows = await sql`
-      select l.id::text as id
-      from erp.price_lists l
-      left join erp.channel_accounts a on a.price_list_id = l.id
-      where l.organization_id = ${orgId}
-        and l.deleted_at is null
-        and l.is_active = true
-        and (l.channel_account_id = ${account.id}::bigint or a.id = ${account.id}::bigint)
-      order by l.priority desc, l.id
-      limit 1
-    `;
-    if (listRows.length === 0) {
-      listRows = await sql`
-        insert into erp.price_lists
-          (organization_id, code, name, list_type, currency, channel_account_id, rounding_mode, priority, is_active, created_by)
-        values
-          (${orgId}, ${`CH-${account.public_id.slice(0, 8)}`}, ${`قیمت ${account.name}`.slice(0, 120)}, 'channel', 'IRR', ${account.id}::bigint, 'none', 100, true, ${ctx.actorId})
-        returning id::text as id
-      `;
-      await sql`
-        update erp.channel_accounts set price_list_id = ${String(listRows[0]!['id'])}::bigint where id = ${account.id}::bigint
-      `;
-    }
-    const priceListId = String(listRows[0]!['id']);
+    const priceListId = await this.ensurePriceList(account);
 
     let variants: readonly string[] = input.variantIds ?? [];
     if (variants.length === 0) {
-      const mapped = await sql`
-        select v.public_id::text as id
-        from erp.channel_product_mappings m
-        join erp.product_variants v on v.id = m.product_variant_id
-        where m.channel_account_id = ${account.id}::bigint
-          and m.deleted_at is null
-        group by v.public_id
-      `;
-      variants = mapped.map((row) => String(row['id']));
+      variants = await this.mappedVariantIds(account.id);
     }
 
     const applied: { variantId: string; price: string }[] = [];
@@ -224,9 +203,248 @@ export class PricingService {
     return { priceListId, accountInternalId: account.id, applied };
   }
 
+  /**
+   * Applies the single account policy to every mapped variant of the account
+   * and upserts the results into that account's price list. This is the path
+   * served by `POST /pricing/channels/:accountId/apply`; the legacy
+   * `applyToAccount` above keeps the old pricing-rule overrides alive.
+   */
+  async applyPolicyToAccount(accountId: string): Promise<{
+    accountInternalId: string;
+    priceListId: string;
+    applied: number;
+    missingCommission: number;
+  }> {
+    const ctx = this.tenant.get();
+    const account = await this.getAccount(accountId);
+    const policy = this.policyFrom(account.settings, account.channel_code);
+    const priceListId = await this.ensurePriceList(account);
+    const variantIds = await this.mappedVariantIds(account.id);
+
+    const computed: { variantId: string; price: bigint }[] = [];
+    let missingCommission = 0;
+    for (let offset = 0; offset < variantIds.length; offset += 500) {
+      const chunk = variantIds.slice(offset, offset + 500);
+      const costs = await this.loadVariantCosts(chunk, ctx.orgId);
+      const commissions =
+        account.channel_code === 'digikala' && policy.commissionMode === 'product'
+          ? await this.loadCommissionRates(account.id, chunk)
+          : new Map<string, number>();
+      for (const row of costs) {
+        const cost = this.costOf(policy, row, null);
+        let commissionPercent = policy.commissionPercent;
+        if (account.channel_code === 'digikala' && policy.commissionMode === 'product') {
+          const perProduct = commissions.get(row.variant_id);
+          if (perProduct === undefined) missingCommission += 1;
+          else commissionPercent = perProduct;
+        }
+        const price = this.policyPrice(account.channel_code, policy, cost, commissionPercent);
+        computed.push({ variantId: row.variant_id, price });
+      }
+    }
+
+    await this.writePolicyPrices(
+      priceListId,
+      computed,
+      ctx.actorId === null ? null : ctx.actorId.toString(),
+    );
+    return {
+      accountInternalId: account.id,
+      priceListId,
+      applied: computed.length,
+      missingCommission,
+    };
+  }
+
+  private async ensurePriceList(account: AccountRow): Promise<string> {
+    const ctx = this.tenant.get();
+    const sql = this.db as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
+    let listRows = await sql`
+      select l.id::text as id
+      from erp.price_lists l
+      left join erp.channel_accounts a on a.price_list_id = l.id
+      where l.organization_id = ${ctx.orgId}
+        and l.deleted_at is null
+        and l.is_active = true
+        and (l.channel_account_id = ${account.id}::bigint or a.id = ${account.id}::bigint)
+      order by l.priority desc, l.id
+      limit 1
+    `;
+    if (listRows.length === 0) {
+      listRows = await sql`
+        insert into erp.price_lists
+          (organization_id, code, name, list_type, currency, channel_account_id, rounding_mode, priority, is_active, created_by)
+        values
+          (${ctx.orgId}, ${`CH-${account.public_id.slice(0, 8)}`}, ${`قیمت ${account.name}`.slice(0, 120)}, 'channel', 'IRR', ${account.id}::bigint, 'none', 100, true, ${ctx.actorId})
+        returning id::text as id
+      `;
+      await sql`
+        update erp.channel_accounts set price_list_id = ${String(listRows[0]!['id'])}::bigint where id = ${account.id}::bigint
+      `;
+    }
+    return String(listRows[0]!['id']);
+  }
+
+  private async mappedVariantIds(accountInternalId: string): Promise<string[]> {
+    const rows = await this.db<{ id: string }[]>`
+      select v.public_id::text as id
+      from erp.channel_product_mappings m
+      join erp.product_variants v on v.id = m.product_variant_id
+      join erp.products p on p.id = v.product_id
+      where m.channel_account_id = ${accountInternalId}::bigint
+        and m.deleted_at is null
+        and v.deleted_at is null
+        and p.deleted_at is null
+      group by v.public_id
+    `;
+    return rows.map((row) => String(row['id']));
+  }
+
+  /**
+   * Commission is read per product from `erp.channel_product_costs` (written by
+   * the Digikala import). The table may not exist on older databases, and its
+   * account column is named `account_id` (migration plan) or
+   * `channel_account_id`; both shapes are tolerated.
+   */
+  private commissionShape: 'account_id' | 'channel_account_id' | 'missing' | undefined;
+
+  private async loadCommissionRates(
+    accountInternalId: string,
+    variantIds: readonly string[],
+  ): Promise<Map<string, number>> {
+    if (variantIds.length === 0) return new Map();
+    if (this.commissionShape === undefined) {
+      const table = await this.db<{ reg: string | null }[]>`
+        select to_regclass('erp.channel_product_costs')::text as reg
+      `;
+      if (table[0]?.reg === null || table[0]?.reg === undefined) {
+        this.commissionShape = 'missing';
+      } else {
+        const columns = await this.db<{ column_name: string }[]>`
+          select column_name
+          from information_schema.columns
+          where table_schema = 'erp'
+            and table_name = 'channel_product_costs'
+            and column_name in ('account_id', 'channel_account_id')
+        `;
+        this.commissionShape = columns.some((column) => column.column_name === 'account_id')
+          ? 'account_id'
+          : 'channel_account_id';
+      }
+    }
+    if (this.commissionShape === 'missing') return new Map();
+    const rows =
+      this.commissionShape === 'account_id'
+        ? await this.db<{ variant_id: string; commission_percent: string }[]>`
+            select v.public_id::text as variant_id, c.commission_percent::text
+            from erp.channel_product_costs c
+            join erp.product_variants v on v.id = c.product_variant_id
+            where c.account_id = ${accountInternalId}::bigint
+              and v.public_id = any(${variantIds}::uuid[])
+          `
+        : await this.db<{ variant_id: string; commission_percent: string }[]>`
+            select v.public_id::text as variant_id, c.commission_percent::text
+            from erp.channel_product_costs c
+            join erp.product_variants v on v.id = c.product_variant_id
+            where c.channel_account_id = ${accountInternalId}::bigint
+              and v.public_id = any(${variantIds}::uuid[])
+          `;
+    const rates = new Map<string, number>();
+    for (const row of rows) {
+      const rate = Number(row.commission_percent);
+      if (Number.isFinite(rate) && rate >= 0 && rate < 100) rates.set(row.variant_id, rate);
+    }
+    return rates;
+  }
+
+  /** The exact per-channel formula used by the policy apply endpoint. */
+  private policyPrice(
+    channelCode: string,
+    policy: PricingPolicy,
+    cost: bigint,
+    commissionPercent: number,
+  ): bigint {
+    const marginFactor = PERCENT_SCALE + percentUnits(policy.marginPercent);
+    const processingFee = amount(policy.processingFee);
+    const shippingFee = amount(policy.shippingFee);
+
+    if (channelCode !== 'digikala') {
+      // Carexy and every other channel: cost * (1 + margin) + processing + shipping.
+      return roundHalfUp(cost * marginFactor, PERCENT_SCALE) + processingFee + shippingFee;
+    }
+
+    // Digikala: (cost + fees) * (1 + margin) / (1 - commission), then VAT, then rounding.
+    const withMargin = roundHalfUp(
+      (cost + processingFee + shippingFee) * marginFactor,
+      PERCENT_SCALE,
+    );
+    let preVat: bigint;
+    if (policy.commissionMode === 'fixed') {
+      // commission = fixedCommission / price  =>  price = gross + fixedCommission
+      preVat = withMargin + amount(policy.fixedCommission);
+    } else {
+      const denominator = PERCENT_SCALE - percentUnits(commissionPercent);
+      if (denominator <= 0n) {
+        throw new AppError('VALIDATION_ERROR', { message: 'درصد کمیسیون باید کمتر از ۱۰۰ باشد.' });
+      }
+      preVat = roundHalfUp(withMargin * PERCENT_SCALE, denominator);
+    }
+    const withVat = roundHalfUp(
+      preVat * (PERCENT_SCALE + percentUnits(policy.vatPercent)),
+      PERCENT_SCALE,
+    );
+    return this.roundPrice(withVat, policy.rounding);
+  }
+
+  /** Updates the current active item, then inserts one for variants without it. */
+  private async writePolicyPrices(
+    priceListId: string,
+    computed: readonly { variantId: string; price: bigint }[],
+    actorId: string | null,
+  ): Promise<void> {
+    for (let offset = 0; offset < computed.length; offset += 500) {
+      const chunk = computed.slice(offset, offset + 500);
+      const ids = chunk.map((row) => row.variantId);
+      const prices = chunk.map((row) => String(row.price));
+      await this.db`
+        update erp.price_list_items i
+        set price_amount = data.price::bigint,
+            is_active = true,
+            updated_at = now(),
+            updated_by = ${actorId}
+        from unnest(${ids}::uuid[], ${prices}::text[]) as data(variant_public_id, price)
+        join erp.product_variants v on v.public_id = data.variant_public_id
+        where i.price_list_id = ${priceListId}::bigint
+          and i.product_variant_id = v.id
+          and i.deleted_at is null
+          and i.is_active = true
+      `;
+      await this.db`
+        insert into erp.price_list_items
+          (price_list_id, product_variant_id, price_amount, min_qty, effective_from, is_active, created_by)
+        select ${priceListId}::bigint, v.id, data.price::bigint, 1, now(), true, ${actorId}
+        from unnest(${ids}::uuid[], ${prices}::text[]) as data(variant_public_id, price)
+        join erp.product_variants v on v.public_id = data.variant_public_id
+        where not exists (
+          select 1
+          from erp.price_list_items existing
+          where existing.price_list_id = ${priceListId}::bigint
+            and existing.product_variant_id = v.id
+            and existing.deleted_at is null
+            and existing.is_active = true
+        )
+      `;
+    }
+  }
+
   async getPolicy(accountId: string): Promise<PricingPolicy> {
     const account = await this.getAccount(accountId);
     return this.policyFrom(account.settings, account.channel_code);
+  }
+
+  /** Exposes policy normalisation to callers that already loaded account rows. */
+  policyFromAccount(settings: unknown, channelCode: string): PricingPolicy {
+    return this.policyFrom(settings, channelCode);
   }
 
   async setPolicy(accountId: string, policy: PricingPolicyInput): Promise<PricingPolicy> {
@@ -234,23 +452,57 @@ export class PricingService {
     const account = await this.getAccount(accountId);
     const before = this.policyFrom(account.settings, account.channel_code);
     const next: PricingPolicy = {
-      ...policy,
-      fixedCommission: policy.fixedCommission ?? 0,
+      mode: policy.mode ?? before.mode,
+      costSource: policy.costSource ?? before.costSource,
+      marginPercent: policy.marginPercent ?? before.marginPercent,
+      processingFee: policy.processingFee ?? before.processingFee,
+      shippingFee: policy.shippingFee ?? before.shippingFee,
+      commissionMode: policy.commissionMode ?? before.commissionMode,
+      commissionPercent: policy.commissionPercent ?? before.commissionPercent,
+      fixedCommission: policy.fixedCommission ?? before.fixedCommission,
+      vatPercent: policy.vatPercent ?? before.vatPercent,
+      rounding: policy.rounding ?? before.rounding,
+      autoApply: policy.autoApply ?? before.autoApply,
+      autoPush: policy.autoPush ?? before.autoPush,
       updatedAt: new Date().toISOString(),
     };
     const actorId = ctx.actorId === null ? null : ctx.actorId.toString();
+    // Plain JSON value: postgres.js serialises it as one jsonb object. Never
+    // stringify first: that stored a jsonb *string* and double-encoded the value.
+    const payload: Record<string, string | number | boolean | null> = {
+      mode: next.mode,
+      costSource: next.costSource,
+      marginPercent: next.marginPercent,
+      processingFee: next.processingFee,
+      shippingFee: next.shippingFee,
+      commissionMode: next.commissionMode,
+      commissionPercent: next.commissionPercent,
+      fixedCommission: next.fixedCommission,
+      vatPercent: next.vatPercent,
+      rounding: next.rounding,
+      autoApply: next.autoApply,
+      autoPush: next.autoPush,
+      updatedAt: next.updatedAt,
+    };
     const rows = await this.db<{ id: string; settings: unknown }[]>`
       update erp.channel_accounts
       set settings = jsonb_set(
-            coalesce(settings, '{}'::jsonb),
+            case
+              when jsonb_typeof(coalesce(settings, '{}'::jsonb)) = 'object'
+                then coalesce(settings, '{}'::jsonb)
+              -- settings itself was stored as a JSON string: unwrap it so other keys survive.
+              when jsonb_typeof(coalesce(settings, '{}'::jsonb)) = 'string'
+                then (settings #>> '{}')::jsonb
+              else '{}'::jsonb
+            end,
             '{pricing}',
-            ${JSON.stringify(next)}::jsonb,
+            ${this.db.json(payload)}::jsonb,
             true
           ),
           updated_at = now(),
           updated_by = ${actorId}
       where organization_id = ${ctx.orgId.toString()}
-        and public_id::text = ${accountId}
+        and (public_id::text = ${accountId} or id::text = ${accountId})
         and deleted_at is null
       returning id::text as id, settings
     `;
@@ -352,7 +604,7 @@ export class PricingService {
       join erp.sales_channels c on c.id = a.channel_id
       where a.organization_id = ${orgId}
         and c.organization_id = ${orgId}
-        and a.public_id::text = ${accountId}
+        and (a.public_id::text = ${accountId} or a.id::text = ${accountId})
         and a.deleted_at is null
       limit 1
     `;
@@ -432,12 +684,20 @@ export class PricingService {
       mode: asMode(raw['mode'], defaultMode),
       costSource: asCostSource(raw['costSource']),
       marginPercent: numberValue(raw['marginPercent'], 0),
+      commissionMode: asCommissionMode(
+        raw['commissionMode'],
+        channelCode === 'digikala' ? 'product' : 'percent',
+      ),
       commissionPercent: numberValue(raw['commissionPercent'], 0),
       processingFee: numberValue(raw['processingFee'], 0),
       shippingFee: numberValue(raw['shippingFee'], 0),
       fixedCommission: numberValue(raw['fixedCommission'], 0),
       vatPercent: numberValue(raw['vatPercent'], 0),
       rounding: asRounding(raw['rounding']),
+      autoApply: asBoolean(raw['autoApply']),
+      // Pushing is the point of the policy; a policy that never pushed unless
+      // the owner flipped a hidden switch confused the old screens.
+      autoPush: raw['autoPush'] === undefined ? true : asBoolean(raw['autoPush']),
       updatedAt: stringOrNull(raw['updatedAt']),
     };
   }
@@ -462,7 +722,7 @@ export class PricingService {
         0n
       );
     }
-    if (policy.costSource === 'avg_cost') {
+    if (policy.costSource === 'moving_average' || policy.costSource === 'avg_cost') {
       const variantAverage = optionalMoney(row.variant_avg_cost);
       if (variantAverage !== null && variantAverage > 0n) return variantAverage;
       const historical = optionalMoney(row.avg_cost);

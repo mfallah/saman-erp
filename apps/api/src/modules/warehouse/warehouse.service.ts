@@ -4,18 +4,20 @@
  * verification. Reservations/stock come from `InventoryService`; orders from
  * `SalesService` — never their tables.
  */
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AppError } from '@saman/shared';
 
 import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
+import { ChannelAccountService } from '../channels/services/channel-accounts.service';
 import { CatalogLookupService } from '../catalog/product.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { addQuantity, compareQuantity, subQuantity } from '../inventory/engines/quantity.engine';
 import { SalesService } from '../sales/sales.service';
 import type { Db } from './warehouse.pg-support';
 import { notFound, toBigInt } from './warehouse.pg-support';
+import { PickAssignmentService } from './pick-assignment.service';
 import { WarehouseRepository } from './warehouse.repository';
-import { type LocationRow, type MyPickTaskRow, type PickTaskRow, type PickWaveRow, type WarehouseRow } from './warehouse.repository';
+import { type LocationRow, type MyPickTaskRow, type PackTaskRow, type PickBoardDiagnosticsRow, type PickBoardTaskRow, type PickTaskRow, type PickWaveRow, type WarehouseRow } from './warehouse.repository';
 import { WAREHOUSE_EVENTS, type PickTaskEventPayload, type WaveEventPayload } from './warehouse.events';
 import { assertValidLocationParent, assignPickRoute, generateLocationCode, labelNumber, normalizeLocationBarcode, orderPickTasks, suggestPutaway, verifyScan, type LocationNodeType } from './engines/location.engine';
 import type {
@@ -24,10 +26,12 @@ import type {
   CreatePickWaveBody,
   CreateWarehouseBody,
   LocationNodeInput,
+  PackTaskCompleteBody,
   PickScanBody,
   PickTaskAssignBody,
   PutawaySuggestionQuery,
   ReleaseWaveBody,
+  StationPickCompleteBody,
   UpdateLocationBody,
   UpdateWarehouseBody,
 } from './dto/warehouse.dto';
@@ -85,6 +89,7 @@ function pickTaskView(row: PickTaskRow): Record<string, unknown> {
     id: row.id,
     waveId: row.waveId,
     orderId: row.orderId,
+    orderNo: row.orderNo,
     variantId: row.variantId,
     locationId: row.locationId,
     locationCode: row.locationFullCode,
@@ -93,6 +98,12 @@ function pickTaskView(row: PickTaskRow): Record<string, unknown> {
     sequenceNo: row.sequenceNo,
     status: row.status,
     assignedTo: row.assignedTo,
+    assignedToName: row.assignedToName,
+    sku: row.sku,
+    title: row.title,
+    barcode: row.barcode,
+    createdAt: row.createdAt,
+    ageMinutes: row.ageMinutes,
   };
 }
 
@@ -109,17 +120,127 @@ function myPickTaskView(row: MyPickTaskRow): Record<string, unknown> {
     sequenceNo: row.sequenceNo,
     assignedTo: row.assignedTo,
     assignedToName: row.assignedToName,
+    createdAt: row.createdAt,
+    ageMinutes: row.ageMinutes,
   };
 }
 
+function pickBoardTaskView(row: PickBoardTaskRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    orderNo: row.orderNo,
+    orderStatus: row.orderStatus,
+    fulfillmentStatus: row.fulfillmentStatus,
+    waveId: row.waveId,
+    waveNo: row.waveNo,
+    sku: row.sku,
+    title: row.title,
+    quantityRequired: row.quantityRequired,
+    quantityPicked: row.quantityPicked,
+    locationCode: row.locationCode,
+    sequenceNo: row.sequenceNo,
+    status: row.status,
+    assignedTo: row.assignedTo,
+    assignedToName: row.assignedToName,
+    createdAt: row.createdAt,
+    ageMinutes: row.ageMinutes,
+  };
+}
+
+function packTaskView(row: PackTaskRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    orderNo: row.orderNo,
+    fulfillmentStatus: row.fulfillmentStatus,
+    packageNo: row.packageNo,
+    status: row.status,
+    assignedTo: row.assignedTo,
+    assignedToName: row.assignedToName,
+    notes: row.notes,
+    itemCount: row.itemCount,
+    totalQuantity: row.totalQuantity,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    closedAt: row.closedAt,
+    ageMinutes: row.ageMinutes,
+  };
+}
+
+interface PickOrderGroup {
+  readonly orderId: string;
+  readonly orderNo: string | null;
+  readonly orderStatus: string;
+  readonly fulfillmentStatus: string;
+  readonly waveNo: string | null;
+  readonly taskCount: number;
+  readonly openCount: number;
+  readonly assigneeNames: readonly string[];
+  readonly oldestAgeMinutes: number;
+  readonly tasks: readonly Record<string, unknown>[];
+}
+
+/** Groups flat board rows by order (the station shows one header per order). */
+function groupPickBoardRows(rows: readonly PickBoardTaskRow[]): PickOrderGroup[] {
+  const groups = new Map<string, { orderId: string; orderNo: string | null; orderStatus: string; fulfillmentStatus: string; waveNo: string | null; tasks: Record<string, unknown>[]; assignees: Set<string>; oldest: number }>();
+  for (const row of rows) {
+    const key = row.orderId.length > 0 ? row.orderId : row.orderInternalId;
+    let group = groups.get(key);
+    if (group === undefined) {
+      group = {
+        orderId: key,
+        orderNo: row.orderNo,
+        orderStatus: row.orderStatus,
+        fulfillmentStatus: row.fulfillmentStatus,
+        waveNo: row.waveNo,
+        tasks: [],
+        assignees: new Set<string>(),
+        oldest: row.ageMinutes,
+      };
+      groups.set(key, group);
+    }
+    group.tasks.push(pickBoardTaskView(row));
+    if (row.assignedToName !== null) group.assignees.add(row.assignedToName);
+    group.oldest = Math.max(group.oldest, row.ageMinutes);
+  }
+  return [...groups.values()].map((group) => ({
+    orderId: group.orderId,
+    orderNo: group.orderNo,
+    orderStatus: group.orderStatus,
+    fulfillmentStatus: group.fulfillmentStatus,
+    waveNo: group.waveNo,
+    taskCount: group.tasks.length,
+    openCount: group.tasks.filter((task) => task['status'] !== 'picked').length,
+    assigneeNames: [...group.assignees],
+    oldestAgeMinutes: group.oldest,
+    tasks: group.tasks,
+  }));
+}
+
+function isUndefinedTable(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === '42P01'
+  );
+}
+
+const PACK_TABLE_MISSING_MESSAGE =
+  'جدول تسک‌های بسته‌بندی (erp.pack_tasks) هنوز ساخته نشده است؛ مهاجرت مربوطه باید اعمال شود.';
+
 @Injectable()
 export class WarehouseService {
+  private readonly logger = new Logger(WarehouseService.name);
+
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly repo: WarehouseRepository,
     private readonly catalog: CatalogLookupService,
     private readonly inventory: InventoryService,
     private readonly sales: SalesService,
+    private readonly channelAccounts: ChannelAccountService,
+    private readonly pickAssignment: PickAssignmentService,
     @Inject(AUDIT) private readonly audit: AuditPort,
     @Inject(EVENT_BUS) private readonly events: EventPort,
   ) {}
@@ -812,6 +933,12 @@ export class WarehouseService {
       const updated = await this.repo.updatePickTask(tx, toBigInt(task.internalId), {
         status: 'in_progress',
         started: true,
+        // Claim an unassigned task for the operator who actually starts it.
+        ...(ctx.actorId === null ? {} : { assignedTo: ctx.actorId }),
+      });
+      await this.emit(tx, ctx, WAREHOUSE_EVENTS.pickTaskStarted, 'pick_task', toBigInt(task.internalId), {
+        taskId: task.id,
+        orderId: task.orderId,
       });
       return pickTaskView(updated);
     });
@@ -881,13 +1008,16 @@ export class WarehouseService {
         quantityPicked: picked,
         completed: isComplete,
       });
+      // A fully scanned order must reach the packing station even when the
+      // operator never presses "complete".
+      const completion = isComplete ? await this.settleOrderIfPicked(tx, ctx, task, updated) : null;
       await this.emit(tx, ctx, WAREHOUSE_EVENTS.pickScanAccepted, 'pick_task', toBigInt(task.internalId), {
         taskId: task.id,
         barcode: body.barcode,
         quantity: body.quantity,
         result: 'accepted',
       });
-      return pickTaskView(updated);
+      return { ...pickTaskView(updated), ...(completion ?? {}) };
     });
   }
 
@@ -953,6 +1083,404 @@ export class WarehouseService {
       await this.record(tx, ctx, 'warehouse.pick.cancel', 'pick_task', task.id, pickTaskView(task), { status: 'cancelled', reason });
       return this.getPickTask(ctx, publicId);
     });
+  }
+
+  // ============================================================ pick station
+
+  /**
+   * `GET warehouse/pick-tasks/board` — every open pick task of the organization
+   * grouped by order, plus the counters that explain an empty board.
+   */
+  async pickTaskBoard(ctx: TenantContext, limit = 200): Promise<Record<string, unknown>> {
+    const [rows, diagnostics]: [PickBoardTaskRow[], PickBoardDiagnosticsRow] = await Promise.all([
+      this.repo.listPickBoard(this.db, { orgId: ctx.orgId, limit }),
+      this.repo.pickBoardDiagnostics(this.db, { orgId: ctx.orgId }),
+    ]);
+    const tasks = rows.map(pickBoardTaskView);
+    const summary = {
+      openTasks: rows.length,
+      pending: rows.filter((row) => row.status === 'pending').length,
+      inProgress: rows.filter((row) => row.status === 'in_progress').length,
+      orders: new Set(rows.map((row) => (row.orderId.length > 0 ? row.orderId : row.orderInternalId))).size,
+      unassigned: rows.filter((row) => row.assignedTo === null).length,
+      oldestAgeMinutes: rows.reduce((oldest, row) => Math.max(oldest, row.ageMinutes), 0),
+      truncated: rows.length >= limit,
+    };
+    return {
+      generatedAt: new Date().toISOString(),
+      summary,
+      diagnostics,
+      orders: groupPickBoardRows(rows),
+      tasks,
+    };
+  }
+
+  /**
+   * Creates the missing pick tasks for orders that already have lines.
+   *
+   * Auto-assignment normally runs on the materialisation event; orders whose
+   * lines arrived later (or before the picker permission was fixed) would
+   * otherwise stay invisible on the station forever.
+   */
+  async backfillPickTasks(ctx: TenantContext, limit = 50): Promise<Record<string, unknown>> {
+    const candidates = await this.repo.listOrdersAwaitingPickTasks(this.db, { orgId: ctx.orgId, limit });
+    let tasksCreated = 0;
+    const orders: Record<string, unknown>[] = [];
+    for (const candidate of candidates) {
+      const created = await this.pickAssignment.assignOrderPickTasks({
+        orgId: ctx.orgId,
+        orderInternalId: toBigInt(candidate.internalId),
+      });
+      tasksCreated += created;
+      orders.push({ orderId: candidate.orderId, orderNo: candidate.orderNo, tasksCreated: created });
+    }
+    this.logger.log(
+      `pick backfill in org ${ctx.orgId.toString()}: ${tasksCreated.toString()} task(s) for ${candidates.length.toString()} order(s)`,
+    );
+    return { ordersChecked: candidates.length, tasksCreated, orders };
+  }
+
+  /**
+   * `POST warehouse/pick-tasks/:id/complete` — the operator confirms the picked
+   * quantity. When the last open task of the order is completed the order
+   * becomes `picked` and a `pack_tasks` row is created for the packing station.
+   */
+  async completeStationPickTask(
+    ctx: TenantContext,
+    publicId: string,
+    body: StationPickCompleteBody,
+  ): Promise<Record<string, unknown>> {
+    return this.db.begin(async (tx) => {
+      const task = await this.repo.lockPickTask(tx, ctx.orgId, publicId);
+      if (task === null) throw notFound('pick_task');
+      if (task.status === 'picked' || task.status === 'short') {
+        // Idempotent double-click: report the settled task, create nothing.
+        return { task: pickTaskView(task), orderComplete: false, packTask: null, alreadyCompleted: true };
+      }
+      if (task.status !== 'pending' && task.status !== 'in_progress') {
+        throw new AppError('DOCUMENT_STATE_INVALID', {
+          message: 'این تسک قابل تکمیل نیست.',
+          details: [{ rule: 'task_not_completable', params: { status: task.status } }],
+        });
+      }
+      this.assertPickScanMatches(task, body.scannedBarcode);
+      const quantity = body.quantityPicked ?? task.quantityRequired;
+      if (compareQuantity(quantity, '0') <= 0) {
+        throw new AppError('RULE_VIOLATION', {
+          message: 'مقدار برداشت باید بزرگ‌تر از صفر باشد.',
+          messageKey: 'warehouse.quantity_must_be_positive',
+          details: [{ rule: 'quantity_must_be_positive' }],
+        });
+      }
+      if (compareQuantity(quantity, task.quantityRequired) > 0) {
+        throw new AppError('RULE_VIOLATION', {
+          message: 'مقدار برداشت از مقدار موردنیاز تسک بیشتر است.',
+          messageKey: 'warehouse.quantity_exceeds_required',
+          details: [{ rule: 'quantity_exceeds_required', params: { required: task.quantityRequired, picked: quantity } }],
+        });
+      }
+      if (compareQuantity(quantity, task.quantityRequired) < 0) {
+        // Partial picks are a documented `short` flow, not a completed line.
+        throw new AppError('DOCUMENT_STATE_INVALID', {
+          message: 'برداشت ناقص است؛ مقدار کامل را ثبت کنید یا از ثبت برداشت کوتاه استفاده کنید.',
+          messageKey: 'warehouse.pick_short_required',
+          details: [{ rule: 'pick_short_required', params: { required: task.quantityRequired, picked: quantity } }],
+        });
+      }
+      const updated = await this.repo.updatePickTask(tx, toBigInt(task.internalId), {
+        status: 'picked',
+        quantityPicked: quantity,
+        completed: true,
+        assignedTo: ctx.actorId,
+      });
+      const completion = await this.settleOrderIfPicked(tx, ctx, task, updated);
+      const payload: PickTaskEventPayload = {
+        taskId: task.id,
+        waveId: task.waveId,
+        orderId: task.orderId,
+        variantId: task.variantId,
+        locationId: task.locationId,
+        quantityRequired: task.quantityRequired,
+        quantityPicked: quantity,
+        status: 'picked',
+      };
+      await this.emit(tx, ctx, WAREHOUSE_EVENTS.pickTaskCompleted, 'pick_task', toBigInt(task.internalId), payload);
+      return { task: pickTaskView(updated), ...completion };
+    });
+  }
+
+  /**
+   * Marks the order `picked` and creates its pack task once no open pick task is
+   * left. Idempotent and tolerant of a missing `pack_tasks` migration: a
+   * missing table is logged, never allowed to break picking.
+   */
+  private async settleOrderIfPicked(
+    tx: Db,
+    ctx: TenantContext,
+    task: PickTaskRow,
+    updated: PickTaskRow,
+  ): Promise<{ orderComplete: boolean; packTask: Record<string, unknown> | null }> {
+    const orderInternalId = toBigInt(task.orderInternalId);
+    const open = await this.repo.countOpenOrderPickTasks(tx, orderInternalId);
+    if (open > 0) {
+      return { orderComplete: false, packTask: null };
+    }
+    await this.repo.setOrderFulfillmentStatus(tx, ctx.orgId, orderInternalId, 'picked');
+    const packTask = await this.createPackTaskForOrder(tx, ctx, updated);
+    return { orderComplete: true, packTask: packTask === null ? null : packTaskView(packTask) };
+  }
+
+  private async createPackTaskForOrder(tx: Db, ctx: TenantContext, task: PickTaskRow): Promise<PackTaskRow | null> {
+    const orderInternalId = toBigInt(task.orderInternalId);
+    try {
+      const existing = await this.repo.findOpenPackTaskForOrder(tx, ctx.orgId, orderInternalId);
+      if (existing !== null) return existing;
+      const count = await this.repo.countPackTasksForOrder(tx, ctx.orgId, orderInternalId);
+      // An order that already has a settled pack task is not packed twice.
+      if (count > 0) return null;
+      const packTask = await this.repo.insertPackTask(tx, {
+        orgId: ctx.orgId,
+        orderInternalId,
+        packageNo: this.buildPackageNo(task.orderNo, count + 1),
+        assignedTo: null,
+        notes: 'به‌صورت خودکار پس از تکمیل برداشت سفارش ساخته شد',
+      });
+      if (packTask !== null) {
+        await this.emit(tx, ctx, WAREHOUSE_EVENTS.packTaskCreated, 'pack_task', toBigInt(packTask.internalId), {
+          packTaskId: packTask.id,
+          orderId: task.orderId,
+        });
+      }
+      return packTask;
+    } catch (error) {
+      if (!isUndefinedTable(error)) throw error;
+      this.logger.warn(
+        `pack task for order ${task.orderId} was not created: ${PACK_TABLE_MISSING_MESSAGE}`,
+      );
+      return null;
+    }
+  }
+
+  private assertPickScanMatches(task: PickTaskRow, scanned: string | undefined): void {
+    if (scanned === undefined) return;
+    const value = scanned.trim().toLowerCase();
+    if (value.length === 0) return;
+    const candidates = [task.barcode, task.sku]
+      .filter((candidate): candidate is string => candidate !== null && candidate.trim().length > 0)
+      .map((candidate) => candidate.trim().toLowerCase());
+    if (!candidates.includes(value)) {
+      throw new AppError('RULE_VIOLATION', {
+        message: 'بارکد اسکن‌شده با کالای این تسک یکسان نیست.',
+        messageKey: 'warehouse.barcode_mismatch',
+        details: [{ rule: 'barcode_mismatch', params: { taskId: task.id } }],
+      });
+    }
+  }
+
+  private buildPackageNo(orderNo: string | null, sequence: number): string {
+    const prefix = (orderNo ?? 'ORD').replace(/[^A-Za-z0-9-]/g, '').slice(0, 32) || 'ORD';
+    return `${prefix}-P${sequence}`.slice(0, 40);
+  }
+
+  // ============================================================ pack station
+
+  /** `GET warehouse/pack-tasks/board` — open pack tasks plus empty-state counters. */
+  async packTaskBoard(ctx: TenantContext, limit = 200): Promise<Record<string, unknown>> {
+    try {
+      const rows = await this.repo.listPackBoard(this.db, { orgId: ctx.orgId, limit });
+      const diagnostics = await this.repo.packBoardDiagnostics(this.db, { orgId: ctx.orgId });
+      return {
+        generatedAt: new Date().toISOString(),
+        tableReady: true,
+        summary: {
+          openTasks: rows.length,
+          pending: rows.filter((row) => row.status === 'pending').length,
+          packing: rows.filter((row) => row.status === 'packing').length,
+          packed: diagnostics.packed,
+          unassigned: rows.filter((row) => row.assignedTo === null).length,
+          oldestAgeMinutes: rows.reduce((oldest, row) => Math.max(oldest, row.ageMinutes), 0),
+          truncated: rows.length >= limit,
+        },
+        diagnostics,
+        tasks: rows.map(packTaskView),
+      };
+    } catch (error) {
+      if (!isUndefinedTable(error)) throw error;
+      this.logger.warn(PACK_TABLE_MISSING_MESSAGE);
+      return {
+        generatedAt: new Date().toISOString(),
+        tableReady: false,
+        warning: PACK_TABLE_MISSING_MESSAGE,
+        summary: {
+          openTasks: 0,
+          pending: 0,
+          packing: 0,
+          packed: 0,
+          unassigned: 0,
+          oldestAgeMinutes: 0,
+          truncated: false,
+        },
+        diagnostics: {
+          tasksTotal: 0,
+          pending: 0,
+          packing: 0,
+          packed: 0,
+          pickedOrders: 0,
+          pickedOrdersWithoutPackTask: 0,
+          pickedTasks: 0,
+        },
+        tasks: [],
+      };
+    }
+  }
+
+  async startPackTask(ctx: TenantContext, publicId: string): Promise<Record<string, unknown>> {
+    return this.packTable(() =>
+      this.db.begin(async (tx) => {
+        const task = await this.repo.lockPackTask(tx, ctx.orgId, publicId);
+        if (task === null) throw notFound('pack_task');
+        if (task.status === 'packing') return packTaskView(task);
+        if (task.status !== 'pending') {
+          throw new AppError('DOCUMENT_STATE_INVALID', {
+            message: 'این تسک بسته‌بندی قابل شروع نیست.',
+            details: [{ rule: 'task_not_startable', params: { status: task.status } }],
+          });
+        }
+        const updated = await this.repo.updatePackTask(tx, toBigInt(task.internalId), {
+          status: 'packing',
+          ...(ctx.actorId === null ? {} : { assignedTo: ctx.actorId }),
+        });
+        await this.emit(tx, ctx, WAREHOUSE_EVENTS.packTaskStarted, 'pack_task', toBigInt(task.internalId), {
+          packTaskId: task.id,
+          orderId: task.orderId,
+        });
+        return packTaskView(updated);
+      }),
+    );
+  }
+
+  /**
+   * `POST warehouse/pack-tasks/:id/complete` → task `packed`, order
+   * `ready_to_ship`, then a best-effort channel ready-to-ship notification
+   * (skipped silently when the adapter does not support it).
+   */
+  async completePackTask(
+    ctx: TenantContext,
+    publicId: string,
+    body: PackTaskCompleteBody,
+  ): Promise<Record<string, unknown>> {
+    let orderInternalId: bigint | null = null;
+    let orderPublicId = '';
+    let shouldNotifyChannel = false;
+    const result = await this.packTable(() =>
+      this.db.begin(async (tx) => {
+        const task = await this.repo.lockPackTask(tx, ctx.orgId, publicId);
+        if (task === null) throw notFound('pack_task');
+        orderInternalId = toBigInt(task.orderInternalId);
+        orderPublicId = task.orderId;
+        if (task.status === 'packed') {
+          return { packTask: packTaskView(task), orderId: task.orderId, alreadyCompleted: true };
+        }
+        if (task.status !== 'pending' && task.status !== 'packing') {
+          throw new AppError('DOCUMENT_STATE_INVALID', {
+            message: 'این تسک بسته‌بندی قابل تکمیل نیست.',
+            details: [{ rule: 'task_not_completable', params: { status: task.status } }],
+          });
+        }
+        const count = await this.repo.countPackTasksForOrder(tx, ctx.orgId, toBigInt(task.orderInternalId));
+        const packageNo = body.packageNo ?? task.packageNo ?? this.buildPackageNo(task.orderNo, count + 1);
+        const weightNote = body.weight === undefined ? null : `weight_g=${Math.round(body.weight)}`;
+        const notes = [task.notes, weightNote]
+          .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+          .join(' | ');
+        const updated = await this.repo.updatePackTask(tx, toBigInt(task.internalId), {
+          status: 'packed',
+          packageNo,
+          ...(notes.length > 0 ? { notes } : {}),
+          closed: true,
+          ...(ctx.actorId === null ? {} : { assignedTo: ctx.actorId }),
+        });
+        await this.repo.setOrderFulfillmentStatus(tx, ctx.orgId, toBigInt(task.orderInternalId), 'ready_to_ship');
+        shouldNotifyChannel = true;
+        await this.emit(tx, ctx, WAREHOUSE_EVENTS.packTaskCompleted, 'pack_task', toBigInt(task.internalId), {
+          packTaskId: task.id,
+          orderId: task.orderId,
+          packageNo,
+          weight: body.weight ?? null,
+        });
+        return {
+          packTask: packTaskView(updated),
+          orderId: task.orderId,
+          orderFulfillmentStatus: 'ready_to_ship',
+          alreadyCompleted: false,
+        };
+      }),
+    );
+    // Outside the transaction: a partner call must never hold a DB lock or
+    // roll back a successfully packed order.
+    if (orderInternalId !== null && shouldNotifyChannel) {
+      await this.pushChannelReadyToShip(ctx, orderInternalId, orderPublicId);
+    }
+    return result;
+  }
+
+  /** `POST warehouse/pack-tasks/:id/assign`; omitting `userId` releases it. */
+  async assignPackStationTask(
+    ctx: TenantContext,
+    publicId: string,
+    body: PickTaskAssignBody,
+  ): Promise<Record<string, unknown>> {
+    return this.packTable(() =>
+      this.db.begin(async (tx) => {
+        const task = await this.repo.lockPackTask(tx, ctx.orgId, publicId);
+        if (task === null) throw notFound('pack_task');
+        let assignedTo: bigint | null = null;
+        if (body.userId !== undefined) {
+          assignedTo = await this.repo.findActiveUserId(tx, ctx.orgId, body.userId);
+          if (assignedTo === null) throw notFound('user');
+        }
+        const updated = await this.repo.assignPackTask(tx, ctx.orgId, publicId, assignedTo);
+        if (updated === null) throw notFound('pack_task');
+        return packTaskView(updated);
+      }),
+    );
+  }
+
+  /**
+   * Best-effort channel notification when an order is ready to ship. Adapters
+   * without `order.ack`, channel-less (manual) orders and partner failures are
+   * skipped silently: packing already succeeded and must not be reported failed.
+   */
+  private async pushChannelReadyToShip(
+    ctx: TenantContext,
+    orderInternalId: bigint,
+    orderPublicId: string,
+  ): Promise<void> {
+    try {
+      const ref = await this.repo.findOrderChannelRef(this.db, ctx.orgId, orderInternalId);
+      if (ref === null || ref.accountPublicId === null || ref.externalOrderId === null) return;
+      const resolved = await this.channelAccounts.resolveByPublicId(ctx.orgId.toString(), ref.accountPublicId);
+      if (!resolved.adapter.supports('order.ack')) return;
+      await resolved.adapter.acknowledgeOrder(resolved.account, ref.externalOrderId, 'packed');
+    } catch (error) {
+      this.logger.debug(
+        `ready-to-ship push skipped for order ${orderPublicId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** Turns a missing `pack_tasks` table into an honest 501 instead of a 500. */
+  private async packTable<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isUndefinedTable(error)) throw error;
+      throw new AppError('NOT_IMPLEMENTED', {
+        message: PACK_TABLE_MISSING_MESSAGE,
+        messageKey: 'warehouse.pack_tasks_missing',
+        details: [{ rule: 'pack_tasks_table_missing' }],
+      });
+    }
   }
 
   // ================================================================ helpers

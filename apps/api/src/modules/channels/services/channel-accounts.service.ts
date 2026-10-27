@@ -62,6 +62,46 @@ export function fingerprintSuffix(crypto: CryptoPort, plaintext: string): string
   return `…${crypto.fingerprint(plaintext).slice(-4)}`;
 }
 
+/**
+ * `settings` is jsonb, so a nested value that is handed over as a JSON *string*
+ * would be stored as a jsonb string (the "double encoded" `settings.pricing`
+ * bug). Parse object/array-shaped strings back into structures, bounded in
+ * depth, and leave every other string untouched.
+ */
+export function normalizeSettingsJson(
+  settings: Readonly<Record<string, unknown>>,
+  depth = 0,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(settings)) {
+    out[key] = normalizeSettingsValue(value, depth);
+  }
+  return out;
+}
+
+function normalizeSettingsValue(value: unknown, depth: number): unknown {
+  if (depth > 3) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const shaped =
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'));
+    if (!shaped) return value;
+    try {
+      return normalizeSettingsValue(JSON.parse(trimmed) as unknown, depth + 1);
+    } catch {
+      return value;
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeSettingsValue(item, depth + 1));
+  }
+  if (typeof value === 'object' && value !== null) {
+    return normalizeSettingsJson(value as Record<string, unknown>, depth + 1);
+  }
+  return value;
+}
+
 @Injectable()
 export class ChannelAccountService {
   private readonly accounts: SqlChannelAccountRepository;
@@ -370,9 +410,12 @@ export class ChannelAccountService {
     actorId: string | null;
     requestId: string;
   }): Promise<ChannelAccountRow> {
-    assertSettingsSafe(input.settings);
+    // Normalise first: a caller that sends `pricing` (or any nested object) as a
+    // JSON string must still land as a jsonb object, never as a jsonb string.
+    const incoming = normalizeSettingsJson(input.settings);
+    assertSettingsSafe(incoming);
     const row = await this.get(input.organizationId, input.accountId);
-    const merged = { ...row.settings, ...input.settings };
+    const merged = normalizeSettingsJson({ ...row.settings, ...incoming });
     assertSettingsSafe(merged);
     // `postgres` serialises a JS object into a jsonb object; stringifying first
     // would store a jsonb *string* (double encoding).

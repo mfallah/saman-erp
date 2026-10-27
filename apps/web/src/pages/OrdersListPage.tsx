@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
+import { Eye } from 'lucide-react';
 import { api } from '../lib/api-client';
 import { formatJalali } from '../lib/dates';
 import { useDocumentTitle } from '../lib/hooks';
-import { formatMoney } from '../lib/money';
+import { formatMoney, formatNumber } from '../lib/money';
 import { PERM } from '../lib/permissions';
 import { queryKeys } from '../lib/query-keys';
 import { useHasPermission } from '../lib/use-auth';
 import type { SalesOrderSummary } from '../types/api';
 import { PermissionNotice } from '../components/auth/Can';
+import { OrderDetailDrawer } from '../components/orders/OrderDetailDrawer';
 import { StatusBadge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
 import { DataTableToolbar } from '../components/ui/DataTableToolbar';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Pagination } from '../components/ui/Pagination';
@@ -52,6 +55,20 @@ const columns: readonly Column<SalesOrderSummary>[] = [
   },
   { key: 'status', header: 'وضعیت', render: (order) => <StatusBadge status={order.status} /> },
   {
+    key: 'items',
+    header: 'اقلام',
+    align: 'center',
+    render: (order) =>
+      order.itemCount === undefined ? (
+        '—'
+      ) : (
+        <span className="inline-flex items-baseline gap-1">
+          <span className="tabular">{formatNumber(order.itemCount)}</span>
+          <span className="text-[11px] text-slate-400">قلم</span>
+        </span>
+      ),
+  },
+  {
     key: 'total',
     header: 'مبلغ کل',
     align: 'end',
@@ -72,6 +89,7 @@ export function OrdersListPage() {
   const [search, setSearch] = useState('');
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [history, setHistory] = useState<readonly (string | undefined)[]>([]);
+  const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: queryKeys.orders.list({ status, search, cursor }),
@@ -98,6 +116,24 @@ export function OrdersListPage() {
   const pagination = query.data?.pagination;
   const items = query.data?.items ?? [];
   const hasMore = pagination?.nextCursor !== undefined && pagination?.nextCursor !== null;
+
+  const detailColumn: Column<SalesOrderSummary> = {
+    key: 'detail',
+    header: '',
+    align: 'end',
+    width: '1%',
+    render: (order) => (
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={<Eye aria-hidden className="size-3.5" />}
+        onClick={() => setDetailOrderId(order.id)}
+      >
+        جزئیات
+      </Button>
+    ),
+  };
+  const tableColumns = [...columns, detailColumn];
 
   return (
     <>
@@ -133,7 +169,7 @@ export function OrdersListPage() {
       />
 
       <DataTable
-        columns={columns}
+        columns={tableColumns}
         rows={items}
         rowKey={(order) => order.id}
         loading={query.isLoading}
@@ -161,6 +197,11 @@ export function OrdersListPage() {
           setHistory((current) => current.slice(0, -1));
           setCursor(previous);
         }}
+      />
+
+      <OrderDetailDrawer
+        orderId={detailOrderId}
+        onClose={() => setDetailOrderId(null)}
       />
     </>
   );

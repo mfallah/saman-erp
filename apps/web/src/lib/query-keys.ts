@@ -47,9 +47,12 @@ export const queryKeys = {
   fulfillment: {
     pickTasks: (params?: QueryParams) => ['pick-tasks', params ?? {}] as const,
     pickTask: (id: string) => ['pick-tasks', id] as const,
+    pickBoard: ['pick-tasks', 'board'] as const,
+    myPickTasks: ['pick-tasks', 'mine'] as const,
     packingTasks: (params?: QueryParams) => ['packing-tasks', params ?? {}] as const,
     packingTask: (id: string) => ['packing-tasks', id] as const,
     packingStations: ['packing-stations'] as const,
+    packBoard: ['pack-tasks', 'board'] as const,
   },
   accounting: {
     accounts: (params?: QueryParams) => ['accounting', 'accounts', params ?? {}] as const,
@@ -69,6 +72,10 @@ export const queryKeys = {
     allPricingPolicies: ['pricing', 'policies'] as const,
     pricePreview: (accountId: string, variantId: string) =>
       ['pricing', 'preview', accountId, variantId] as const,
+  },
+  pricing: {
+    channels: ['pricing', 'channels'] as const,
+    channelPolicy: (accountId: string) => ['pricing', 'channels', accountId, 'policy'] as const,
   },
   identity: {
     users: (params?: QueryParams) => ['users', params ?? {}] as const,

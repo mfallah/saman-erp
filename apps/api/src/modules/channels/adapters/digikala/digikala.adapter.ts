@@ -214,6 +214,65 @@ function productTitleOf(raw: unknown, fallback: string): string {
   return title.trim();
 }
 
+/** Keys that carry a product image directly or as an image container. */
+const IMAGE_KEYS = ['image_src', 'image_url', 'image', 'images', 'thumbnail', 'photo'] as const;
+/** Containers worth descending into while looking for an image. */
+const IMAGE_CONTAINER_KEYS = [
+  ...IMAGE_KEYS,
+  'product',
+  'data',
+  'item',
+  'items',
+  'variant',
+  'variants',
+] as const;
+
+/** Absolute http(s) URL only: a relative/`data:` value is not usable as-is. */
+function normaliseImageUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().slice(0, 1000);
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * Product image across the seller-list envelopes: the row-level `image_src`
+ * wins, then the nested `product.image` (a string, or an object/array whose
+ * `url`/`src` holds the link). Bounded walk; anything else is ignored.
+ */
+function productImageUrlOf(raw: unknown): string | null {
+  const body = record(raw);
+  const product = record(body['product']);
+  const direct =
+    normaliseImageUrl(body['image_src']) ??
+    normaliseImageUrl(body['image_url']) ??
+    normaliseImageUrl(product['image_src']) ??
+    normaliseImageUrl(product['image_url']);
+  if (direct !== null) return direct;
+
+  const walk = (value: unknown, depth: number, insideImage: boolean): string | null => {
+    if (depth > 6 || value === null || typeof value !== 'object') return null;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item, depth + 1, insideImage);
+        if (found !== null) return found;
+      }
+      return null;
+    }
+    const obj = value as Record<string, unknown>;
+    const keys = insideImage ? [...IMAGE_KEYS, 'url', 'src'] : IMAGE_KEYS;
+    for (const key of keys) {
+      const found = normaliseImageUrl(obj[key]);
+      if (found !== null) return found;
+    }
+    for (const key of IMAGE_CONTAINER_KEYS) {
+      const inner = walk(obj[key], depth + 1, (IMAGE_KEYS as readonly string[]).includes(key));
+      if (inner !== null) return inner;
+    }
+    return null;
+  };
+  return walk(body, 0, false) ?? walk(product, 0, true);
+}
+
 /** Digikala product id from a seller-list row (`product_id` wins over row `id`). */
 function productIdOf(raw: unknown): string | null {
   const body = record(raw);
@@ -974,6 +1033,7 @@ export class DigikalaAdapter implements ChannelAdapter {
         stringValue(body['inventory']) ??
         stringValue(product['stock']) ??
         stringValue(product['available']);
+      const imageUrl = productImageUrlOf(raw);
 
       yield {
         externalProductId: externalProductId.trim(),
@@ -983,6 +1043,7 @@ export class DigikalaAdapter implements ChannelAdapter {
         ...(barcode === null ? {} : { barcode }),
         ...(price === null ? {} : { price }),
         ...(available === null ? {} : { available }),
+        ...(imageUrl === null ? {} : { imageUrl }),
         raw,
       };
     }

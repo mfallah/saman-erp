@@ -38,6 +38,7 @@ function AppLayout() {
 const LoginPage = lazyRouteComponent(() => import('./pages/LoginPage'), 'LoginPage');
 const DashboardPage = lazyRouteComponent(() => import('./pages/DashboardPage'), 'DashboardPage');
 const ProductsListPage = lazyRouteComponent(() => import('./pages/ProductsListPage'), 'ProductsListPage');
+const MergePage = lazyRouteComponent(() => import('./pages/MergePage'), 'MergePage');
 const ProductNewPage = lazyRouteComponent(() => import('./pages/ProductNewPage'), 'ProductNewPage');
 const ProductDetailPage = lazyRouteComponent(() => import('./pages/ProductDetailPage'), 'ProductDetailPage');
 const InventoryPage = lazyRouteComponent(() => import('./pages/InventoryPage'), 'InventoryPage');
@@ -63,6 +64,10 @@ const PricingRulesPage = lazyRouteComponent(() => import('./pages/PricingRulesPa
 const ChannelPricingPage = lazyRouteComponent(
   () => import('./pages/ChannelPricingPage'),
   'ChannelPricingPage',
+);
+const ChannelsPricingPage = lazyRouteComponent(
+  () => import('./pages/ChannelsPricingPage'),
+  'ChannelsPricingPage',
 );
 const UsersPage = lazyRouteComponent(() => import('./pages/UsersPage'), 'UsersPage');
 const RolesPage = lazyRouteComponent(() => import('./pages/RolesPage'), 'RolesPage');
@@ -304,8 +309,23 @@ const pricingRoute = createRoute({
 const channelPricingRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/pricing/channels',
-  beforeLoad: () => guardPermission(PERM.accountRead),
+  beforeLoad: () => guardPermission(PERM.pricingRuleRead),
+  component: ChannelsPricingPage,
+});
+
+/** Legacy pricing screens stay reachable by URL after the one-policy migration. */
+const pricingListsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/pricing/lists',
+  beforeLoad: () => guardAnyPermission([PERM.pricingRuleRead, PERM.accountRead]),
   component: ChannelPricingPage,
+});
+
+const pricingRulesAliasRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/pricing/rules',
+  beforeLoad: () => guardAnyPermission([PERM.pricingRuleRead, PERM.accountRead]),
+  component: PricingRulesPage,
 });
 
 const partnersRoute = createRoute({
@@ -355,6 +375,8 @@ const routeTree = rootRoute.addChildren([
     procurementRoute,
     pricingRoute,
     channelPricingRoute,
+    pricingListsRoute,
+    pricingRulesAliasRoute,
     partnersRoute,
     automationRoute,
     forbiddenRoute,

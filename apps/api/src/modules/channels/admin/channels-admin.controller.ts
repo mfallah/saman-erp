@@ -13,7 +13,7 @@ import type { TenantContext } from '../../../common/contracts';
 import { CurrentTenant } from '../../../common/decorators/current-context.decorator';
 import { Permissions } from '../../..//common/decorators/permissions.decorator';
 import { apiData } from '../../../common/interceptors/response.interceptor';
-import { ChannelAccountService } from '../services/channel-accounts.service';
+import { ChannelAccountService, normalizeSettingsJson } from '../services/channel-accounts.service';
 import {
   normalizePublicKey,
   publicKeyFingerprint,
@@ -94,6 +94,19 @@ function normalizeSyncSummary(raw: unknown): SyncJobSummary {
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Accepts an object, or a JSON object string, and never throws. */
+function settingsRecord(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try {
+      return settingsRecord(JSON.parse(value) as unknown);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }
 
 function credentialsFrom(body: Record<string, unknown>): Record<string, string> {
@@ -279,6 +292,9 @@ export class ChannelsAdminController {
       throw new BadRequestException({ code: 'NOT_FOUND', message: 'channel not found' });
     }
 
+    // `settings` is jsonb: pass a serialised *object*, so a nested value that
+    // arrives as a JSON string (e.g. `pricing`) is not stored double encoded.
+    const settingsJson = JSON.stringify(normalizeSettingsJson(settingsRecord(payload['settings'])));
     const inserted = await this.sql`
       insert into erp.channel_accounts
         (organization_id, channel_id, name, external_account_id, seller_code, base_url,
@@ -288,7 +304,7 @@ export class ChannelsAdminController {
          ${text(payload['externalAccountId']) || null}, ${text(payload['sellerCode']) || null},
          ${text(payload['baseUrl']) || null}, 'api_key',
          ${Number(payload['rateLimitPerMin'] ?? 60)}, ${payload['stockPushEnabled'] === false ? false : true},
-         ${Number(payload['stockSafetyQty'] ?? 0)}, ${payload['settings'] ?? {}}::jsonb, true,
+         ${Number(payload['stockSafetyQty'] ?? 0)}, ${settingsJson}::jsonb, true,
          ${ctx.actorId}, ${ctx.actorId})
       returning id::text as id, public_id::text as public_id
     `;
@@ -942,6 +958,67 @@ export class ChannelsAdminController {
     }
 
     return apiData({ scanned, updated, skipped });
+  }
+
+  /**
+   * Re-reads the last seven days of Digikala orders. The order cursor and the
+   * per-order idempotency keys of the account are cleared inside one
+   * transaction, then a `pull_orders` job is queued (and run after the response)
+   * so the orders are re-emitted as `channel.order.received` events. Order
+   * creation stays idempotent on the sales side, so a re-run is safe.
+   */
+  @Post('channel-accounts/:accountId/digikala/backfill-orders')
+  @Permissions('channel.sync.trigger')
+  @ApiOperation({ summary: 'Re-pull the last 7 days of Digikala orders (idempotent re-emit)' })
+  async digikalaBackfillOrders(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const requested = Number(payload['days'] ?? 7);
+    const days = Number.isFinite(requested) ? Math.min(30, Math.max(1, Math.trunc(requested))) : 7;
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const result = await this.sync.backfillOrders({
+      organizationId: ctx.orgId.toString(),
+      accountId: accountInternal,
+      days,
+    });
+    // Execute after the HTTP response: the caller gets the job id immediately.
+    setImmediate(() => {
+      void this.sync.runJob(result.jobId).catch(() => undefined);
+    });
+    return apiData(result);
+  }
+
+  /**
+   * Refreshes `erp.channel_product_costs` for the account's mapped variants
+   * (at most 200 per call) and returns the counts.
+   */
+  @Post('channel-accounts/:accountId/digikala/sync-commissions')
+  @Permissions('channel.sync.trigger')
+  @ApiOperation({ summary: 'Refresh Digikala commission rates for mapped variants (max 200)' })
+  async digikalaSyncCommissions(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+    @Body() body: unknown,
+  ) {
+    const payload = (body ?? {}) as Record<string, unknown>;
+    const requested = Number(payload['limit'] ?? 200);
+    const limit = Number.isFinite(requested) ? Math.min(200, Math.max(1, Math.trunc(requested))) : 200;
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    const result = await this.sync.syncCommissions({
+      organizationId: ctx.orgId.toString(),
+      accountId: accountInternal,
+      limit,
+    });
+    return apiData(result);
   }
 
   @Post('channel-accounts/:accountId/test')
