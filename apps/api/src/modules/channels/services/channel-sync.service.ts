@@ -27,6 +27,7 @@ import { ChannelAccountService } from './channel-accounts.service';
 import { SqlChannelSyncRepository, type SyncJobRow, type SyncJobType } from '../repositories/channel-sync.repository';
 import { SqlChannelMappingRepository, type ChannelMappingRepositoryPort } from '../repositories/channel-mapping.repository';
 import { SqlOutboxWriter, type OutboxWriterPort } from '../repositories/channel-webhook.repository';
+import { productImageUrlOf } from '../adapters/digikala/digikala.adapter';
 
 export const SYNC_TRIGGER_TYPES = [
   'inventory_push',
@@ -415,6 +416,22 @@ export class ChannelSyncService {
     }
     const catalog = listProductCatalog.bind(resolved.adapter);
     const variantsOf = listProductVariants.bind(resolved.adapter);
+    // Bulk variant list first: the per-product variant endpoints are rate
+    // limited (429) on this account, and one paginated call set maps every
+    // product far more reliably.
+    const listSellerVariants = resolved.adapter.listSellerVariants;
+    const variantByProduct = new Map<string, { variantId: string; supplierCode: string | null }>();
+    if (typeof listSellerVariants === 'function') {
+      try {
+        for await (const entry of listSellerVariants.call(resolved.adapter, resolved.account, { maxPages: 10 })) {
+          if (!variantByProduct.has(entry.productId)) {
+            variantByProduct.set(entry.productId, { variantId: entry.variantId, supplierCode: entry.supplierCode });
+          }
+        }
+      } catch {
+        // fall back to per-product lookups below
+      }
+    }
 
     // The seller list is bounded: 50 rows/page, never more than 10 pages.
     const MAX_PAGES = 10;
@@ -460,8 +477,32 @@ export class ChannelSyncService {
         continue;
       }
 
-      const variants = await variantsOf(resolved.account, externalProductId);
-      const variant = variants.find((candidate) => /^\d+$/.test(candidate.externalVariantId.trim()));
+      // Keep the master image in sync with the channel listing (hotlinked).
+      const imageUrl = productImageUrlOf(entry.raw);
+      if (imageUrl !== null) {
+        await this.db`
+          update erp.products p
+             set image_url = coalesce(p.image_url, ${imageUrl})
+            from erp.product_variants v
+            join erp.channel_product_mappings m on m.product_variant_id = v.id
+           where v.product_id = p.id
+             and m.channel_account_id = ${resolved.row.id}::bigint
+             and m.external_product_id = ${externalProductId}
+             and m.deleted_at is null`;
+      }
+
+      const bulk = variantByProduct.get(externalProductId);
+      let variant: { readonly externalVariantId: string; readonly sku?: string | null | undefined } | undefined;
+      if (bulk !== undefined) {
+        variant = { externalVariantId: bulk.variantId, sku: bulk.supplierCode };
+      } else {
+        try {
+          const variants = await variantsOf(resolved.account, externalProductId);
+          variant = variants.find((candidate) => /^\d+$/.test(candidate.externalVariantId.trim()));
+        } catch {
+          variant = undefined;
+        }
+      }
       if (variant === undefined) {
         skipped += 1;
         continue;

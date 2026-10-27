@@ -959,6 +959,38 @@ export class DigikalaAdapter implements ChannelAdapter {
    * Catalogue ids for the admin repair flow: `product_id` + title only, no
    * variant lookups (the caller resolves variants for the rows it will update).
    */
+  /**
+   * Bulk seller-variant list. One paginated call set instead of one request per
+   * product — the per-product endpoints are rate limited (429) on this account.
+   */
+  async *listSellerVariants(
+    account: AdapterAccount,
+    options?: { readonly maxPages?: number },
+  ): AsyncIterable<{ variantId: string; productId: string; supplierCode: string | null }> {
+    const size = 50;
+    const maxPages = options?.maxPages ?? 10;
+    for (let page = 1; page <= maxPages; page += 1) {
+      const response = await this.withAuth(account, (authHeaders) =>
+        this.deps.http.request(account, {
+          operation: 'digikala.variants.list',
+          method: 'GET',
+          path: DIGIKALA_PATHS.variantsList,
+          query: { page, size, sort: 'id', order: 'asc' },
+          authHeaders,
+        }),
+      );
+      const rows = orderItems(response.json);
+      for (const raw of rows) {
+        const body = record(raw);
+        const variantId = stringValue(body['product_variant_id']) ?? stringValue(body['id']);
+        const productId = stringValue(body['product_id']);
+        if (variantId === null || productId === null) continue;
+        yield { variantId, productId, supplierCode: stringValue(body['supplier_code']) };
+      }
+      if (rows.length < size) break;
+    }
+  }
+
   async *listProductCatalog(
     account: AdapterAccount,
     options?: { readonly maxPages?: number },

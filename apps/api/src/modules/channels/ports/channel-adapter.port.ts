@@ -109,6 +109,15 @@ export interface ChannelAdapter {  readonly code: ChannelCode;
     externalProductId: string,
   ): Promise<readonly ExternalProductVariant[]>;
 
+  /**
+   * Bulk seller-variant listing (one paginated call set). Preferred over the
+   * per-product lookup when the channel rate-limits per-product endpoints.
+   */
+  listSellerVariants?(
+    account: AdapterAccount,
+    options?: { readonly maxPages?: number },
+  ): AsyncIterable<{ readonly variantId: string; readonly productId: string; readonly supplierCode: string | null }>;
+
   /** Reconciliation-only stock read; never used as a write source of truth. */
   pullInventory?(
     account: AdapterAccount,

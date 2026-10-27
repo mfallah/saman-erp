@@ -21,6 +21,7 @@ export const DIGIKALA_PATHS = {
   publishProduct: (productId: string) => `/product-edit/${productId}/publish`,
   variantsOfProduct: (productId: string) => `/variants/creation/${productId}`,
   variant: (variantId: string) => `/variants/${variantId}`,
+  variantsList: '/variants',
   sellerStock: (variantId: string) => `/variants/${variantId}/seller-stock`,
   bulkSellerStock: '/batch/variant/seller-stock/update',
   sellingPrice: '/variants/selling-price',
