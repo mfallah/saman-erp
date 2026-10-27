@@ -324,6 +324,63 @@ export class ChannelSyncService {
   }
 
   /**
+   * Re-pulls the last `days` of channel orders and fills the channel-supplied
+   * title/image on lines that were materialised before those fields were kept.
+   * Matched by `sku_snapshot` (the channel variant id) so it also heals lines
+   * stored on the placeholder variant; only placeholder titles and empty images
+   * are rewritten, so re-running is a no-op.
+   */
+  async backfillOrderMedia(input: {
+    organizationId: string;
+    accountId: string;
+    days?: number;
+  }): Promise<{ scanned: number; updated: number }> {
+    const days = Math.min(30, Math.max(1, Math.trunc(input.days ?? ORDER_BACKFILL_DAYS)));
+    const resolved = await this.accounts.resolveForSync(input.organizationId, input.accountId);
+    if (!resolved.adapter.supports('order.pull')) {
+      throw new IntegrationError('NOT_IMPLEMENTED', {
+        messageFa: 'این کانال خواندن سفارش ندارد.',
+        details: { channel: resolved.adapter.code, capability: 'order.pull' },
+      });
+    }
+    const since = new Date(this.now().getTime() - days * 24 * 60 * 60 * 1000);
+    const seen = new Set<string>();
+    let scanned = 0;
+    let updated = 0;
+    for await (const order of resolved.adapter.pullOrders(resolved.account, since)) {
+      for (const line of order.lines) {
+        const variantId = line.externalVariantId?.trim() ?? '';
+        const title = line.externalProductTitle?.trim() ?? null;
+        const imageUrl = line.externalImageUrl ?? null;
+        if (variantId.length === 0 || seen.has(variantId)) continue;
+        if (title === null && imageUrl === null) continue;
+        seen.add(variantId);
+        scanned += 1;
+        const rows = await this.db`
+          update erp.sales_order_lines
+             set title_snapshot = case
+                   when title_snapshot = 'کالای نامشخص کانال' then coalesce(${title}::text, title_snapshot)
+                   else title_snapshot
+                 end,
+                 external_title = coalesce(${title}::text, external_title),
+                 image_url = coalesce(image_url, ${imageUrl}::text)
+           where sku_snapshot = ${variantId}
+             and (
+               (title_snapshot = 'کالای نامشخص کانال' and ${title}::text is not null)
+               or (image_url is null and ${imageUrl}::text is not null)
+             )
+          returning id`;
+        updated += rows.length;
+      }
+    }
+    this.logger.info(
+      { accountId: resolved.row.id, since: since.toISOString(), scanned, updated },
+      'channel order media backfilled',
+    );
+    return { scanned, updated };
+  }
+
+  /**
    * Refreshes `erp.channel_product_costs` for the account's mapped variants
    * (bounded). Counts are returned so the admin UI can report progress.
    */
@@ -1518,6 +1575,10 @@ export class ChannelSyncService {
       lines: order.lines.map((line) => ({
         externalLineId: line.externalLineId,
         externalSku: line.externalSku,
+        ...(line.externalVariantId === undefined ? {} : { externalVariantId: line.externalVariantId }),
+        ...(line.externalProductId === undefined ? {} : { externalProductId: line.externalProductId }),
+        ...(line.externalProductTitle === undefined ? {} : { externalProductTitle: line.externalProductTitle }),
+        ...(line.externalImageUrl === undefined ? {} : { externalImageUrl: line.externalImageUrl }),
         quantity: line.quantity,
         unitPrice: line.unitPrice,
         discount: line.discount,

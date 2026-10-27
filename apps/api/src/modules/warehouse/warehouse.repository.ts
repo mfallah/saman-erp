@@ -843,7 +843,7 @@ export class WarehouseRepository {
              t.sequence_no as "sequenceNo", t.status, t.assigned_to::text as "assignedTo",
              au.full_name as "assignedToName",
              v.barcode, coalesce(sol.sku_snapshot, v.sku) as sku,
-             coalesce(sol.title_snapshot, v.title, p.name) as title,
+             coalesce(nullif(sol.title_snapshot, 'کالای نامشخص کانال'), p.name, sol.title_snapshot) as title,
              t.created_at::text as "createdAt",
              floor(extract(epoch from (now() - t.created_at)) / 60)::int as "ageMinutes"
       from erp.pick_tasks t
@@ -891,10 +891,10 @@ export class WarehouseRepository {
       select t.public_id as id, t.status, o.order_no as "orderNo",
              ch.code as "channelCode",
              coalesce(sol.sku_snapshot, v.sku) as sku,
-             coalesce(sol.title_snapshot, v.title, p.name) as title,
-             coalesce(sol.title_snapshot, v.title, p.name) as "productName",
+             coalesce(nullif(sol.title_snapshot, 'کالای نامشخص کانال'), p.name, sol.title_snapshot) as title,
+             coalesce(nullif(sol.title_snapshot, 'کالای نامشخص کانال'), p.name, sol.title_snapshot) as "productName",
              coalesce(sol.sku_snapshot, v.sku) as "variantSku",
-             coalesce(v.image_url, p.image_url) as "imageUrl",
+             coalesce(v.image_url, p.image_url, sol.image_url) as "imageUrl",
              t.quantity_required::text as quantity,
              t.quantity_required::text as "quantityRequired",
              t.quantity_picked::text as "quantityPicked",
@@ -1176,10 +1176,10 @@ export class WarehouseRepository {
              coalesce(o.fulfillment_status, 'unfulfilled') as "fulfillmentStatus",
              pw.public_id as "waveId", pw.wave_no as "waveNo",
              coalesce(sol.sku_snapshot, v.sku) as sku,
-             coalesce(sol.title_snapshot, v.title, p.name) as title,
-             coalesce(sol.title_snapshot, v.title, p.name) as "productName",
+             coalesce(nullif(sol.title_snapshot, 'کالای نامشخص کانال'), p.name, sol.title_snapshot) as title,
+             coalesce(nullif(sol.title_snapshot, 'کالای نامشخص کانال'), p.name, sol.title_snapshot) as "productName",
              coalesce(sol.sku_snapshot, v.sku) as "variantSku",
-             coalesce(v.image_url, p.image_url) as "imageUrl",
+             coalesce(v.image_url, p.image_url, sol.image_url) as "imageUrl",
              t.quantity_required::text as "quantityRequired",
              t.quantity_picked::text as "quantityPicked",
              l.full_code as "locationCode", t.sequence_no as "sequenceNo", t.status,
@@ -1351,10 +1351,10 @@ export class WarehouseRepository {
              -- card shows the whole order, not a subset.
              coalesce((
                select json_agg(json_build_object(
-                        'name', coalesce(l.title_snapshot, v.title, p.name),
+                        'name', coalesce(nullif(l.title_snapshot, 'کالای نامشخص کانال'), p.name, l.title_snapshot),
                         'sku', coalesce(l.sku_snapshot, v.sku),
                         'qty', l.quantity::text,
-                        'imageUrl', coalesce(v.image_url, p.image_url)
+                        'imageUrl', coalesce(v.image_url, p.image_url, l.image_url)
                       ) order by l.line_no)
                  from erp.sales_order_lines l
                  left join erp.product_variants v on v.id = l.product_variant_id

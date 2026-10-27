@@ -917,6 +917,38 @@ export class ChannelsAdminController {
   }
 
   /**
+   * Re-pulls the last seven days of Digikala orders and copies each row's
+   * `product_variant_title` / `product_image_url` onto the existing
+   * `sales_order_lines` matched by `sku_snapshot` (the DK variant id). Only a
+   * placeholder title or an empty image is filled, so re-running is a no-op.
+   */
+  @Post('channel-accounts/:accountId/digikala/backfill-order-media')
+  @Permissions('channel.sync.trigger')
+  @ApiOperation({ summary: 'Backfill order-line title/image from Digikala orders (idempotent)' })
+  async digikalaBackfillOrderMedia(
+    @CurrentTenant() ctx: TenantContext,
+    @Param('accountId') accountId: string,
+  ) {
+    const accountInternal = await this.accountInternalId(ctx, accountId);
+    if (accountInternal === null) {
+      throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+    }
+    try {
+      const result = await this.sync.backfillOrderMedia({
+        organizationId: ctx.orgId.toString(),
+        accountId: accountInternal,
+      });
+      return apiData({ ok: true, ...result });
+    } catch (error) {
+      return apiData({
+        ok: false,
+        error: error instanceof Error ? error.message : 'backfill_failed',
+        hint: 'مغایرت اعتبارنامه یا محدودیت نرخ دیجی‌کالا؛ چند دقیقه بعد دوباره تلاش کنید.',
+      });
+    }
+  }
+
+  /**
    * Refreshes `erp.channel_product_costs` for the account's mapped variants
    * (at most 200 per call) and returns the counts.
    */

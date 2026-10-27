@@ -770,6 +770,7 @@ export class DigikalaAdapter implements ChannelAdapter {
       stringValue(body['product_variant_title']) ??
       stringValue(body['product_title']) ??
       stringValue(body['title']);
+    const lineImage = normaliseImageUrl(body['product_image_url']);
     return {
       orderId,
       order: {
@@ -783,6 +784,7 @@ export class DigikalaAdapter implements ChannelAdapter {
             externalSku: stringValue(body['supplier_code']) ?? variantId,
             externalVariantId: variantId,
             ...(lineTitle === null ? {} : { externalProductTitle: lineTitle }),
+            ...(lineImage === null ? {} : { externalImageUrl: lineImage }),
             quantity,
             unitPrice,
             discount,
@@ -818,12 +820,19 @@ export class DigikalaAdapter implements ChannelAdapter {
         : [];
     const lines: CanonicalOrderLine[] = rawLines.map((line, index) => {
       const item = record(line);
+      const title =
+        stringValue(item['product_variant_title']) ??
+        stringValue(item['product_title']) ??
+        stringValue(item['title']);
+      const image = normaliseImageUrl(item['product_image_url']) ?? productImageUrlOf(item);
       return {
         externalLineId: stringValue(item['id']) ?? `${externalOrderId}:${index + 1}`,
         externalSku: stringValue(item['sku']) ?? stringValue(item['variant_id']) ?? '',
         ...(stringValue(item['variant_id']) === null
           ? {}
           : { externalVariantId: stringValue(item['variant_id']) as string }),
+        ...(title === null ? {} : { externalProductTitle: title }),
+        ...(image === null ? {} : { externalImageUrl: image }),
         quantity: stringValue(item['quantity']) ?? '0',
         unitPrice: stringValue(item['price']) ?? stringValue(item['unit_price']) ?? '0',
         discount: stringValue(item['discount']) ?? '0',

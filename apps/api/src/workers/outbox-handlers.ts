@@ -37,6 +37,7 @@ const OrderReceivedLine = z.object({
   externalVariantId: z.string().max(150).optional(),
   externalProductId: z.string().max(150).optional(),
   externalProductTitle: z.string().max(300).optional(),
+  externalImageUrl: z.string().max(1000).optional(),
   quantity: z.string(),
   unitPrice: z.string(),
   discount: z.string().optional(),
@@ -208,8 +209,9 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
         const unitPrice = Math.max(0, Math.trunc(Number(line.unitPrice) || 0));
         const discount = Math.max(0, Math.trunc(Number(line.discount ?? '0') || 0));
         const net = Math.max(0, quantity * unitPrice - discount);
-        const variant = await db<{ id: string; sku: string | null; title: string | null }[]>`
-          select v.id::text as id, v.sku, coalesce(v.title, p.name) as title
+        const variant = await db<{ id: string; sku: string | null; title: string | null; image_url: string | null }[]>`
+          select v.id::text as id, v.sku, coalesce(v.title, p.name) as title,
+                 coalesce(v.image_url, p.image_url) as image_url
           from erp.channel_product_mappings m
           join erp.product_variants v on v.id = m.product_variant_id
           join erp.products p on p.id = v.product_id
@@ -239,14 +241,20 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
                 id: await ensureUnmappedVariant(db, event.organizationId),
                 sku: line.externalSku ?? 'UNMAPPED',
                 title: line.externalProductTitle ?? 'کالای نامشخص کانال',
+                image_url: null as string | null,
               }
             : row;
+        // The channel row title is kept verbatim even when the line resolves to
+        // a product, so the pick station can still show what the buyer ordered.
+        const externalTitle = line.externalProductTitle ?? resolved.title;
         await db`
           insert into erp.sales_order_lines
             (order_id, line_no, product_variant_id, sku_snapshot, title_snapshot,
+             external_title, image_url,
              quantity, unit_price_amount, discount_amount, net_amount, gross_amount,
              tax_percent, tax_amount, status)
           values (${orderId}::bigint, ${lineNo}, ${resolved.id}::bigint, ${resolved.sku}, ${resolved.title},
+                  ${externalTitle}, coalesce(${resolved.image_url}::text, ${line.externalImageUrl ?? null}::text),
                   ${quantity}, ${unitPrice}, ${discount}, ${net}, ${quantity * unitPrice},
                   0, 0, 'pending')
         `;

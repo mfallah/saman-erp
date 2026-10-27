@@ -154,6 +154,8 @@ export interface CanonicalOrderLine {
   readonly externalProductId?: string;
   /** Channel product title, used as a last-resort variant match. */
   readonly externalProductTitle?: string;
+  /** Channel-supplied product image, kept for lines with no mapping yet. */
+  readonly externalImageUrl?: string;
   readonly quantity: string;
   readonly unitPrice: string;
   readonly discount: string;
