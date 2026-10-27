@@ -751,6 +751,13 @@ export class DigikalaAdapter implements ChannelAdapter {
     const unitPrice = stringValue(body['selling_price']) ?? '0';
     const discount = stringValue(body['amazing_discount']) ?? '0';
     const placedAt = new Date(stringValue(body['order_created_at']) ?? Date.now());
+    // The variant title is the only product identity Digikala returns on an
+    // order row; it lets the intake match a local product even when the
+    // variant-id mapping is missing or stale.
+    const lineTitle =
+      stringValue(body['product_variant_title']) ??
+      stringValue(body['product_title']) ??
+      stringValue(body['title']);
     return {
       orderId,
       order: {
@@ -763,6 +770,7 @@ export class DigikalaAdapter implements ChannelAdapter {
             externalLineId: `${orderId}:${variantId}`,
             externalSku: stringValue(body['supplier_code']) ?? variantId,
             externalVariantId: variantId,
+            ...(lineTitle === null ? {} : { externalProductTitle: lineTitle }),
             quantity,
             unitPrice,
             discount,

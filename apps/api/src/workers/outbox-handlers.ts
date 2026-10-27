@@ -183,6 +183,11 @@ export function buildOutboxHandlers(deps: HandlerDependencies): readonly OutboxH
               or (${line.externalSku ?? null}::text is not null and m.external_sku = ${line.externalSku ?? null})
               or (${line.externalSku ?? null}::text is not null and v.sku = ${line.externalSku ?? null})
               or (${line.externalProductTitle ?? null}::text is not null and btrim(p.name) = btrim(${line.externalProductTitle ?? null}))
+              or (
+                ${line.externalProductTitle ?? null}::text is not null
+                and regexp_replace(lower(btrim(p.name)), '[^[:alnum:]\u0600-\u06FF]+', ' ', 'g')
+                  = regexp_replace(lower(btrim(${line.externalProductTitle ?? null})), '[^[:alnum:]\u0600-\u06FF]+', ' ', 'g')
+              )
             )
           limit 1
         `;
