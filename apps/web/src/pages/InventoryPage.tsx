@@ -11,6 +11,7 @@ import { useHasPermission } from '../lib/use-auth';
 import type { BalanceRow, LedgerRow, VariantSummary, Warehouse } from '../types/api';
 import { Can, PermissionNotice } from '../components/auth/Can';
 import { Badge } from '../components/ui/Badge';
+import { RefreshCw } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Combobox } from '../components/ui/Combobox';
 import { DateRangePicker } from '../components/ui/DateRangePicker';
@@ -105,6 +106,7 @@ export function InventoryPage() {
   const [ledgerType, setLedgerType] = useState('');
   const [page, setPage] = useState(1);
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [channelSyncBusy, setChannelSyncBusy] = useState(false);
   const [adjustWarehouseId, setAdjustWarehouseId] = useState('');
   const [adjustType, setAdjustType] = useState('increase');
   const [adjustReason, setAdjustReason] = useState('');
@@ -210,11 +212,39 @@ export function InventoryPage() {
         title="انبار و موجودی"
         description="موجودی جاری، گردش انبار و اصلاح موجودی"
         actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              icon={<RefreshCw className="size-4" />}
+              loading={channelSyncBusy}
+              onClick={() => {
+                setChannelSyncBusy(true);
+                void api
+                  .post<{
+                    carexy?: { pushed: number; failed: number; rateLimited: number; changed: number; remaining: number };
+                    digikala?: { pushed: number; failed: number; rateLimited: number; changed: number; remaining: number };
+                  }>('/inventory/sync-channels', {})
+                  .then((result) => {
+                    const parts = ['carexy', 'digikala'].map((code) => {
+                      const row = (result as Record<string, { pushed: number; failed: number; remaining: number } | undefined>)[code];
+                      if (row === undefined) return null;
+                      return `${code}: ارسال ${row.pushed}${row.failed > 0 ? ` / خطا ${row.failed}` : ''}${row.remaining > 0 ? ` / باقی ${row.remaining}` : ''}`;
+                    }).filter((value): value is string => value !== null);
+                    toast.success('همگام‌سازی موجودی با کانال‌ها', parts.join(' · ') || 'تغییری برای ارسال نبود');
+                    void queryClient.invalidateQueries({ queryKey: ['inventory'] });
+                  })
+                  .catch((error) => toast.error('همگام‌سازی موجودی ناموفق بود', toFaErrorMessage(error)))
+                  .finally(() => setChannelSyncBusy(false));
+              }}
+            >
+              همگام‌سازی موجودی با کانال‌ها
+            </Button>
           <Can permission={PERM.inventoryAdjust}>
             <Button icon={<ClipboardPlus className="size-4" />} onClick={() => setAdjustOpen(true)}>
               اصلاح موجودی
             </Button>
           </Can>
+          </div>
         }
       />
 
