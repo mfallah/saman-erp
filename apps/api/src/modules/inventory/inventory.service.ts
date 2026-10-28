@@ -17,12 +17,13 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { AppError, parseMoney } from '@saman/shared';
 
 import { AUDIT, DB, EVENT_BUS, type AuditPort, type Db as ContractDb, type EventPort, type TenantContext } from '../../common/contracts';
 import { CatalogLookupService } from '../catalog/product.service';
 import { type VariantLookup } from '../catalog/product.service';
+import { ChannelSyncService } from '../channels/services/channel-sync.service';
 import type { Db } from './inventory.pg-support';
 import { notFound, parseIfMatch, toBigInt, versionConflict } from './inventory.pg-support';
 import { InventoryRepository } from './inventory.repository';
@@ -197,7 +198,26 @@ export class InventoryService {
     private readonly catalog: CatalogLookupService,
     @Inject(AUDIT) private readonly audit: AuditPort,
     @Inject(EVENT_BUS) private readonly events: EventPort,
+    /** Optional so unit tests can build the service without the channels graph. */
+    @Optional() private readonly channelSync?: ChannelSyncService,
   ) {}
+
+  // ================================================================ channel stock
+
+  /**
+   * Operator action «همگام‌سازی موجودی با کانال‌ها»: pushes the current stock of
+   * every mapped variant to both selling channels (Carexy + Digikala) with the
+   * per-account pacing/breaker, sending only quantities the channel does not
+   * already have. Returns `{carexy:{pushed,failed,rateLimited}, digikala:{…}}`.
+   */
+  async syncChannels(ctx: TenantContext): Promise<Record<string, unknown>> {
+    if (this.channelSync === undefined) {
+      throw new AppError('NOT_IMPLEMENTED', {
+        message: 'همگام‌سازی کانال در این محیط فعال نیست.',
+      });
+    }
+    return this.channelSync.syncStockToChannels({ organizationId: ctx.orgId.toString() });
+  }
 
   // ================================================================ availability
 

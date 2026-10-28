@@ -132,8 +132,31 @@ export const OrderListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(2048).optional(),
   status: z
-    .enum(['draft', 'submitted', 'confirmed', 'allocated', 'picking', 'packed', 'shipped', 'delivered', 'closed', 'cancelled', 'on_hold'])
+    .enum([
+      'draft',
+      'pending',
+      'submitted',
+      'confirmed',
+      'allocated',
+      'picking',
+      'packed',
+      'shipped',
+      'delivered',
+      'returned',
+      'closed',
+      'cancelled',
+      'on_hold',
+    ])
     .optional(),
+  /**
+   * The default list is the *working* list: shipped/delivered/cancelled/closed
+   * orders are excluded (they live in history). `?includeClosed=true` returns
+   * everything, and an explicit `status` filter always wins over this default.
+   */
+  includeClosed: z
+    .enum(['true', 'false', '1', '0'])
+    .optional()
+    .transform((value) => value === 'true' || value === '1'),
   channelCode: z.string().trim().max(40).optional(),
   customerId: PublicId.optional(),
   warehouseId: PublicId.optional(),

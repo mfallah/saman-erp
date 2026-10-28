@@ -80,6 +80,11 @@ export interface ChannelAdapter {  readonly code: ChannelCode;
     account: AdapterAccount,
     since: Date,
     cursor?: string,
+    /**
+     * Page bound for auto-pull: a rate-limited channel must never walk the whole
+     * order history on one tick. Adapters that do not page ignore it.
+     */
+    options?: { readonly maxPages?: number },
   ): AsyncIterable<CanonicalOrder>;
 
   acknowledgeOrder(account: AdapterAccount, externalOrderId: string, status: string): Promise<void>;

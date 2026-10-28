@@ -468,7 +468,7 @@ export class SalesService {
 
   // =================================================================== orders
 
-  async listOrders(ctx: TenantContext, query: { limit: number; status?: string | undefined; customerId?: string | undefined; channelCode?: string | undefined; warehouseId?: string | undefined; createdAtGte?: string | undefined }) {
+  async listOrders(ctx: TenantContext, query: { limit: number; status?: string | undefined; includeClosed?: boolean | undefined; customerId?: string | undefined; channelCode?: string | undefined; warehouseId?: string | undefined; createdAtGte?: string | undefined }) {
     const allowedWarehouseIds = this.scopes.visibleWarehouseIds(this.scopes.forContext(ctx));
     if (allowedWarehouseIds !== null && allowedWarehouseIds.length === 0) return [];
     const customer = query.customerId === undefined ? null : await this.requireCustomer(this.db, ctx, query.customerId);
@@ -477,6 +477,9 @@ export class SalesService {
     const rows = await this.repo.listOrders(this.db, {
       orgId: ctx.orgId,
       status: query.status ?? null,
+      // An explicit status always wins; otherwise the default list is the
+      // "working" list and hides shipped/delivered/cancelled/closed orders.
+      includeClosed: query.includeClosed === true || query.status !== undefined,
       customerInternalId: customer === null ? null : toBigInt(customer.internalId),
       channelCode: query.channelCode ?? null,
       warehouseInternalId,

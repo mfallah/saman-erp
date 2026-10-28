@@ -56,11 +56,36 @@ export interface SyncJobResult {
 }
 
 interface InventoryRow {
+  mappingId: string;
   variantId: string;
   externalVariantId: string;
   externalProductId: string | null;
   available: string;
   safety: string;
+  /** Last quantity the channel accepted (`channel_product_mappings.last_pushed_stock`). */
+  lastPushedStock: string | null;
+}
+
+/** Per-channel outcome of an explicit operator-triggered stock synchronisation. */
+export interface ChannelStockPushResult {
+  readonly accountId: string | null;
+  readonly pushed: number;
+  readonly failed: number;
+  readonly rateLimited: number;
+  /** Variants whose local quantity differs from what the channel already has. */
+  readonly changed: number;
+  /** Changed variants still queued after this call (rate limit / chunk cap). */
+  readonly remaining: number;
+  readonly skipped?: string;
+}
+
+interface ChunkOutcome {
+  pushed: number;
+  failed: number;
+  rateLimited: number;
+  changed: number;
+  remaining: number;
+  skipped?: string;
 }
 
 interface PriceRow {
@@ -129,7 +154,11 @@ export class ChannelSyncService {
     const jobType = this.toJobType(input.type);
     const resolved = await this.accounts.resolveForSync(input.organizationId, input.accountId);
     const capability = this.capabilityFor(input.type);
-    if (!resolved.adapter.supports(capability)) {
+    // `order_pull` is exempt: a channel that has no order endpoint yet (Carexy,
+    // TBD-CAREXY) still gets a job, which succeeds with `skipped` and no partner
+    // call. That keeps the cadence visible in `channel_sync_jobs` instead of
+    // pushing the same NOT_IMPLEMENTED into the dead-letter table every tick.
+    if (input.type !== 'order_pull' && !resolved.adapter.supports(capability)) {
       throw new IntegrationError('NOT_IMPLEMENTED', {
         messageFa: 'این عملیات برای کانال انتخابی پشتیبانی نمی‌شود.',
         details: { channel: resolved.adapter.code, capability },
@@ -237,11 +266,17 @@ export class ChannelSyncService {
         });
         await this.sync.markDead(job.id, integration.code, integration.messageFa);
       } else {
+        // A rate-limited partner gets at least its breaker cooldown: the jittered
+        // exponential backoff alone can land under a second and re-open the storm.
+        const breakerCooldownMs =
+          integration.code === 'RATE_LIMITED'
+            ? Math.max(60_000, Number(integration.details?.['retryAfterMs'] ?? 0) || 0)
+            : 0;
         await this.sync.markFailed(
           job.id,
           integration.code,
           integration.messageFa,
-          new Date(this.now().getTime() + backoffDelayMs({ attempts })),
+          new Date(this.now().getTime() + Math.max(backoffDelayMs({ attempts }), breakerCooldownMs)),
         );
       }
       this.logger[dead ? 'error' : 'warn'](
@@ -642,33 +677,104 @@ export class ChannelSyncService {
     resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
     job: SyncJobRow,
   ): Promise<Record<string, unknown>> {
-    const rows = await this.loadInventoryRows(resolved.row.id, resolved.row.organizationId);
-    if (rows.length === 0) return { pushed: 0, failed: 0, skipped: 'no_mappings' };
+    // One job = one small chunk (default 20, never more than 50). A job can
+    // therefore never issue more than one request per mapped variant in its
+    // chunk, and the remainder is reported instead of hammering the channel.
+    const outcome = await this.pushStockChunk(resolved, { throwOnTotalFailure: true });
+    if (outcome.skipped !== undefined && outcome.changed === 0) {
+      return { pushed: 0, failed: 0, changed: 0, remaining: 0, skipped: outcome.skipped, jobId: job.id };
+    }
+    return {
+      pushed: outcome.pushed,
+      failed: outcome.failed,
+      rateLimited: outcome.rateLimited,
+      changed: outcome.changed,
+      remaining: outcome.remaining,
+      accountId: resolved.row.id,
+      organizationId: resolved.row.organizationId,
+      jobId: job.id,
+    };
+  }
 
-    const batchSize = this.numberSetting(resolved.row.settings, 'stockBatchSize', 100);
-    const items: InventoryUpdate[] = [];
-    for (const row of rows.slice(0, Math.max(1, batchSize))) {
+  /**
+   * Pushes the next chunk of **changed** stock for one account.
+   *
+   * `last_pushed_stock` is the source of truth for "the channel already knows
+   * this number": a mapping whose computed quantity equals it is skipped, and a
+   * never-pushed mapping is only sent when its quantity is positive (a new
+   * zero-stock variant has nothing to correct on the channel).
+   */
+  private async pushStockChunk(
+    resolved: Awaited<ReturnType<ChannelAccountService['resolveForSync']>>,
+    options: { readonly throwOnTotalFailure?: boolean; readonly variantIds?: readonly string[] } = {},
+  ): Promise<ChunkOutcome> {
+    const rows = await this.loadInventoryRows(resolved.row.id, resolved.row.organizationId);
+    if (rows.length === 0) {
+      return { pushed: 0, failed: 0, rateLimited: 0, changed: 0, remaining: 0, skipped: 'no_mappings' };
+    }
+
+    const scope = options.variantIds === undefined ? null : new Set(options.variantIds);
+    const changed: { row: InventoryRow; available: string }[] = [];
+    for (const row of rows) {
+      if (scope !== null && !scope.has(row.variantId)) continue;
       const available = maxDecimalZero(
         subtractDecimal(subtractDecimal(row.available, row.safety), resolved.row.stockSafetyQty),
       );
-      items.push({
-        externalVariantId: row.externalVariantId,
-        ...(row.externalProductId === null ? {} : { externalProductId: row.externalProductId }),
-        available,
-      });
+      if (row.lastPushedStock === null) {
+        if (decimalToUnits(available) > 0) changed.push({ row, available });
+        continue;
+      }
+      if (decimalToUnits(available) !== decimalToUnits(row.lastPushedStock)) {
+        changed.push({ row, available });
+      }
+    }
+    if (changed.length === 0) {
+      return { pushed: 0, failed: 0, rateLimited: 0, changed: 0, remaining: 0, skipped: 'unchanged' };
     }
 
-    const result = await resolved.adapter.pushInventory(resolved.account, items);
-    for (const item of items) {
-      if (result.failed.some((failure) => failure.externalId === item.externalVariantId)) continue;
-      const row = rows.find((candidate) => candidate.externalVariantId === item.externalVariantId);
-      if (row !== undefined) {
-        await this.db`
-          update erp.channel_inventory_mappings
-          set last_pushed_qty = ${item.available}::numeric, last_pushed_at = now(), last_push_error = null
-          where channel_account_id = ${resolved.row.id}::bigint
-            and product_variant_id = ${row.variantId}::bigint`;
+    const chunkSize = Math.min(
+      50,
+      Math.max(1, this.numberSetting(resolved.row.settings, 'stockBatchSize', 20)),
+    );
+    const chunk = changed.slice(0, chunkSize);
+    const items: InventoryUpdate[] = chunk.map(({ row, available }) => ({
+      externalVariantId: row.externalVariantId,
+      ...(row.externalProductId === null ? {} : { externalProductId: row.externalProductId }),
+      available,
+    }));
+
+    let result;
+    try {
+      result = await resolved.adapter.pushInventory(resolved.account, items);
+    } catch (error) {
+      if (error instanceof IntegrationError && error.code === 'RATE_LIMITED') {
+        // Breaker is open: report it, do not retry, keep the chunk unchanged so
+        // the next job picks the same variants up again.
+        this.logger.warn(
+          { accountId: resolved.row.id, channel: resolved.adapter.code, pending: changed.length },
+          'inventory push skipped by channel rate limit',
+        );
+        return {
+          pushed: 0,
+          failed: 0,
+          rateLimited: changed.length,
+          changed: changed.length,
+          remaining: changed.length,
+        };
       }
+      throw error;
+    }
+
+    const failedIds = new Set(result.failed.map((failure) => failure.externalId));
+    for (const { row, available } of chunk) {
+      if (failedIds.has(row.externalVariantId)) continue;
+      await this.db`
+        update erp.channel_product_mappings
+        set last_pushed_stock = ${available}::numeric,
+            last_synced_at = now(),
+            sync_status = 'synced',
+            last_error = null
+        where id = ${row.mappingId}::bigint`;
     }
     for (const failure of result.failed) {
       await this.db`
@@ -678,13 +784,25 @@ export class ChannelSyncService {
           and external_variant_id = ${failure.externalId}`;
     }
     if (result.failed.length > 0) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[channel-push] ${resolved.adapter.code} failures: ` +
-          result.failed.map((failure) => `${failure.externalId}:${failure.code}:${failure.messageFa}`).join(' | ').slice(0, 800),
+      this.logger.warn(
+        {
+          accountId: resolved.row.id,
+          channel: resolved.adapter.code,
+          failures: result.failed
+            .map((failure) => `${failure.externalId}:${failure.code}`)
+            .join(' | ')
+            .slice(0, 800),
+        },
+        'channel inventory push failures',
       );
     }
-    if (result.failed.length > 0 && result.succeeded === 0) {
+    const rateLimited = result.failed.filter((failure) => failure.code === 'RATE_LIMITED').length;
+    if (
+      options.throwOnTotalFailure === true &&
+      result.failed.length > 0 &&
+      result.succeeded === 0 &&
+      rateLimited === 0
+    ) {
       const retryable = result.failed.some((failure) => failure.retryable);
       throw new IntegrationError(retryable ? 'UPSTREAM_UNAVAILABLE' : 'UPSTREAM_INVALID_RESPONSE', {
         messageFa: 'ارسال موجودی به کانال ناموفق بود.',
@@ -694,12 +812,85 @@ export class ChannelSyncService {
     return {
       pushed: result.succeeded,
       failed: result.failed.length,
-      failures: result.failed.map((failure) => ({
-        externalId: failure.externalId,
-        code: failure.code,
-      })),
-      jobId: job.id,
+      rateLimited,
+      changed: changed.length,
+      remaining: Math.max(0, changed.length - chunk.length),
     };
+  }
+
+  /**
+   * Explicit operator action: push the current stock of every mapped variant to
+   * both selling channels, chunk by chunk, stopping early when a channel asks us
+   * to slow down. Returns per-channel counts; never throws for one bad channel.
+   */
+  async syncStockToChannels(input: {
+    organizationId: string;
+  }): Promise<Record<string, ChannelStockPushResult>> {
+    const accounts = await this.db<{ id: unknown; code: unknown }[]>`
+      select a.id, c.code
+      from erp.channel_accounts a
+      join erp.sales_channels c on c.id = a.channel_id
+      where a.organization_id = ${input.organizationId}::bigint
+        and a.is_active = true
+        and a.deleted_at is null
+        and c.is_active = true
+        and c.deleted_at is null
+        and c.code in ('carexy', 'digikala')
+      order by c.code`;
+    const out: Record<string, ChannelStockPushResult> = {};
+    for (const account of accounts) {
+      const code = asString(account.code);
+      try {
+        const resolved = await this.accounts.resolveForSync(input.organizationId, asString(account.id));
+        if (!resolved.adapter.supports('stock.push')) {
+          out[code] = { accountId: asString(account.id), pushed: 0, failed: 0, rateLimited: 0, changed: 0, remaining: 0, skipped: 'unsupported' };
+          continue;
+        }
+        let pushed = 0;
+        let failed = 0;
+        let rateLimited = 0;
+        let changed = 0;
+        let remaining = 0;
+        // Bounded loop: chunk size is ≤ 50, and a 20-chunk run is already 1 000
+        // variants — far beyond any real catalogue push in one HTTP request.
+        for (let round = 0; round < 20; round += 1) {
+          const outcome = await this.pushStockChunk(resolved);
+          pushed += outcome.pushed;
+          failed += outcome.failed;
+          rateLimited += outcome.rateLimited;
+          changed = Math.max(changed, outcome.changed);
+          remaining = outcome.remaining;
+          if (outcome.rateLimited > 0 || outcome.remaining === 0) break;
+        }
+        out[code] = {
+          accountId: asString(account.id),
+          pushed,
+          failed,
+          rateLimited,
+          changed,
+          remaining,
+        };
+      } catch (error) {
+        this.logger.warn(
+          {
+            accountId: asString(account.id),
+            channel: code,
+            error: error instanceof Error ? error.message : 'stock_sync_failed',
+          },
+          'explicit channel stock sync failed',
+        );
+        out[code] = {
+          accountId: asString(account.id),
+          pushed: 0,
+          failed: 0,
+          rateLimited: error instanceof IntegrationError && error.code === 'RATE_LIMITED' ? 1 : 0,
+          changed: 0,
+          remaining: 0,
+          skipped: error instanceof IntegrationError ? error.code : 'failed',
+        };
+      }
+    }
+    return out;
   }
 
   private async pushPrices(
@@ -743,6 +934,17 @@ export class ChannelSyncService {
   ): Promise<Record<string, unknown>> {
     // `backfill-orders` clears the cursor and queues a job with this prefix: the
     // window is then fixed at seven days instead of "since the last cursor".
+    if (!resolved.adapter.supports('order.pull')) {
+      // Documented gap (TBD-CAREXY): no order endpoint, so no partner call and
+      // no dead letter — the job reports the skip instead of dying.
+      return {
+        received: 0,
+        duplicates: 0,
+        skipped: 'order_pull_unsupported',
+        channel: resolved.adapter.code,
+        jobId: job.id,
+      };
+    }
     const backfill = job.operationKey?.startsWith('orders:backfill:') === true;
     const cursor = backfill ? null : await this.sync.getCursor(resolved.row.id, 'orders');
     const since = backfill
@@ -751,8 +953,20 @@ export class ChannelSyncService {
     let received = 0;
     let duplicates = 0;
     let latestMs: number | null = null;
+    // Auto-pull is bounded to a couple of pages (settings `orderPullMaxPages`,
+    // default 2): one tick must never walk a whole order history on a
+    // rate-limited channel.
+    const maxPages = Math.min(
+      20,
+      Math.max(1, this.numberSetting(resolved.row.settings, 'orderPullMaxPages', 2)),
+    );
 
-    for await (const order of resolved.adapter.pullOrders(resolved.account, since)) {
+    for await (const order of resolved.adapter.pullOrders(
+      resolved.account,
+      since,
+      undefined,
+      { maxPages },
+    )) {
       const canonical = this.canonicalOrderPayload(order);
       const requestHash = hashNaturalKey(JSON.stringify(canonical));
       const outcome = await this.ingestOrder(resolved, order, canonical, requestHash);
@@ -1530,14 +1744,17 @@ export class ChannelSyncService {
   private async loadInventoryRows(accountId: string, organizationId: string): Promise<InventoryRow[]> {
     const rows = await this.db<
       {
+        mapping_id: unknown;
         variant_id: unknown;
         external_variant_id: unknown;
         external_product_id: unknown;
         available_qty: unknown;
         safety_qty: unknown;
+        last_pushed_stock: unknown;
       }[]
     >`
-      select m.product_variant_id as variant_id,
+      select m.id as mapping_id,
+             m.product_variant_id as variant_id,
              m.external_variant_id,
              m.external_product_id,
              coalesce((
@@ -1546,7 +1763,8 @@ export class ChannelSyncService {
                where b.product_variant_id = m.product_variant_id
                  and b.organization_id = ${organizationId}::bigint
              ), 0)::text as available_qty,
-             coalesce(max(i.safety_qty), 0)::text as safety_qty
+             coalesce(max(i.safety_qty), 0)::text as safety_qty,
+             m.last_pushed_stock::text as last_pushed_stock
       from erp.channel_product_mappings m
       join erp.channel_accounts a on a.id = m.channel_account_id
       left join erp.channel_inventory_mappings i
@@ -1555,14 +1773,18 @@ export class ChannelSyncService {
        and i.sync_enabled = true
       where a.organization_id = ${organizationId}::bigint
         and m.channel_account_id = ${accountId}::bigint
+        and m.deleted_at is null
         and m.external_variant_id is not null
-      group by m.product_variant_id, m.external_variant_id, m.external_product_id`;
+      group by m.id, m.product_variant_id, m.external_variant_id, m.external_product_id, m.last_pushed_stock
+      order by m.id`;
     return rows.map((row) => ({
+      mappingId: asString(row.mapping_id),
       variantId: asString(row.variant_id),
       externalVariantId: asString(row.external_variant_id),
       externalProductId: row.external_product_id === null ? null : asString(row.external_product_id),
       available: asString(row.available_qty) || '0',
       safety: asString(row.safety_qty) || '0',
+      lastPushedStock: row.last_pushed_stock === null ? null : asString(row.last_pushed_stock),
     }));
   }
 

@@ -480,6 +480,8 @@ export class SalesRepository {
     params: {
       orgId: bigint;
       status: string | null;
+      /** `false` (default) hides finished orders so the list is a working queue. */
+      includeClosed?: boolean;
       customerInternalId: BigIntish | null;
       channelCode: string | null;
       warehouseInternalId: BigIntish | null;
@@ -495,6 +497,10 @@ export class SalesRepository {
       ${this.orderFrom(tx)}
       where o.organization_id = ${params.orgId}
         and (${params.status}::text is null or o.status = ${params.status})
+        and (
+          ${params.includeClosed === true}::boolean = true
+          or o.status not in ('shipped', 'delivered', 'cancelled', 'closed', 'returned')
+        )
         and (${params.customerInternalId}::bigint is null or o.customer_id = ${params.customerInternalId}::bigint)
         and (${params.channelCode}::text is null or ch.code = ${params.channelCode})
         and (${params.warehouseInternalId}::bigint is null or o.warehouse_id = ${params.warehouseInternalId}::bigint)

@@ -138,6 +138,20 @@ export class InventoryController {
 
   // -------------------------------------------------------------- adjustments
 
+  /**
+   * Explicit operator action: push current stock of every mapped variant to both
+   * selling channels (Carexy + Digikala) and report what each one accepted.
+   * Safe to press twice — unchanged quantities are never sent.
+   */
+  @Post('sync-channels')
+  @HttpCode(200)
+  @Permissions('inventory.adjust')
+  @Audited('inventory.sync_channels')
+  @ApiOperation({ summary: 'همگام‌سازی موجودی با کانال‌های فروش (کرکسی و دیجی‌کالا)' })
+  async syncChannels(@CurrentTenant() ctx: TenantContext) {
+    return apiData(await this.service.syncChannels(ctx));
+  }
+
   @Get('adjustments')
   @Permissions('inventory.adjust.read')
   async listAdjustments(@CurrentTenant() ctx: TenantContext, @Query() query: unknown) {

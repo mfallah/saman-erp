@@ -3,13 +3,17 @@
  *
  * - code-declared host allowlist checked on every request (M-05);
  * - per-account token bucket, 20 s total timeout, connect bounded by fetch;
- * - retry with exponential backoff + jitter for 429/5xx/network, honouring
- *   `Retry-After`;
+ * - per-account minimum interval + circuit breaker (`AccountRateGate`): a 429
+ *   opens a cooldown for that (account, operation) and for the account, and
+ *   further calls fail fast with a typed `rate_limited` error instead of
+ *   re-entering the partner's limiter. Only 5xx/network errors are retried
+ *   inline; a 429 always returns to the job backoff;
  * - every call is written to `channel_api_calls` with headers omitted and PII
  *   hashed (H-10); secrets never enter URLs.
  */
 import { IntegrationError } from '../domain/channel.types';
 import type { AdapterAccount } from '../domain/channel.types';
+import { AccountRateGate } from './account-rate-gate';
 import { minimizePayload, type JsonValue } from '../domain/pii';
 import { hashNaturalKey } from './backoff';
 import { assertAllowedUrl } from './egress';
@@ -58,6 +62,8 @@ export interface PartnerHttpOptions {
   readonly now?: () => number;
   readonly sleepImpl?: (ms: number) => Promise<void>;
   readonly random?: () => number;
+  /** Shared per-account pacing/breaker; a private gate is created when omitted. */
+  readonly rateGate?: AccountRateGate;
 }
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
@@ -69,6 +75,7 @@ export class PartnerHttpClient {
   private readonly now: () => number;
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly random: () => number;
+  private readonly gate: AccountRateGate;
 
   constructor(
     private readonly deps: {
@@ -85,6 +92,12 @@ export class PartnerHttpClient {
     this.now = options.now ?? Date.now;
     this.sleepImpl = options.sleepImpl ?? sleep;
     this.random = options.random ?? Math.random;
+    this.gate =
+      options.rateGate ??
+      new AccountRateGate({
+        now: this.now,
+        sleepImpl: this.sleepImpl,
+      });
   }
 
   async request(account: AdapterAccount, request: PartnerRequest): Promise<PartnerResponse> {
@@ -103,6 +116,9 @@ export class PartnerHttpClient {
 
     while (attempt < maxAttempts) {
       attempt += 1;
+      // Fail fast while a breaker is open: no socket, no retry storm.
+      this.gate.assertAvailable(account, request.operation);
+      await this.gate.acquire(account);
       const waitMs = await this.deps.rateLimiter.acquire(
         `channel:${account.id}:${request.operation}`,
       );
@@ -156,6 +172,7 @@ export class PartnerHttpClient {
 
         await this.log(account, request, startedAt, response.status, loggedResponse, durationMs);
         if (response.ok) {
+          this.gate.noteSuccess(account.id, request.operation);
           return {
             status: response.status,
             ok: true,
@@ -167,13 +184,39 @@ export class PartnerHttpClient {
           };
         }
 
+        if (response.status === 429) {
+          // Open the breaker and leave the retrying to the durable job backoff:
+          // retrying inline is exactly what tripped the partner's limiter.
+          const cooldownMs = this.gate.noteRateLimited(
+            account,
+            request.operation,
+            response.headers.get('retry-after'),
+          );
+          this.deps.logger.warn(
+            { accountId: account.id, operation: request.operation, cooldownMs },
+            'channel rate limited; breaker open',
+          );
+          throw new IntegrationError('RATE_LIMITED', {
+            messageFa: 'محدودیت نرخ کانال فعال شده است؛ تلاش بعدی با فاصله انجام می‌شود.',
+            retryable: true,
+            httpStatus: 429,
+            details: {
+              retryAfterMs: String(cooldownMs),
+              breaker: 'open',
+            },
+          });
+        }
+
         const retryable = RETRYABLE_STATUS.has(response.status);
         lastError = this.toError(response.status, json, retryable);
         if (!retryable || !canRetry || attempt >= maxAttempts) throw lastError;
         await this.sleepImpl(this.retryDelay(attempt, response.headers.get('retry-after')));
       } catch (error) {
         if (error instanceof IntegrationError) {
-          if (!error.retryable || !canRetry || attempt >= maxAttempts) throw error;
+          // A 429 (or a fail-fast breaker rejection) is final for this attempt.
+          if (error.httpStatus === 429 || !error.retryable || !canRetry || attempt >= maxAttempts) {
+            throw error;
+          }
           lastError = error;
         } else {
           const durationMs = Math.max(0, this.now() - startedAt);

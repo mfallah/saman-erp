@@ -225,13 +225,31 @@ export class CarexyAdapter implements ChannelAdapter {
   readonly capabilities: ReadonlySet<Capability> = new Set(CAREXY_CAPABILITIES);
   readonly declaredHosts = CAREXY_HOSTS;
 
+  /**
+   * Product → inventory list, cached per account for a few minutes.
+   *
+   * Carexy has no batch inventory write: one `PUT /inventories/update/{uuid}` per
+   * inventory, and the uuid is only discoverable through
+   * `GET /inventories/product/{product}`. Resolving that mapping on every push
+   * doubled the request count and was the direct cause of the 429 storm, so the
+   * lookup is memoised for the lifetime of a push run (and across jobs).
+   */
+  private readonly inventoryCache = new Map<
+    string,
+    { readonly expiresAt: number; readonly items: readonly CarexyInventorySnapshot[] }
+  >();
+  private readonly now: () => number;
+
   constructor(
     private readonly deps: {
       readonly http: PartnerHttpClient;
       readonly mappings: ChannelMappingRepositoryPort;
       readonly logger: AppLogger;
     },
-  ) {}
+    options: { readonly now?: () => number } = {},
+  ) {
+    this.now = options.now ?? Date.now;
+  }
 
   baseUrlFor(): string {
     // Carexy publishes a single declared production host; no free-form sandbox.
@@ -550,17 +568,30 @@ export class CarexyAdapter implements ChannelAdapter {
   async listInventories(
     account: AdapterAccount,
     productUuid: string,
+    options: { readonly fresh?: boolean } = {},
   ): Promise<readonly CarexyInventorySnapshot[]> {
+    const key = `${account.id}:${productUuid}`;
+    const cached = this.inventoryCache.get(key);
+    if (options.fresh !== true && cached !== undefined && cached.expiresAt > this.now()) {
+      return cached.items;
+    }
     const response: PartnerResponse = await this.deps.http.request(account, {
       operation: 'carexy.inventory.list',
       method: 'GET',
       path: CAREXY_PATHS.inventoriesOfProduct(productUuid),
       authHeaders: this.auth(account),
+      idempotent: true,
     });
-    return listPayload(response.json)
+    const items = listPayload(response.json)
       .filter((item): item is CarexyInventoryResponse => typeof item === 'object' && item !== null)
       .map(mapCarexyInventory)
       .filter((inventory) => inventory.inventoryUuid.length > 0);
+    // An empty page is cached for much less time: an operator who adds the
+    // inventory in the panel should not wait ten minutes for the next push.
+    const ttlMs = items.length === 0 ? 120_000 : 600_000;
+    this.inventoryCache.set(key, { expiresAt: this.now() + ttlMs, items });
+    if (this.inventoryCache.size > 2_000) this.inventoryCache.clear();
+    return items;
   }
 
   async listStorages(

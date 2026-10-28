@@ -688,8 +688,13 @@ export class PurchasingService {
           type: 'inventory_push',
           force: true,
         });
+        // Run immediately after the receipt transaction commits. The job pushes
+        // one small chunk and reports `remaining`; the chain below drains the
+        // remainder without ever bursting the channel.
         setImmediate(() => {
-          void this.sync.runJob(job.jobId).catch(() => undefined);
+          void this.runInventoryPushChain(job.jobId, ctx.orgId.toString(), target.accountInternalId).catch(
+            () => undefined,
+          );
         });
         // A purchase changes the moving-average cost, so the channel price must
         // be recomputed and pushed as well (not only the stock).
@@ -716,6 +721,34 @@ export class PurchasingService {
       }
     }
     return { accounts, channels };
+  }
+
+  /**
+   * Runs one `push_inventory` job and, while the summary reports variants the
+   * chunk did not reach and the channel is not rate limited, queues the next
+   * chunk. Bounded so a huge catalogue cannot loop forever; each job is the
+   * durable record of what was pushed (status + `response_summary`).
+   */
+  private async runInventoryPushChain(
+    jobId: string,
+    organizationId: string,
+    accountId: string,
+  ): Promise<void> {
+    let current = jobId;
+    for (let round = 0; round < 5; round += 1) {
+      const result = await this.sync.runJob(current, 'purchasing');
+      if (result.status !== 'succeeded') return;
+      const remaining = Number(result.summary['remaining'] ?? 0);
+      const rateLimited = Number(result.summary['rateLimited'] ?? 0);
+      if (!Number.isFinite(remaining) || remaining <= 0 || rateLimited > 0) return;
+      const next = await this.sync.trigger({
+        organizationId,
+        accountId,
+        type: 'inventory_push',
+        force: true,
+      });
+      current = next.jobId;
+    }
   }
 
   private async record(

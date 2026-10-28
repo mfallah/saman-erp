@@ -55,6 +55,23 @@ type Raw = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Row[
 
 const ALLOWED_KEYS = new Set<string>(CREDENTIAL_KEY_NAMES);
 
+/**
+ * Settings an operator may change through `PUT /channel-accounts/:id`.
+ * Everything here is a behaviour flag; signature/secret/egress keys stay
+ * forbidden (`assertSettingsSafe` rejects those).
+ */
+const SETTINGS_UPDATABLE_KEYS = new Set<string>([
+  'autoOrderPull',
+  'orderPullIntervalSeconds',
+  'orderPullMaxPages',
+  'stockBatchSize',
+  'stockDebounceSeconds',
+  'stockSafetyQty',
+  'dryRun',
+  'pricing',
+  'environment',
+]);
+
 /** Stable counters exposed to the SPA regardless of which job produced them. */
 interface SyncJobSummary {
   readonly imported: number;
@@ -1032,7 +1049,7 @@ export class ChannelsAdminController {
 
   @Put('channel-accounts/:accountId')
   @Permissions('channel.account.update')
-  @ApiOperation({ summary: 'Update a channel account (name/active)' })
+  @ApiOperation({ summary: 'Update a channel account (name/active/settings)' })
   async updateAccount(
     @CurrentTenant() ctx: TenantContext,
     @Param('accountId') accountId: string,
@@ -1065,6 +1082,26 @@ export class ChannelsAdminController {
       returning public_id::text as id
     `;
     if (rows.length === 0) throw new BadRequestException({ code: 'NOT_FOUND', message: 'account not found' });
+
+    // Behaviour flags go through the audited settings service instead of a raw
+    // settings overwrite: autoOrderPull, pull cadence, stock chunk/batch size.
+    if (settingsPayload !== null) {
+      const allowed = Object.fromEntries(
+        Object.entries(settingsPayload).filter(([key]) => SETTINGS_UPDATABLE_KEYS.has(key)),
+      );
+      if (Object.keys(allowed).length > 0) {
+        const internal = await this.accountInternalId(ctx, accountId);
+        if (internal !== null) {
+          await this.accounts.updateSettings({
+            organizationId: ctx.orgId.toString(),
+            accountId: internal,
+            settings: allowed,
+            actorId: ctx.actorId === null ? null : ctx.actorId.toString(),
+            requestId: ctx.requestId,
+          });
+        }
+      }
+    }
     return apiData({ id: String(rows[0]!['id']) });
   }
 
